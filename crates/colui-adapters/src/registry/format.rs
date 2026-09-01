@@ -52,6 +52,19 @@ impl JsonProfileRegistry {
         &self.config
     }
 
+    pub(crate) fn initialize_empty(&self) -> Result<(), AppError> {
+        let lock = self.lock()?;
+        atomic_write(
+            &self.config.canonical_path,
+            &encode(&RegistrySnapshot {
+                registry_revision: 0,
+                profiles: Vec::new(),
+            })?,
+        )?;
+        drop(lock);
+        Ok(())
+    }
+
     fn load_bytes(&self) -> Result<RegistrySnapshot, AppError> {
         match fs::read(&self.config.canonical_path) {
             Ok(bytes) => decode(&bytes),

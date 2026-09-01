@@ -1,5 +1,8 @@
-use colui_adapters::{JsonProfileRegistry, RegistryConfig};
-use colui_app::{ProfileReader, ProfileStore};
+use colui_adapters::{
+    registry::{import_v1, import_v1_if_needed},
+    JsonProfileRegistry, RegistryConfig,
+};
+use colui_app::{IdGenerator, ProfileReader, ProfileStore};
 use colui_domain::{
     AppError, AppErrorCode, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin,
 };
@@ -38,6 +41,121 @@ fn profile_with_files(files: &[&str]) -> ProjectProfile {
 
 fn bytes(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap()
+}
+
+struct DeterministicIds(std::sync::Mutex<Vec<ProfileId>>);
+
+impl IdGenerator for DeterministicIds {
+    fn generate(&self) -> ProfileId {
+        self.0.lock().unwrap().remove(0)
+    }
+}
+
+fn deterministic_ids() -> DeterministicIds {
+    DeterministicIds(std::sync::Mutex::new(vec![
+        ProfileId::new(Uuid::from_u128(0x00112233445566778899aabbccddeeff)),
+        ProfileId::new(Uuid::from_u128(0xffeeddccbbaa99887766554433221100)),
+    ]))
+}
+
+#[test]
+fn import_preserves_entry_and_file_order_without_touching_source() {
+    let source = br#"[{"name":"Checkout","working_dir":"/tmp/checkout","config_files":["compose.yml","local.yml"],"env_files":[".env"]}]"#;
+    let original = source.to_vec();
+    let imported = import_v1(source, &deterministic_ids()).unwrap();
+    assert_eq!(source, original.as_slice());
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0].display_name, "Checkout".try_into().unwrap());
+    assert_eq!(imported[0].compose_files[1], PathBuf::from("local.yml"));
+    assert_eq!(imported[0].environment_files, vec![PathBuf::from(".env")]);
+    assert_eq!(
+        imported[0].registration_origin,
+        RegistrationOrigin::Migrated
+    );
+}
+
+#[test]
+fn invalid_names_are_normalized_and_collisions_are_not_merged() {
+    let source = br#"[{"name":"Checkout API","working_dir":"/tmp/a","config_files":["a.yml"]},{"name":"checkout-api","working_dir":"/tmp/b","config_files":["b.yml"]}]"#;
+    let imported = import_v1(source, &deterministic_ids()).unwrap();
+    assert_eq!(imported.len(), 2);
+    assert_eq!(
+        imported[0].compose_project_name,
+        imported[1].compose_project_name
+    );
+    assert_eq!(
+        imported[0].compose_project_name,
+        "checkout-api".try_into().unwrap()
+    );
+}
+
+#[test]
+fn empty_normalized_name_uses_profile_id_fallback() {
+    let source = br#"[{"name":"!!!","working_dir":"/tmp/empty","config_files":["compose.yml"]}]"#;
+    let imported = import_v1(source, &deterministic_ids()).unwrap();
+    assert_eq!(
+        imported[0].compose_project_name,
+        "imported-00112233".try_into().unwrap()
+    );
+    assert_eq!(imported[0].revision, colui_domain::Revision::initial());
+}
+
+#[test]
+fn malformed_import_returns_registry_corrupt_without_mutating_source() {
+    let source = b"[{broken";
+    let original = source.to_vec();
+    let error = import_v1(source, &deterministic_ids()).unwrap_err();
+    assert_eq!(error.code, AppErrorCode::RegistryCorrupt);
+    assert_eq!(source, original.as_slice());
+}
+
+#[tokio::test]
+async fn first_start_imports_once_and_backs_up_legacy_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = RegistryConfig::in_directory(directory.path());
+    let registry = JsonProfileRegistry::new(config.clone()).unwrap();
+    let legacy = directory.path().join("projects.json");
+    let backup = directory.path().join("projects.json.v1.bak");
+    let source =
+        br#"[{"name":"Checkout","working_dir":"/tmp/checkout","config_files":["compose.yml"]}]"#;
+    std::fs::write(&legacy, source).unwrap();
+
+    let diagnostics = import_v1_if_needed(&registry, &legacy, &backup, &deterministic_ids())
+        .await
+        .unwrap();
+    assert_eq!(diagnostics.imported_profiles, 1);
+    assert_eq!(bytes(&legacy), source);
+    assert_eq!(bytes(&backup), source);
+    assert_eq!(registry.load().await.unwrap().profiles.len(), 1);
+
+    let second = import_v1_if_needed(&registry, &legacy, &backup, &deterministic_ids())
+        .await
+        .unwrap();
+    assert_eq!(second.imported_profiles, 0);
+}
+
+#[tokio::test]
+async fn malformed_first_start_creates_empty_v2_and_reports_diagnostic() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = RegistryConfig::in_directory(directory.path());
+    let registry = JsonProfileRegistry::new(config.clone()).unwrap();
+    let legacy = directory.path().join("projects.json");
+    let backup = directory.path().join("projects.json.v1.bak");
+    let source = b"[{broken";
+    std::fs::write(&legacy, source).unwrap();
+
+    let diagnostics = import_v1_if_needed(&registry, &legacy, &backup, &deterministic_ids())
+        .await
+        .unwrap();
+    assert_eq!(diagnostics.imported_profiles, 0);
+    assert_eq!(
+        diagnostics.error.unwrap().code,
+        AppErrorCode::RegistryCorrupt
+    );
+    assert_eq!(bytes(&legacy), source);
+    assert_eq!(bytes(&backup), source);
+    assert_eq!(registry.load().await.unwrap().profiles.len(), 0);
+    assert_eq!(registry.load().await.unwrap().registry_revision, 0);
 }
 
 #[test]
