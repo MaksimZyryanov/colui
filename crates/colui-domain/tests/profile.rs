@@ -1,6 +1,21 @@
-use colui_domain::{ComposeProjectName, DisplayName, ProfileId, Revision};
+use colui_domain::{
+    validate_draft, AppError, AppErrorCode, ComposeProjectName, DisplayName, ProfileDraft,
+    ProfileId, ProjectProfile, RegistrationOrigin, Revision,
+};
 use serde_json::from_str;
+use std::path::PathBuf;
 use uuid::Uuid;
+
+fn valid_draft(display_name: &str, compose_project_name: &str) -> ProfileDraft {
+    ProfileDraft {
+        display_name: DisplayName::try_from(display_name).unwrap(),
+        compose_project_name: ComposeProjectName::try_from(compose_project_name).unwrap(),
+        working_directory: PathBuf::from("/tmp/project"),
+        compose_files: vec![PathBuf::from("compose.yaml")],
+        environment_files: vec![],
+        registration_origin: RegistrationOrigin::Manual,
+    }
+}
 
 #[test]
 fn profile_id_is_not_derived_from_name_or_path() {
@@ -44,4 +59,58 @@ fn deserialization_preserves_compose_name_validation() {
 fn revision_starts_at_one_and_advances() {
     let initial = Revision::initial();
     assert_eq!(initial.next(), Revision::new(2));
+}
+
+#[test]
+fn rename_preserves_id_and_compose_namespace() {
+    let draft = valid_draft("Checkout", "checkout");
+    let profile = ProjectProfile::from_draft(ProfileId::new(Uuid::from_u128(1)), draft).unwrap();
+    let renamed = profile.with_display_name(DisplayName::try_from("Payments").unwrap());
+    assert_eq!(renamed.id, profile.id);
+    assert_eq!(renamed.compose_project_name, profile.compose_project_name);
+}
+
+#[test]
+fn duplicate_display_names_are_allowed() {
+    let first = valid_draft("Local", "checkout");
+    let second = valid_draft("Local", "payments");
+    assert!(ProjectProfile::from_draft(ProfileId::new(Uuid::from_u128(1)), first).is_ok());
+    assert!(ProjectProfile::from_draft(ProfileId::new(Uuid::from_u128(2)), second).is_ok());
+}
+
+#[test]
+fn draft_requires_compose_file_and_unique_paths() {
+    let mut empty = valid_draft("Local", "local");
+    empty.compose_files.clear();
+    assert!(validate_draft(&empty).is_err());
+
+    let mut duplicate = valid_draft("Local", "local");
+    duplicate.compose_files.push(PathBuf::from("compose.yaml"));
+    assert!(validate_draft(&duplicate).is_err());
+}
+
+#[test]
+fn registry_lock_error_is_retryable() {
+    let error = AppError::new(
+        AppErrorCode::RegistryLocked,
+        "write_registry",
+        None,
+        "locked",
+    );
+    assert!(error.retryable);
+    assert_eq!(error.code, AppErrorCode::RegistryLocked);
+}
+
+#[test]
+fn app_error_serializes_stable_code() {
+    let error = AppError::new(
+        AppErrorCode::ProfileAlreadyRegistered,
+        "register_profile",
+        None,
+        "already registered",
+    );
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        "profile_already_registered"
+    );
 }
