@@ -99,3 +99,41 @@ No Task 6 files, `.DS_Store`, or legacy source files were changed.
   work directly from its async function. Existing registry mutation already
   uses `spawn_blocking`; future startup integration should likewise dispatch
   this orchestration from a blocking worker without changing importer scope.
+
+## Review Fix Report: Async Blocking Boundary
+
+### Finding fixed
+
+- Moved complete lock-scoped first-start orchestration, including canonical
+  claim, legacy read, durable backup, parse, and v2 atomic write, behind
+  `tokio::task::spawn_blocking`.
+- Preserved borrowed-call behavior by cloning the generator into the worker;
+  callers still pass `&G`.
+- Existing race safety, source immutability, malformed diagnostics, and
+  atomic backup behavior remain covered by adapter tests.
+
+### TDD Evidence
+
+- Reproduced root cause by tracing `import_v1_if_needed` into direct
+  `registry.run_import`, whose lock polling and filesystem operations executed
+  on the async caller thread.
+- Added no behavior changes outside worker placement; existing concurrency
+  regression remains active and passed after the fix.
+- Focused green run:
+  `cargo test -p colui-adapters --test registry concurrent_first_start_imports_only_once`
+  Result: PASS, 1 passed, 0 failed.
+
+### Verification Commands and Output
+
+- `cargo fmt --all -- --check`: PASS.
+- `cargo test -p colui-adapters --test registry`: PASS, 25 passed, 0 failed.
+- `cargo test --workspace`: PASS; adapter 25, app 13, domain 12; all doc
+  tests passed.
+- `git diff --check`: PASS.
+
+### Remaining concerns
+
+- `import_v1_if_needed` requires `Clone + Send + Sync + 'static` on `IdGenerator`
+  so owned generator state can cross the blocking worker boundary. Existing
+  deterministic and production-compatible generator implementations must meet
+  these bounds.

@@ -54,13 +54,29 @@ pub struct ImportDiagnostics {
     pub error: Option<AppError>,
 }
 
-pub async fn import_v1_if_needed<G: IdGenerator + Sync>(
+pub async fn import_v1_if_needed<G: IdGenerator + Clone + Send + Sync + 'static>(
     registry: &crate::registry::format::JsonProfileRegistry,
     legacy_path: &std::path::Path,
     backup_path: &std::path::Path,
     ids: &G,
 ) -> Result<ImportDiagnostics, AppError> {
-    let result = registry.run_import(legacy_path, backup_path, |source| import_v1(source, ids))?;
+    let config = registry.config().clone();
+    let legacy_path = legacy_path.to_owned();
+    let backup_path = backup_path.to_owned();
+    let ids = ids.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let registry = crate::registry::format::JsonProfileRegistry::new(config)?;
+        registry.run_import(&legacy_path, &backup_path, |source| import_v1(source, &ids))
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            AppErrorCode::RegistryWriteFailed,
+            "import_v1",
+            None,
+            error.to_string(),
+        )
+    })??;
     match result {
         crate::registry::format::ImportResult::Skipped => Ok(ImportDiagnostics {
             imported_profiles: 0,

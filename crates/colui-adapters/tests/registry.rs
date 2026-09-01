@@ -43,7 +43,8 @@ fn bytes(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap()
 }
 
-struct DeterministicIds(std::sync::Mutex<Vec<ProfileId>>);
+#[derive(Clone)]
+struct DeterministicIds(std::sync::Arc<std::sync::Mutex<Vec<ProfileId>>>);
 
 impl IdGenerator for DeterministicIds {
     fn generate(&self) -> ProfileId {
@@ -52,10 +53,10 @@ impl IdGenerator for DeterministicIds {
 }
 
 fn deterministic_ids() -> DeterministicIds {
-    DeterministicIds(std::sync::Mutex::new(vec![
+    DeterministicIds(std::sync::Arc::new(std::sync::Mutex::new(vec![
         ProfileId::new(Uuid::from_u128(0x00112233445566778899aabbccddeeff)),
         ProfileId::new(Uuid::from_u128(0xffeeddccbbaa99887766554433221100)),
-    ]))
+    ])))
 }
 
 #[test]
