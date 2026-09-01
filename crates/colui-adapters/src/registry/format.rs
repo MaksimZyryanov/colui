@@ -310,7 +310,16 @@ fn encode(snapshot: &RegistrySnapshot) -> Result<Vec<u8>, AppError> {
 }
 
 fn validate_snapshot(snapshot: &RegistrySnapshot) -> Result<(), AppError> {
+    let mut ids = std::collections::HashSet::new();
     for profile in &snapshot.profiles {
+        if !ids.insert(profile.id.clone()) {
+            return Err(AppError::new(
+                AppErrorCode::RegistryCorrupt,
+                "validate_registry",
+                Some(profile.id.clone()),
+                "registry contains duplicate profile ID",
+            ));
+        }
         validate_draft(&ProfileDraft {
             display_name: profile.display_name.clone(),
             compose_project_name: profile.compose_project_name.clone(),

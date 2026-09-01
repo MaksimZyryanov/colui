@@ -106,7 +106,14 @@ impl Revision {
         Self(1)
     }
 
-    pub fn next(self) -> Self {
-        Self(self.0 + 1)
+    pub fn next(self) -> Result<Self, crate::AppError> {
+        self.0.checked_add(1).map(Self).ok_or_else(|| {
+            crate::AppError::new(
+                crate::AppErrorCode::RegistryWriteFailed,
+                "advance_revision",
+                None,
+                "revision exhausted",
+            )
+        })
     }
 }

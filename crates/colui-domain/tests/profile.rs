@@ -58,7 +58,7 @@ fn deserialization_preserves_compose_name_validation() {
 #[test]
 fn revision_starts_at_one_and_advances() {
     let initial = Revision::initial();
-    assert_eq!(initial.next(), Revision::new(2));
+    assert_eq!(initial.next(), Ok(Revision::new(2)));
 }
 
 #[test]
@@ -69,7 +69,9 @@ fn rename_preserves_id_and_compose_namespace() {
     draft.environment_files = vec![PathBuf::from("prod.env")];
     draft.registration_origin = RegistrationOrigin::Migrated;
     let profile = ProjectProfile::from_draft(ProfileId::new(Uuid::from_u128(1)), draft).unwrap();
-    let renamed = profile.with_display_name(DisplayName::try_from("Payments").unwrap());
+    let renamed = profile
+        .with_display_name(DisplayName::try_from("Payments").unwrap())
+        .unwrap();
     assert_eq!(renamed.id, profile.id);
     assert_eq!(renamed.revision, Revision::new(2));
     assert_eq!(renamed.compose_project_name, profile.compose_project_name);
@@ -85,6 +87,56 @@ fn duplicate_display_names_are_allowed() {
     let second = valid_draft("Local", "payments");
     assert!(ProjectProfile::from_draft(ProfileId::new(Uuid::from_u128(1)), first).is_ok());
     assert!(ProjectProfile::from_draft(ProfileId::new(Uuid::from_u128(2)), second).is_ok());
+}
+
+#[test]
+fn revision_overflow_is_typed() {
+    let error = Revision::new(u64::MAX).next().unwrap_err();
+    assert_eq!(error.code, AppErrorCode::RegistryWriteFailed);
+}
+
+#[test]
+fn app_error_codes_serialize_in_snake_case() {
+    let cases = [
+        (AppErrorCode::RuntimeUnavailable, "runtime_unavailable"),
+        (
+            AppErrorCode::RuntimeConnectionFailed,
+            "runtime_connection_failed",
+        ),
+        (
+            AppErrorCode::RuntimeContextMismatch,
+            "runtime_context_mismatch",
+        ),
+        (AppErrorCode::ProfileNotFound, "profile_not_found"),
+        (
+            AppErrorCode::ProfileAlreadyRegistered,
+            "profile_already_registered",
+        ),
+        (
+            AppErrorCode::ProfileRevisionConflict,
+            "profile_revision_conflict",
+        ),
+        (AppErrorCode::ProfileInvalid, "profile_invalid"),
+        (AppErrorCode::DefinitionFailed, "definition_failed"),
+        (AppErrorCode::ComposeFailed, "compose_failed"),
+        (
+            AppErrorCode::ContainerOperationFailed,
+            "container_operation_failed",
+        ),
+        (AppErrorCode::OperationConflict, "operation_conflict"),
+        (AppErrorCode::OperationTimeout, "operation_timeout"),
+        (AppErrorCode::RegistryCorrupt, "registry_corrupt"),
+        (AppErrorCode::RegistryLocked, "registry_locked"),
+        (AppErrorCode::RegistryWriteFailed, "registry_write_failed"),
+        (AppErrorCode::PermissionDenied, "permission_denied"),
+        (AppErrorCode::ProtocolMismatch, "protocol_mismatch"),
+    ];
+    for (code, expected) in cases {
+        assert_eq!(
+            serde_json::to_string(&code).unwrap(),
+            format!("\"{expected}\"")
+        );
+    }
 }
 
 #[test]

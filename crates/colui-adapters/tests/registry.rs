@@ -284,6 +284,72 @@ async fn mutation_writes_v2_and_preserves_order() {
 }
 
 #[tokio::test]
+async fn duplicate_profile_ids_are_corrupt_on_load_and_mutation() {
+    let (directory, registry) = test_registry();
+    let profile = profile_with_files(&["compose.yml"]);
+    registry
+        .mutate(Box::new({
+            let profile = profile.clone();
+            move |mut snapshot| {
+                snapshot.profiles.push(profile);
+                Ok(snapshot)
+            }
+        }))
+        .await
+        .unwrap();
+    let error = registry
+        .mutate(Box::new({
+            let profile = profile.clone();
+            move |mut snapshot| {
+                snapshot.profiles.push(profile);
+                Ok(snapshot)
+            }
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::RegistryCorrupt);
+
+    let id = profile.id.to_string();
+    let record = serde_json::json!({
+        "schemaVersion": 2,
+        "registryRevision": 1,
+        "profiles": [
+            {"id": id, "revision": 1, "displayName": "Demo", "composeProjectName": "demo", "workingDirectory": "/tmp/demo", "composeFiles": ["compose.yml"], "environmentFiles": [], "registrationOrigin": "Manual"},
+            {"id": id, "revision": 1, "displayName": "Demo 2", "composeProjectName": "demo-2", "workingDirectory": "/tmp/demo", "composeFiles": ["compose-2.yml"], "environmentFiles": [], "registrationOrigin": "Manual"}
+        ]
+    });
+    std::fs::write(
+        directory.path().join("registry.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        registry.load().await.unwrap_err().code,
+        AppErrorCode::RegistryCorrupt
+    );
+
+    assert_eq!(
+        registry.load().await.unwrap_err().code,
+        AppErrorCode::RegistryCorrupt
+    );
+}
+
+#[tokio::test]
+async fn duplicate_paths_are_rejected_by_mutation_and_round_trip() {
+    let (_directory, registry) = test_registry();
+    let mut profile = profile_with_files(&["compose.yml"]);
+    profile.environment_files.push(PathBuf::from("compose.yml"));
+    let error = registry
+        .mutate(Box::new(move |mut snapshot| {
+            snapshot.profiles.push(profile);
+            Ok(snapshot)
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::ProfileInvalid);
+}
+
+#[tokio::test]
 async fn mutation_revision_is_current_revision_plus_one() {
     let (directory, registry) = test_registry();
     std::fs::write(

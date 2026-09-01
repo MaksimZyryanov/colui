@@ -48,11 +48,11 @@ impl ProjectProfile {
         })
     }
 
-    pub fn with_display_name(&self, display_name: DisplayName) -> Self {
+    pub fn with_display_name(&self, display_name: DisplayName) -> Result<Self, AppError> {
         let mut renamed = self.clone();
         renamed.display_name = display_name;
-        renamed.revision = self.revision.next();
-        renamed
+        renamed.revision = self.revision.next()?;
+        Ok(renamed)
     }
 }
 

@@ -50,14 +50,22 @@ impl<'a, S: ProfileStore, G: IdGenerator> CreateProfile<'a, S, G> {
                     .any(|current| current.id == profile.id)
                 {
                     return Err(AppError::new(
-                        AppErrorCode::ProfileAlreadyRegistered,
+                        AppErrorCode::RegistryWriteFailed,
                         "create_profile",
                         Some(profile.id),
-                        "profile is already registered",
+                        "generated profile ID already exists",
                     ));
                 }
                 snapshot.profiles.push(profile);
-                snapshot.registry_revision += 1;
+                snapshot.registry_revision =
+                    snapshot.registry_revision.checked_add(1).ok_or_else(|| {
+                        AppError::new(
+                            AppErrorCode::RegistryWriteFailed,
+                            "create_profile",
+                            None,
+                            "registry revision exhausted",
+                        )
+                    })?;
                 Ok(snapshot)
             }))
             .await?;
@@ -159,9 +167,17 @@ impl<'a, S: ProfileStore> UpdateProfile<'a, S> {
                     registration_origin: current.registration_origin.clone(),
                 };
                 let mut updated = ProjectProfile::from_draft(id, draft)?;
-                updated.revision = current.revision.next();
+                updated.revision = current.revision.next()?;
                 snapshot.profiles[position] = updated;
-                snapshot.registry_revision += 1;
+                snapshot.registry_revision =
+                    snapshot.registry_revision.checked_add(1).ok_or_else(|| {
+                        AppError::new(
+                            AppErrorCode::RegistryWriteFailed,
+                            "update_profile",
+                            None,
+                            "registry revision exhausted",
+                        )
+                    })?;
                 Ok(snapshot)
             }))
             .await?;
@@ -197,7 +213,15 @@ impl<'a, S: ProfileStore> RemoveProfile<'a, S> {
                     expected_revision,
                 )?;
                 snapshot.profiles.remove(position);
-                snapshot.registry_revision += 1;
+                snapshot.registry_revision =
+                    snapshot.registry_revision.checked_add(1).ok_or_else(|| {
+                        AppError::new(
+                            AppErrorCode::RegistryWriteFailed,
+                            "remove_profile",
+                            None,
+                            "registry revision exhausted",
+                        )
+                    })?;
                 Ok(snapshot)
             }))
             .await?;

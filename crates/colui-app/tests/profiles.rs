@@ -220,6 +220,49 @@ async fn create_uses_generated_id_and_initial_revision() {
 }
 
 #[tokio::test]
+async fn create_id_collision_is_registry_write_failure() {
+    let store = FakeProfileStore::with_profiles(vec![profile_revision(1)]);
+    let ids = FixedIdGenerator(profile_id());
+
+    let error = CreateProfile::new(&store, &ids)
+        .execute(draft())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, AppErrorCode::RegistryWriteFailed);
+    assert_eq!(store.write_count(), 0);
+}
+
+#[tokio::test]
+async fn update_revision_overflow_is_typed_error() {
+    let store = FakeProfileStore::with_profiles(vec![profile_revision(u64::MAX)]);
+
+    let error = UpdateProfile::new(&store)
+        .execute(profile_id(), u64::MAX, patch())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, AppErrorCode::RegistryWriteFailed);
+    assert_eq!(store.write_count(), 0);
+}
+
+#[tokio::test]
+async fn registry_revision_overflow_is_typed_error() {
+    let mut profile = profile_revision(1);
+    profile.id = ProfileId::new(uuid::Uuid::from_u128(2));
+    let store = FakeProfileStore::with_profiles(vec![profile]);
+    store.state.lock().unwrap().snapshot.registry_revision = u64::MAX;
+
+    let error = UpdateProfile::new(&store)
+        .execute(ProfileId::new(uuid::Uuid::from_u128(2)), 1, patch())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, AppErrorCode::RegistryWriteFailed);
+    assert_eq!(store.write_count(), 0);
+}
+
+#[tokio::test]
 async fn get_profile_reads_without_mutation() {
     let store = FakeProfileStore::with_profiles(vec![profile_revision(1)]);
 
