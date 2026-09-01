@@ -87,16 +87,20 @@ if [[ ${1:-} == "--self-test" ]]; then
     printf 'Self-test failed: dependency values were treated as keys\n' >&2
     exit 1
   fi
-  printf '%s\n' 'file = "1" # forbidden dependency alias' \
-    >> "$fixture/crates/colui-domain/Cargo.toml"
-  printf '%s\n' '[dependencies."tokio"]' 'version = "1"' \
-    >> "$fixture/crates/colui-domain/Cargo.toml"
-  printf '%s\n' '[dev-dependencies.tauri]' 'version = "2"' \
-    >> "$fixture/crates/colui-app/Cargo.toml"
-  if COLUI_ROOT="$fixture" "$0" >/dev/null 2>&1; then
-    printf 'Self-test failed: dotted forbidden keys were not detected\n' >&2
-    exit 1
-  fi
+  for alias in file dir walk; do
+    printf '%s\n' '[dependencies]' "$alias = \"1\" # forbidden alias" \
+      > "$fixture/crates/colui-domain/Cargo.toml"
+    if COLUI_ROOT="$fixture" "$0" >/dev/null 2>&1; then
+      printf 'Self-test failed: standard %s key was not detected\n' "$alias" >&2
+      exit 1
+    fi
+    printf '%s\n' "[dependencies.$alias]" 'version = "1"' \
+      > "$fixture/crates/colui-domain/Cargo.toml"
+    if COLUI_ROOT="$fixture" "$0" >/dev/null 2>&1; then
+      printf 'Self-test failed: dotted %s key was not detected\n' "$alias" >&2
+      exit 1
+    fi
+  done
   printf 'Boundary parser self-test OK\n'
 fi
 
