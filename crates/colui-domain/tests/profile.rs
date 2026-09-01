@@ -63,11 +63,20 @@ fn revision_starts_at_one_and_advances() {
 
 #[test]
 fn rename_preserves_id_and_compose_namespace() {
-    let draft = valid_draft("Checkout", "checkout");
+    let mut draft = valid_draft("Checkout", "checkout");
+    draft.working_directory = PathBuf::from("/nonexistent/project");
+    draft.compose_files = vec![PathBuf::from("base.yaml"), PathBuf::from("override.yaml")];
+    draft.environment_files = vec![PathBuf::from("prod.env")];
+    draft.registration_origin = RegistrationOrigin::Migrated;
     let profile = ProjectProfile::from_draft(ProfileId::new(Uuid::from_u128(1)), draft).unwrap();
     let renamed = profile.with_display_name(DisplayName::try_from("Payments").unwrap());
     assert_eq!(renamed.id, profile.id);
+    assert_eq!(renamed.revision, Revision::new(2));
     assert_eq!(renamed.compose_project_name, profile.compose_project_name);
+    assert_eq!(renamed.working_directory, profile.working_directory);
+    assert_eq!(renamed.compose_files, profile.compose_files);
+    assert_eq!(renamed.environment_files, profile.environment_files);
+    assert_eq!(renamed.registration_origin, profile.registration_origin);
 }
 
 #[test]
@@ -82,11 +91,38 @@ fn duplicate_display_names_are_allowed() {
 fn draft_requires_compose_file_and_unique_paths() {
     let mut empty = valid_draft("Local", "local");
     empty.compose_files.clear();
-    assert!(validate_draft(&empty).is_err());
+    assert_eq!(
+        validate_draft(&empty).unwrap_err().code,
+        AppErrorCode::ProfileInvalid
+    );
 
-    let mut duplicate = valid_draft("Local", "local");
-    duplicate.compose_files.push(PathBuf::from("compose.yaml"));
-    assert!(validate_draft(&duplicate).is_err());
+    let mut duplicate_compose = valid_draft("Local", "local");
+    duplicate_compose
+        .compose_files
+        .push(PathBuf::from("compose.yaml"));
+    assert_eq!(
+        validate_draft(&duplicate_compose).unwrap_err().code,
+        AppErrorCode::ProfileInvalid
+    );
+
+    let mut duplicate_environment = valid_draft("Local", "local");
+    duplicate_environment
+        .environment_files
+        .push(PathBuf::from("compose.yaml"));
+    assert_eq!(
+        validate_draft(&duplicate_environment).unwrap_err().code,
+        AppErrorCode::ProfileInvalid
+    );
+}
+
+#[test]
+fn nonexistent_filesystem_paths_pass_domain_validation() {
+    let mut draft = valid_draft("Local", "local");
+    draft.working_directory = PathBuf::from("/path/that/does/not/exist");
+    draft.compose_files = vec![PathBuf::from("missing-compose.yaml")];
+    draft.environment_files = vec![PathBuf::from("missing.env")];
+
+    assert!(validate_draft(&draft).is_ok());
 }
 
 #[test]
