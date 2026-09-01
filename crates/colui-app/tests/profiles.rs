@@ -7,50 +7,61 @@ use colui_domain::{
 };
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>;
 
 struct FakeProfileStore {
-    snapshot: Arc<Mutex<RegistrySnapshot>>,
-    writes: Arc<Mutex<u32>>,
+    state: Arc<Mutex<FakeStoreState>>,
+}
+
+struct FakeStoreState {
+    snapshot: RegistrySnapshot,
+    writes: u32,
 }
 
 impl FakeProfileStore {
     fn with_profiles(profiles: Vec<ProjectProfile>) -> Self {
         Self {
-            snapshot: Arc::new(Mutex::new(RegistrySnapshot {
-                registry_revision: 0,
-                profiles,
+            state: Arc::new(Mutex::new(FakeStoreState {
+                snapshot: RegistrySnapshot {
+                    registry_revision: 0,
+                    profiles,
+                },
+                writes: 0,
             })),
-            writes: Arc::new(Mutex::new(0)),
         }
     }
 
     fn write_count(&self) -> u32 {
-        *self.writes.lock().unwrap()
+        self.state.lock().unwrap().writes
     }
 
     fn snapshot(&self) -> RegistrySnapshot {
-        self.snapshot.lock().unwrap().clone()
+        self.state.lock().unwrap().snapshot.clone()
+    }
+
+    fn mutation_lock_is_held(&self) -> bool {
+        self.state.try_lock().is_err()
     }
 }
 
 impl ProfileReader for FakeProfileStore {
     fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
-        let snapshot = self.snapshot.lock().unwrap().clone();
+        let snapshot = self.state.lock().unwrap().snapshot.clone();
         Box::pin(async move { Ok(snapshot) })
     }
 }
 
 impl ProfileStore for FakeProfileStore {
     fn mutate(&self, mutation: ProfileMutation) -> StoreFuture<'_, RegistrySnapshot> {
-        let snapshot = self.snapshot.clone();
-        let writes = self.writes.clone();
+        let state = self.state.clone();
         Box::pin(async move {
-            let next = mutation(snapshot.lock().unwrap().clone())?;
-            *snapshot.lock().unwrap() = next.clone();
-            *writes.lock().unwrap() += 1;
+            let mut state = state.lock().unwrap();
+            let next = mutation(state.snapshot.clone())?;
+            state.snapshot = next.clone();
+            state.writes += 1;
             Ok(next)
         })
     }
@@ -110,6 +121,86 @@ async fn update_requires_expected_revision() {
         .unwrap_err();
     assert_eq!(error.code, AppErrorCode::ProfileRevisionConflict);
     assert_eq!(store.write_count(), 0);
+}
+
+#[tokio::test]
+async fn failed_update_leaves_snapshot_revision_and_write_count_unchanged() {
+    let store = FakeProfileStore::with_profiles(vec![profile_revision(3)]);
+    let before_snapshot = store.snapshot();
+    let before_revision = before_snapshot.registry_revision;
+    let before_writes = store.write_count();
+
+    let error = UpdateProfile::new(&store)
+        .execute(
+            profile_id(),
+            3,
+            colui_app::ProfilePatch {
+                compose_files: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, AppErrorCode::ProfileInvalid);
+    assert_eq!(store.snapshot(), before_snapshot);
+    assert_eq!(store.snapshot().registry_revision, before_revision);
+    assert_eq!(store.write_count(), before_writes);
+}
+
+#[tokio::test]
+async fn fake_mutation_holds_snapshot_lock_through_closure() {
+    let store = Arc::new(FakeProfileStore::with_profiles(vec![]));
+    let closure_store = store.clone();
+
+    store
+        .mutate(Box::new(move |snapshot| {
+            assert!(closure_store.mutation_lock_is_held());
+            Ok(snapshot)
+        }))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_mutation_cannot_enter_before_prior_write() {
+    let store = Arc::new(FakeProfileStore::with_profiles(vec![]));
+    let (first_entered, first_entered_receiver) = mpsc::channel();
+    let (release_first, release_first_receiver) = mpsc::channel();
+    let (second_entered, second_entered_receiver) = mpsc::channel();
+
+    let first_store = store.clone();
+    let first = tokio::spawn(async move {
+        first_store
+            .mutate(Box::new(move |snapshot| {
+                first_entered.send(()).unwrap();
+                release_first_receiver.recv().unwrap();
+                Ok(snapshot)
+            }))
+            .await
+            .unwrap();
+    });
+    first_entered_receiver.recv().unwrap();
+
+    let second_store = store;
+    let second = tokio::spawn(async move {
+        second_store
+            .mutate(Box::new(move |snapshot| {
+                second_entered.send(()).unwrap();
+                Ok(snapshot)
+            }))
+            .await
+            .unwrap();
+    });
+
+    let entered_before_release = second_entered_receiver
+        .recv_timeout(std::time::Duration::from_millis(50))
+        .is_ok();
+    release_first.send(()).unwrap();
+    first.await.unwrap();
+    second.await.unwrap();
+
+    assert!(!entered_before_release);
 }
 
 #[tokio::test]
