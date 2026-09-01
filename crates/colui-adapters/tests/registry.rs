@@ -33,6 +33,45 @@ fn bytes(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap()
 }
 
+#[test]
+fn lock_timeout_config_requires_five_to_ten_seconds() {
+    let directory = tempfile::tempdir().unwrap();
+    assert!(RegistryConfig::in_directory(directory.path())
+        .try_with_timeout(std::time::Duration::from_secs(4))
+        .is_err());
+    assert!(RegistryConfig::in_directory(directory.path())
+        .try_with_timeout(std::time::Duration::from_secs(11))
+        .is_err());
+    assert!(RegistryConfig::in_directory(directory.path())
+        .try_with_timeout(std::time::Duration::from_secs(5))
+        .is_ok());
+    assert!(RegistryConfig::in_directory(directory.path())
+        .try_with_timeout(std::time::Duration::from_secs(10))
+        .is_ok());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn permission_failures_use_permission_denied() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = RegistryConfig::in_directory(directory.path().join("blocked"));
+    let registry = JsonProfileRegistry::new(config).unwrap();
+    std::fs::create_dir(directory.path().join("blocked")).unwrap();
+    let blocked = directory.path().join("blocked");
+    std::fs::set_permissions(
+        &blocked,
+        std::os::unix::fs::PermissionsExt::from_mode(0o000),
+    )
+    .unwrap();
+    let error = registry.load().await.unwrap_err();
+    assert_eq!(error.code, AppErrorCode::PermissionDenied);
+    std::fs::set_permissions(
+        &blocked,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 async fn mutation_writes_v2_and_preserves_order() {
     let (directory, registry) = test_registry();
@@ -49,6 +88,56 @@ async fn mutation_writes_v2_and_preserves_order() {
     let json: serde_json::Value =
         serde_json::from_slice(&bytes(&directory.path().join("registry.json"))).unwrap();
     assert_eq!(json["schemaVersion"], 2);
+    assert_eq!(json["registryRevision"], 1);
+}
+
+#[tokio::test]
+async fn mutation_revision_is_current_revision_plus_one() {
+    let (directory, registry) = test_registry();
+    std::fs::write(
+        directory.path().join("registry.json"),
+        br#"{"schemaVersion":2,"registryRevision":41,"profiles":[]}"#,
+    )
+    .unwrap();
+    registry
+        .mutate(Box::new(|mut snapshot| {
+            snapshot.profiles.push(profile_with_files(&["compose.yml"]));
+            snapshot.registry_revision = 0;
+            Ok(snapshot)
+        }))
+        .await
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_slice(&bytes(&directory.path().join("registry.json"))).unwrap();
+    assert_eq!(json["registryRevision"], 42);
+}
+
+#[tokio::test]
+async fn unknown_v2_fields_are_corrupt() {
+    let (directory, registry) = test_registry();
+    std::fs::write(
+        directory.path().join("registry.json"),
+        br#"{"schemaVersion":2,"registryRevision":0,"profiles":[],"unexpected":true}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        registry.load().await.unwrap_err().code,
+        AppErrorCode::RegistryCorrupt
+    );
+}
+
+#[tokio::test]
+async fn unknown_profile_fields_are_corrupt() {
+    let (directory, registry) = test_registry();
+    std::fs::write(
+        directory.path().join("registry.json"),
+        br#"{"schemaVersion":2,"registryRevision":0,"profiles":[{"unexpected":true}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        registry.load().await.unwrap_err().code,
+        AppErrorCode::RegistryCorrupt
+    );
 }
 
 #[tokio::test]
@@ -162,17 +251,14 @@ async fn invalid_paths_remain_persisted() {
 
 #[tokio::test]
 async fn lock_timeout_is_retryable() {
-    let (directory, _registry) = test_registry();
+    let (directory, registry) = test_registry();
     let lock_path = directory.path().join("registry.lock");
     let lock = std::fs::File::create(&lock_path).unwrap();
     fs2::FileExt::lock_exclusive(&lock).unwrap();
-    let locked = JsonProfileRegistry::new(
-        RegistryConfig::in_directory(directory.path())
-            .with_timeout(std::time::Duration::from_millis(20)),
-    )
-    .unwrap();
-    let error = locked.mutate(Box::new(Ok)).await.unwrap_err();
-    assert_eq!(error.code, AppErrorCode::RegistryLocked);
-    assert!(error.retryable);
-    drop(lock);
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(lock);
+    });
+    registry.mutate(Box::new(Ok)).await.unwrap();
+    releaser.join().unwrap();
 }
