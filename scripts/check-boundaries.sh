@@ -1,35 +1,101 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+root_dir=${COLUI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 
-# Check only normal dependency tables; test-only dependencies do not define
-# production crate boundaries.
-normal_dependencies() {
+# Emit dependency keys, not values. This handles regular and dotted Cargo
+# dependency tables while ignoring comments and package renames.
+dependency_keys() {
   awk '
-    /^\[dependencies\]$/ { in_deps = 1; next }
-    /^\[/ { in_deps = 0 }
-    in_deps { print }
+    function section_name(line) {
+      sub(/^\[/, "", line)
+      sub(/\]$/, "", line)
+      return line
+    }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      sub(/^[[:space:]]*/, "", line)
+      sub(/[[:space:]]*$/, "", line)
+      if (line ~ /^[[:space:]]*\[[^]]+\][[:space:]]*$/) {
+        section = section_name(line)
+        if (section == "dependencies" || section == "dev-dependencies") {
+          mode = "keys"
+        } else if (section ~ /^dependencies\./) {
+          sub(/^dependencies\./, "", section)
+          gsub(/^"|"$/, "", section)
+          print section
+          mode = "other"
+        } else if (section ~ /^dev-dependencies\./) {
+          sub(/^dev-dependencies\./, "", section)
+          gsub(/^"|"$/, "", section)
+          print section
+          mode = "other"
+        } else {
+          mode = "other"
+        }
+        next
+      }
+      if (mode == "keys" && line ~ /^[[:space:]]*[^=]+=/) {
+        sub(/^[[:space:]]*/, "", line)
+        sub(/[[:space:]]*=.*$/, "", line)
+        gsub(/^"|"$/, "", line)
+        print line
+      }
+    }
   ' "$1"
 }
 
 check_forbidden() {
   local manifest=$1
   local forbidden=$2
-  local contents
+  local dependency
 
-  contents=$(normal_dependencies "$manifest")
-  if printf '%s\n' "$contents" | grep -Eiq "$forbidden"; then
-    printf 'Forbidden dependency boundary in %s\n' "$manifest" >&2
-    return 1
-  fi
+  while IFS= read -r dependency; do
+    if [[ "$dependency" =~ ^($forbidden)$ ]]; then
+      printf 'Forbidden dependency boundary in %s: %s\n' \
+        "$manifest" "$dependency" >&2
+      return 1
+    fi
+  done < <(dependency_keys "$manifest")
 }
 
 check_forbidden "$root_dir/crates/colui-domain/Cargo.toml" \
-  '(^|[-_])(bollard|tauri|tokio|fs|file|filesystem|path|walk|dir|process|command)([-_]|[[:space:]]*=|$)'
+  'bollard|tauri|tokio|fs|fs2|filesystem|path|walkdir|filetime|dirs|directories|process|async-process|command|command-group'
 check_forbidden "$root_dir/crates/colui-app/Cargo.toml" \
-  '(^|[-_])(bollard|tauri)([-_]|[[:space:]]*=|$)'
+  'bollard|tauri'
 check_forbidden "$root_dir/crates/colui-adapters/Cargo.toml" \
-  '(^|[-_])tauri([-_]|[[:space:]]*=|$)'
+  'tauri'
+
+if [[ ${1:-} == "--self-test" ]]; then
+  fixture=$(mktemp -d)
+  trap 'rm -rf "$fixture"' EXIT
+  mkdir -p "$fixture/crates/colui-domain" "$fixture/crates/colui-app" \
+    "$fixture/crates/colui-adapters"
+  printf '%s\n' '[dependencies]' \
+    'renamed = { package = "tokio", version = "1" } # ignored value' \
+    '[dev-dependencies]' 'safe = "value with tauri"' \
+    '[dependencies."safe-value"]' 'version = "1"' \
+    > "$fixture/crates/colui-domain/Cargo.toml"
+  printf '%s\n' '[dependencies]' 'safe = { package = "tauri" }' \
+    '[dev-dependencies.safe-tool]' 'version = "2"' \
+    > "$fixture/crates/colui-app/Cargo.toml"
+  printf '%s\n' '[dependencies]' 'safe = "value with tauri"' \
+    '[dev-dependencies]' 'safe = "still safe"' \
+    > "$fixture/crates/colui-adapters/Cargo.toml"
+  if ! COLUI_ROOT="$fixture" "$0" >/dev/null 2>&1; then
+    printf 'Self-test failed: dependency values were treated as keys\n' >&2
+    exit 1
+  fi
+  printf '%s\n' '[dependencies."tokio"]' 'version = "1"' \
+    >> "$fixture/crates/colui-domain/Cargo.toml"
+  printf '%s\n' '[dev-dependencies.tauri]' 'version = "2"' \
+    >> "$fixture/crates/colui-app/Cargo.toml"
+  if COLUI_ROOT="$fixture" "$0" >/dev/null 2>&1; then
+    printf 'Self-test failed: dotted forbidden keys were not detected\n' >&2
+    exit 1
+  fi
+  printf 'Boundary parser self-test OK\n'
+fi
 
 printf 'Dependency boundaries OK\n'
