@@ -122,7 +122,7 @@ Port bindings preserve `host_ip`, `host_port`, `container_port`, and transport p
 
 All application and IPC failures use `AppError` with `code`, `operation`, optional `subject_id`, user-facing `message`, optional diagnostic `details`, and derived `retryable`.
 
-Required stable codes are `runtime_unavailable`, `runtime_connection_failed`, `runtime_context_mismatch`, `profile_not_found`, `profile_revision_conflict`, `profile_invalid`, `definition_failed`, `compose_failed`, `container_operation_failed`, `operation_conflict`, `operation_timeout`, `registry_corrupt`, `registry_locked`, `registry_write_failed`, `permission_denied`, and `protocol_mismatch`.
+Required stable codes are `runtime_unavailable`, `runtime_connection_failed`, `runtime_context_mismatch`, `profile_not_found`, `profile_already_registered`, `profile_revision_conflict`, `profile_invalid`, `definition_failed`, `compose_failed`, `container_operation_failed`, `operation_conflict`, `operation_timeout`, `registry_corrupt`, `registry_locked`, `registry_write_failed`, `permission_denied`, and `protocol_mismatch`.
 
 ## 4. ProfileRegistry
 
@@ -142,7 +142,7 @@ Reading and writing use separate ports. Queries receive `ProfileReader`; mutatin
 
 Write sequence:
 
-1. Acquire an exclusive advisory lock at `~/.colui/registry.lock`, with a two-second timeout.
+1. Acquire an exclusive advisory lock at `~/.colui/registry.lock`, retrying with bounded exponential backoff. Default timeout is five seconds; Diagnostics exposes a configurable limit from five to ten seconds. Timeout returns `registry_locked` with `retryable: true`.
 2. Read and parse canonical bytes. Parsing failure returns `registry_corrupt` without modifying the file.
 3. Apply and validate one mutation.
 4. Exit without writing if serialized content is unchanged.
@@ -174,13 +174,13 @@ Connection sequence:
 5. Compare daemon ID, server version, OS type, and architecture.
 6. Enter `Ready` only when equal; otherwise enter `ContextMismatch`.
 
-Inventory may remain visible with a mismatch warning, but Compose operations are blocked. Reconnect is supported without restarting the application. Context-affecting inherited Docker variables are cleared or overwritten. Ordinary environment such as `PATH`, locale, and `HOME` remains available so Docker executable and credential/config helpers work.
+Inventory may remain visible with a mismatch warning, but Compose operations are blocked. Context mismatch triggers no background endpoint discovery: inventory polling continues against the resolved API endpoint, while the user must explicitly reconnect after changing Docker settings. `connect_runtime` reruns endpoint resolution and both fingerprint checks, allowing `ContextMismatch` to transition to `Ready` without process restart. Context-affecting inherited Docker variables are cleared or overwritten. Ordinary environment such as `PATH`, locale, and `HOME` remains available so Docker executable and credential/config helpers work.
 
 ### Child process ownership
 
 Compose invocations contain executable, separate argv, backend-resolved cwd, explicit session environment, and deadline. Shell interpolation is never used.
 
-The runner spawns a process group, drains stdout/stderr into 64 KiB tail buffers, waits until deadline, sends SIGTERM to the process group, escalates to SIGKILL after five seconds, and always waits/reaps before returning. Timeout does not merely drop a future. Results retain exit code, bounded output, and timeout state for typed diagnostics.
+The runner spawns a process group, drains stdout/stderr into independent 64 KiB byte ring buffers, waits until deadline, sends SIGTERM to the process group, escalates to SIGKILL after five seconds, and always waits/reaps before returning. Once a stream reaches its limit, oldest bytes are discarded and newest bytes retained; UTF-8 decoding occurs after collection, using replacement characters for split or invalid sequences. Results retain exit code, final stdout/stderr tails, and timeout state for typed diagnostics. This is process-output retention only; user-visible container logs use the same last-bytes policy with a 256 KiB per-container limit and are fetched on demand, not persisted or rotated on disk.
 
 ## 6. Use cases and IPC
 
@@ -210,7 +210,7 @@ One backend `InventoryCoordinator` owns refresh state and immutable snapshots. A
 
 Every fast refresh performs exactly one `list all containers` API call, normalizes instances, associates Compose containers using official labels, and derives project snapshots, discovery candidates, and standalone containers. Runtime observations never mutate profiles.
 
-On refresh failure, last successful data remains visible with timestamp and stale/unavailable state. Coordinator applies backoff. Frontend rejects generations lower than its current generation because response delivery can be reordered; equal generations are accepted because concurrent callers may share one backend refresh result.
+On refresh failure, last successful data remains visible with timestamp and stale/unavailable state. Coordinator applies backoff. Frontend rejects generations lower than its current generation because response delivery can be reordered. Equal generations are accepted as an idempotent no-op: cache data is not replaced and subscribers are not notified. This allows concurrent callers to share one backend refresh result without duplicate publication.
 
 Definition loading is a slow path via `docker compose config`. It runs after profile changes, when project details enter foreground, on explicit refresh, or after a 60-second stale expiry; it never runs on each three-second runtime poll. Cache entries include profile revision, definition revision (hash of normalized config output), load time, services, and issues. No file watchers are introduced.
 
@@ -220,7 +220,7 @@ Operation locks allow one lifecycle action per profile and return `operation_con
 
 Discovery candidates are transient runtime observations, not profiles. They carry a derived candidate ID, Compose name, optional working directory, config files, container count, and one classification: new unambiguous, name conflict, incomplete metadata, or already registered.
 
-New unambiguous valid candidates may be auto-registered through a separate command/use case. Refresh/query itself does not write. Command deduplicates candidate IDs within the session and rechecks registry under its write lock, making repeated scheduling idempotent. Existing profiles are never auto-updated. Same Compose name with different paths is an explicit conflict. Incomplete metadata remains visible but cannot be registered. Auto-registration is configurable and logged in a bounded in-memory session journal. Ignored candidates remain ignored only for the current session.
+New unambiguous valid candidates may be auto-registered through a separate command/use case. Refresh/query itself does not write. Command deduplicates candidate IDs within the session and rechecks registry under its write lock, making repeated scheduling idempotent. If another app instance registers candidate first, recheck returns `profile_already_registered` with message that registration already exists; neither profile is overwritten. Existing profiles are never auto-updated. Same Compose name with different paths is an explicit conflict. Incomplete metadata remains visible but cannot be registered. Auto-registration is configurable and logged in a bounded in-memory session journal. Ignored candidates remain ignored only for the current session.
 
 Diagnostics displays runtime state, endpoint and fingerprints, reconnect controls, registry health/revision/path, restore action, import result, active operations, and bounded session events/errors. Runtime, registry, definition, and operation failures remain distinguishable.
 
@@ -236,7 +236,7 @@ List and pending keys use immutable IDs only. Frontend never sends paths or name
 
 Stop is a normal non-destructive command. Tear down appears in an overflow/destructive context and requires an accessible Radix confirmation explaining that containers/networks are removed while profile remains. Remove profile has separate confirmation explaining that Docker is untouched.
 
-Application shell and profiles load without Docker. Runtime unavailable, stale timestamp, invalid definition, and active runtime can be shown simultaneously rather than collapsed into one status. Error recovery is selected by stable error code; diagnostic details are expandable.
+Application shell and profiles load without Docker. Profile creation and edits, including paths and Compose-file order, remain available offline and persist after domain-only validation. Definition validation is deferred until a successful runtime connection: existing definition data becomes `Stale`, or `Unchecked` when none exists, with an explicit pending-validation issue rather than an invalid definition. Runtime unavailable, stale timestamp, invalid definition, and active runtime can be shown simultaneously rather than collapsed into one status. Error recovery is selected by stable error code; diagnostic details are expandable.
 
 Browser development uses a mock implementation of the same IPC interface and passes responses through the same Zod decoders.
 
@@ -264,7 +264,7 @@ Implement endpoint resolution, session/fingerprint gate, Bollard/Compose adapter
 
 ### Increment 3: minimum usable desktop slice
 
-Implement schemas/Zod boundary, Tauri commands, profile list/editor, ID-based apply/stop/tear-down/restart, typed errors, single-shot inventory status, and confirmations. This is first runnable user-facing application.
+Implement schemas/Zod boundary, Tauri commands, profile list/editor, ID-based apply/stop/tear-down/restart, typed errors, single-shot inventory status, and confirmations. This is first runnable user-facing application for manually registered profiles. Existing unregistered Compose projects are intentionally not discoverable in this increment; users register paths manually until Increment 5 adds candidate listing and registration.
 
 ### Increment 4: coordinated inventory
 
