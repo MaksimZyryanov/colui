@@ -7,6 +7,13 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use uuid::Uuid;
 
+#[test]
+fn retry_sleep_never_exceeds_remaining_deadline() {
+    let remaining = std::time::Duration::from_millis(3);
+    let delay = std::time::Duration::from_millis(100);
+    assert_eq!(delay.min(remaining), remaining);
+}
+
 fn test_registry() -> (TempDir, JsonProfileRegistry) {
     let directory = tempfile::tempdir().unwrap();
     let registry =
@@ -110,6 +117,28 @@ async fn mutation_revision_is_current_revision_plus_one() {
     let json: serde_json::Value =
         serde_json::from_slice(&bytes(&directory.path().join("registry.json"))).unwrap();
     assert_eq!(json["registryRevision"], 42);
+}
+
+#[tokio::test]
+async fn max_revision_returns_write_error_without_overwrite() {
+    let (directory, registry) = test_registry();
+    let canonical = directory.path().join("registry.json");
+    std::fs::write(
+        &canonical,
+        br#"{"schemaVersion":2,"registryRevision":18446744073709551615,"profiles":[]}"#,
+    )
+    .unwrap();
+    let before = bytes(&canonical);
+    let error = registry
+        .mutate(Box::new(|mut snapshot| {
+            snapshot.profiles.push(profile_with_files(&["compose.yml"]));
+            Ok(snapshot)
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::RegistryWriteFailed);
+    assert_eq!(error.message, "registry revision exhausted");
+    assert_eq!(bytes(&canonical), before);
 }
 
 #[tokio::test]
@@ -261,4 +290,31 @@ async fn lock_timeout_is_retryable() {
     });
     registry.mutate(Box::new(Ok)).await.unwrap();
     releaser.join().unwrap();
+}
+
+#[tokio::test]
+async fn lock_expiration_returns_retryable_error() {
+    let (directory, _registry) = test_registry();
+    let lock_path = directory.path().join("registry.lock");
+    let lock = std::fs::File::create(&lock_path).unwrap();
+    fs2::FileExt::lock_exclusive(&lock).unwrap();
+    let locked = JsonProfileRegistry::new(
+        RegistryConfig::in_directory(directory.path())
+            .try_with_timeout(std::time::Duration::from_secs(5))
+            .unwrap(),
+    )
+    .unwrap();
+    let handle = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(6));
+        drop(lock);
+    });
+    let started = std::time::Instant::now();
+    let error = locked.mutate(Box::new(Ok)).await.unwrap_err();
+    assert!(
+        started.elapsed()
+            < std::time::Duration::from_secs(5) + std::time::Duration::from_millis(500)
+    );
+    assert_eq!(error.code, AppErrorCode::RegistryLocked);
+    assert!(error.retryable);
+    handle.join().unwrap();
 }

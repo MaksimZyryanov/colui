@@ -88,7 +88,8 @@ impl JsonProfileRegistry {
                             "registry is locked",
                         ));
                     }
-                    std::thread::sleep(delay.min(self.config.lock_timeout));
+                    let remaining = self.config.lock_timeout.saturating_sub(started.elapsed());
+                    std::thread::sleep(delay.min(remaining));
                     delay = (delay * 2).min(Duration::from_millis(100));
                 }
                 Err(error) => return Err(io_error("lock_registry", error)),
@@ -122,7 +123,15 @@ impl ProfileStore for JsonProfileRegistry {
                 validate_snapshot(&after)?;
                 let changed = after.profiles != decode(&original)?.profiles;
                 if changed {
-                    after.registry_revision = persisted_revision + 1;
+                    after.registry_revision =
+                        persisted_revision.checked_add(1).ok_or_else(|| {
+                            AppError::new(
+                                AppErrorCode::RegistryWriteFailed,
+                                "write_registry",
+                                None,
+                                "registry revision exhausted",
+                            )
+                        })?;
                     let bytes = encode(&after)?;
                     atomic_write(&registry.config.canonical_path, &bytes)?;
                     let reread = registry.load_bytes()?;
