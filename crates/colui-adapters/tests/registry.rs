@@ -1,0 +1,178 @@
+use colui_adapters::{JsonProfileRegistry, RegistryConfig};
+use colui_app::{ProfileReader, ProfileStore};
+use colui_domain::{
+    AppError, AppErrorCode, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin,
+};
+use std::path::{Path, PathBuf};
+use tempfile::TempDir;
+use uuid::Uuid;
+
+fn test_registry() -> (TempDir, JsonProfileRegistry) {
+    let directory = tempfile::tempdir().unwrap();
+    let registry =
+        JsonProfileRegistry::new(RegistryConfig::in_directory(directory.path())).unwrap();
+    (directory, registry)
+}
+
+fn profile_with_files(files: &[&str]) -> ProjectProfile {
+    ProjectProfile::from_draft(
+        ProfileId::new(Uuid::new_v4()),
+        ProfileDraft {
+            display_name: "Demo".try_into().unwrap(),
+            compose_project_name: "demo".try_into().unwrap(),
+            working_directory: PathBuf::from("/tmp/demo"),
+            compose_files: files.iter().map(PathBuf::from).collect(),
+            environment_files: vec![],
+            registration_origin: RegistrationOrigin::Manual,
+        },
+    )
+    .unwrap()
+}
+
+fn bytes(path: &Path) -> Vec<u8> {
+    std::fs::read(path).unwrap()
+}
+
+#[tokio::test]
+async fn mutation_writes_v2_and_preserves_order() {
+    let (directory, registry) = test_registry();
+    let result = registry
+        .mutate(Box::new(|mut draft| {
+            draft
+                .profiles
+                .push(profile_with_files(&["compose.yml", "compose.local.yml"]));
+            Ok(draft)
+        }))
+        .await
+        .unwrap();
+    assert_eq!(result.profiles[0].compose_files.len(), 2);
+    let json: serde_json::Value =
+        serde_json::from_slice(&bytes(&directory.path().join("registry.json"))).unwrap();
+    assert_eq!(json["schemaVersion"], 2);
+}
+
+#[tokio::test]
+async fn corrupt_registry_is_not_overwritten() {
+    let (directory, registry) = test_registry();
+    let canonical = directory.path().join("registry.json");
+    std::fs::write(&canonical, b"{broken").unwrap();
+    let error = registry.load().await.unwrap_err();
+    assert_eq!(error.code, AppErrorCode::RegistryCorrupt);
+    assert_eq!(bytes(&canonical), b"{broken");
+}
+
+#[tokio::test]
+async fn missing_registry_loads_empty_without_writing() {
+    let (directory, registry) = test_registry();
+    let snapshot = registry.load().await.unwrap();
+    assert_eq!(snapshot.registry_revision, 0);
+    assert!(!directory.path().join("registry.json").exists());
+}
+
+#[tokio::test]
+async fn unchanged_mutation_does_not_write() {
+    let (directory, registry) = test_registry();
+    registry
+        .mutate(Box::new(|mut snapshot| {
+            snapshot.profiles.push(profile_with_files(&["compose.yml"]));
+            Ok(snapshot)
+        }))
+        .await
+        .unwrap();
+    let canonical = directory.path().join("registry.json");
+    let before = bytes(&canonical);
+    registry.mutate(Box::new(Ok)).await.unwrap();
+    assert_eq!(bytes(&canonical), before);
+}
+
+#[tokio::test]
+async fn invalid_mutation_leaves_canonical_bytes_unchanged() {
+    let (directory, registry) = test_registry();
+    registry
+        .mutate(Box::new(|mut snapshot| {
+            snapshot.profiles.push(profile_with_files(&["compose.yml"]));
+            Ok(snapshot)
+        }))
+        .await
+        .unwrap();
+    let canonical = directory.path().join("registry.json");
+    let before = bytes(&canonical);
+    let error = registry
+        .mutate(Box::new(|_snapshot| {
+            Err(AppError::new(
+                AppErrorCode::ProfileInvalid,
+                "test",
+                None,
+                "invalid",
+            ))
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::ProfileInvalid);
+    assert_eq!(bytes(&canonical), before);
+}
+
+#[tokio::test]
+async fn revision_conflict_error_leaves_canonical_bytes_unchanged() {
+    let (directory, registry) = test_registry();
+    let profile = profile_with_files(&["missing-compose.yml"]);
+    registry
+        .mutate(Box::new(move |mut snapshot| {
+            snapshot.profiles.push(profile);
+            Ok(snapshot)
+        }))
+        .await
+        .unwrap();
+    let canonical = directory.path().join("registry.json");
+    let before = bytes(&canonical);
+    let error = registry
+        .mutate(Box::new(|_snapshot| {
+            Err(AppError::new(
+                AppErrorCode::ProfileRevisionConflict,
+                "test_mutation",
+                None,
+                "profile revision conflict",
+            ))
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::ProfileRevisionConflict);
+    assert_eq!(bytes(&canonical), before);
+}
+
+#[tokio::test]
+async fn invalid_paths_remain_persisted() {
+    let (directory, registry) = test_registry();
+    registry
+        .mutate(Box::new(|mut snapshot| {
+            snapshot
+                .profiles
+                .push(profile_with_files(&["does-not-exist.yml"]));
+            Ok(snapshot)
+        }))
+        .await
+        .unwrap();
+    let loaded = registry.load().await.unwrap();
+    assert_eq!(
+        loaded.profiles[0].compose_files,
+        vec![PathBuf::from("does-not-exist.yml")]
+    );
+    assert!(directory.path().join("registry.json").exists());
+}
+
+#[tokio::test]
+async fn lock_timeout_is_retryable() {
+    let (directory, _registry) = test_registry();
+    let lock_path = directory.path().join("registry.lock");
+    let lock = std::fs::File::create(&lock_path).unwrap();
+    fs2::FileExt::lock_exclusive(&lock).unwrap();
+    let locked = JsonProfileRegistry::new(
+        RegistryConfig::in_directory(directory.path())
+            .with_timeout(std::time::Duration::from_millis(20)),
+    )
+    .unwrap();
+    let error = locked.mutate(Box::new(Ok)).await.unwrap_err();
+    assert_eq!(error.code, AppErrorCode::RegistryLocked);
+    assert!(error.retryable);
+    drop(lock);
+}
