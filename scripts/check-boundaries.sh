@@ -61,7 +61,7 @@ check_forbidden() {
 }
 
 check_forbidden "$root_dir/crates/colui-domain/Cargo.toml" \
-  'bollard|tauri|tokio|fs|fs2|filesystem|path|walkdir|filetime|dirs|directories|process|async-process|command|command-group'
+  'bollard|tauri|tokio|fs|fs2|file|filesystem|path|walk|walkdir|dir|filetime|dirs|directories|process|async-process|command|command-group'
 check_forbidden "$root_dir/crates/colui-app/Cargo.toml" \
   'bollard|tauri'
 check_forbidden "$root_dir/crates/colui-adapters/Cargo.toml" \
@@ -87,6 +87,8 @@ if [[ ${1:-} == "--self-test" ]]; then
     printf 'Self-test failed: dependency values were treated as keys\n' >&2
     exit 1
   fi
+  printf '%s\n' 'file = "1" # forbidden dependency alias' \
+    >> "$fixture/crates/colui-domain/Cargo.toml"
   printf '%s\n' '[dependencies."tokio"]' 'version = "1"' \
     >> "$fixture/crates/colui-domain/Cargo.toml"
   printf '%s\n' '[dev-dependencies.tauri]' 'version = "2"' \
