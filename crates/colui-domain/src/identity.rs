@@ -22,7 +22,7 @@ impl fmt::Display for ProfileId {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct DisplayName(String);
 
 impl TryFrom<&str> for DisplayName {
@@ -45,7 +45,17 @@ impl TryFrom<String> for DisplayName {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+impl<'de> Deserialize<'de> for DisplayName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::try_from(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct ComposeProjectName(String);
 
 impl TryFrom<&str> for ComposeProjectName {
@@ -53,7 +63,7 @@ impl TryFrom<&str> for ComposeProjectName {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let valid = !value.is_empty()
-            && value.as_bytes()[0].is_ascii_lowercase()
+            && (value.as_bytes()[0].is_ascii_lowercase() || value.as_bytes()[0].is_ascii_digit())
             && value.bytes().all(|byte| {
                 byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
             });
@@ -71,6 +81,16 @@ impl TryFrom<String> for ComposeProjectName {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::try_from(value.as_str()).map(|_| Self(value))
+    }
+}
+
+impl<'de> Deserialize<'de> for ComposeProjectName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::try_from(value).map_err(serde::de::Error::custom)
     }
 }
 
