@@ -4,6 +4,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -43,6 +44,12 @@ pub struct JsonProfileRegistry {
     config: RegistryConfig,
 }
 
+pub(crate) enum ImportResult {
+    Skipped,
+    Imported(usize),
+    Malformed(AppError),
+}
+
 impl JsonProfileRegistry {
     pub fn new(config: RegistryConfig) -> Result<Self, AppError> {
         Ok(Self { config })
@@ -52,17 +59,54 @@ impl JsonProfileRegistry {
         &self.config
     }
 
-    pub(crate) fn initialize_empty(&self) -> Result<(), AppError> {
+    pub(crate) fn run_import<F>(
+        &self,
+        legacy_path: &Path,
+        backup_path: &Path,
+        importer: F,
+    ) -> Result<ImportResult, AppError>
+    where
+        F: FnOnce(&[u8]) -> Result<Vec<ProjectProfile>, AppError>,
+    {
         let lock = self.lock()?;
-        atomic_write(
-            &self.config.canonical_path,
-            &encode(&RegistrySnapshot {
-                registry_revision: 0,
-                profiles: Vec::new(),
-            })?,
-        )?;
-        drop(lock);
-        Ok(())
+        if self.config.canonical_path.exists() {
+            drop(lock);
+            return Ok(ImportResult::Skipped);
+        }
+        let source = match fs::read(legacy_path) {
+            Ok(source) => source,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                drop(lock);
+                return Ok(ImportResult::Skipped);
+            }
+            Err(error) => return Err(io_error("read_legacy_registry", error)),
+        };
+        atomic_backup(backup_path, &source)?;
+        match importer(&source) {
+            Ok(profiles) => {
+                let count = profiles.len();
+                atomic_write(
+                    &self.config.canonical_path,
+                    &encode(&RegistrySnapshot {
+                        registry_revision: 1,
+                        profiles,
+                    })?,
+                )?;
+                drop(lock);
+                Ok(ImportResult::Imported(count))
+            }
+            Err(error) => {
+                atomic_write(
+                    &self.config.canonical_path,
+                    &encode(&RegistrySnapshot {
+                        registry_revision: 0,
+                        profiles: Vec::new(),
+                    })?,
+                )?;
+                drop(lock);
+                Ok(ImportResult::Malformed(error))
+            }
+        }
     }
 
     fn load_bytes(&self) -> Result<RegistrySnapshot, AppError> {
@@ -302,6 +346,37 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
         directory
             .sync_all()
             .map_err(|error| io_error("fsync_registry_directory", error))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
+fn atomic_backup(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    let parent = path.parent().ok_or_else(|| {
+        AppError::new(
+            AppErrorCode::RegistryWriteFailed,
+            "backup_legacy_registry",
+            None,
+            "backup path has no parent",
+        )
+    })?;
+    fs::create_dir_all(parent).map_err(|error| io_error("create_backup_directory", error))?;
+    let temp = parent.join(format!(".backup.{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        let mut file =
+            File::create(&temp).map_err(|error| io_error("backup_legacy_registry", error))?;
+        file.write_all(bytes)
+            .map_err(|error| io_error("backup_legacy_registry", error))?;
+        file.sync_all()
+            .map_err(|error| io_error("fsync_legacy_backup", error))?;
+        fs::rename(&temp, path).map_err(|error| io_error("rename_legacy_backup", error))?;
+        let directory =
+            File::open(parent).map_err(|error| io_error("open_backup_directory", error))?;
+        directory
+            .sync_all()
+            .map_err(|error| io_error("fsync_backup_directory", error))
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);

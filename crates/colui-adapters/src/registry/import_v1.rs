@@ -1,11 +1,9 @@
-use colui_app::{IdGenerator, ProfileStore};
+use colui_app::IdGenerator;
 use colui_domain::{
     AppError, AppErrorCode, ComposeProjectName, DisplayName, ProfileDraft, ProjectProfile,
     RegistrationOrigin,
 };
 use serde::Deserialize;
-use std::fs;
-use std::io;
 use std::path::PathBuf;
 
 #[derive(Deserialize)]
@@ -56,72 +54,27 @@ pub struct ImportDiagnostics {
     pub error: Option<AppError>,
 }
 
-pub async fn import_v1_if_needed<G: IdGenerator>(
+pub async fn import_v1_if_needed<G: IdGenerator + Sync>(
     registry: &crate::registry::format::JsonProfileRegistry,
     legacy_path: &std::path::Path,
     backup_path: &std::path::Path,
     ids: &G,
 ) -> Result<ImportDiagnostics, AppError> {
-    if registry.config().canonical_path.exists() {
-        return Ok(ImportDiagnostics {
+    let result = registry.run_import(legacy_path, backup_path, |source| import_v1(source, ids))?;
+    match result {
+        crate::registry::format::ImportResult::Skipped => Ok(ImportDiagnostics {
             imported_profiles: 0,
             error: None,
-        });
+        }),
+        crate::registry::format::ImportResult::Imported(count) => Ok(ImportDiagnostics {
+            imported_profiles: count,
+            error: None,
+        }),
+        crate::registry::format::ImportResult::Malformed(error) => Ok(ImportDiagnostics {
+            imported_profiles: 0,
+            error: Some(error),
+        }),
     }
-    let source = match fs::read(legacy_path) {
-        Ok(source) => source,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(ImportDiagnostics {
-                imported_profiles: 0,
-                error: None,
-            })
-        }
-        Err(error) => return Err(io_error("read_legacy_registry", error)),
-    };
-    fs::write(backup_path, &source).map_err(|error| io_error("backup_legacy_registry", error))?;
-    match import_v1(&source, ids) {
-        Ok(profiles) => {
-            let count = profiles.len();
-            registry
-                .mutate(Box::new(move |mut snapshot| {
-                    snapshot.profiles = profiles;
-                    Ok(snapshot)
-                }))
-                .await?;
-            Ok(ImportDiagnostics {
-                imported_profiles: count,
-                error: None,
-            })
-        }
-        Err(error) => {
-            let registry =
-                crate::registry::format::JsonProfileRegistry::new(registry.config().clone())?;
-            tokio::task::spawn_blocking(move || registry.initialize_empty())
-                .await
-                .map_err(|join| {
-                    AppError::new(
-                        AppErrorCode::RegistryWriteFailed,
-                        "initialize_registry",
-                        None,
-                        join.to_string(),
-                    )
-                })??;
-            Ok(ImportDiagnostics {
-                imported_profiles: 0,
-                error: Some(error),
-            })
-        }
-    }
-}
-
-fn io_error(operation: &str, error: io::Error) -> AppError {
-    AppError::new(
-        AppErrorCode::RegistryWriteFailed,
-        operation,
-        None,
-        "legacy registry import failed",
-    )
-    .with_details(error.to_string())
 }
 
 fn normalized_name(
@@ -131,7 +84,7 @@ fn normalized_name(
     let mut normalized = String::new();
     let mut separator = false;
     for byte in name.bytes() {
-        if byte.is_ascii_alphanumeric() {
+        if byte.is_ascii_alphanumeric() || byte == b'_' {
             if separator && !normalized.is_empty() {
                 normalized.push('-');
             }

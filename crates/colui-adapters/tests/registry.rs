@@ -90,6 +90,16 @@ fn invalid_names_are_normalized_and_collisions_are_not_merged() {
 }
 
 #[test]
+fn normalization_preserves_compose_underscores() {
+    let source = br#"[{"name":"Checkout_API","working_dir":"/tmp/a","config_files":["a.yml"]}]"#;
+    let imported = import_v1(source, &deterministic_ids()).unwrap();
+    assert_eq!(
+        imported[0].compose_project_name,
+        "checkout_api".try_into().unwrap()
+    );
+}
+
+#[test]
 fn empty_normalized_name_uses_profile_id_fallback() {
     let source = br#"[{"name":"!!!","working_dir":"/tmp/empty","config_files":["compose.yml"]}]"#;
     let imported = import_v1(source, &deterministic_ids()).unwrap();
@@ -156,6 +166,62 @@ async fn malformed_first_start_creates_empty_v2_and_reports_diagnostic() {
     assert_eq!(bytes(&backup), source);
     assert_eq!(registry.load().await.unwrap().profiles.len(), 0);
     assert_eq!(registry.load().await.unwrap().registry_revision, 0);
+}
+
+#[tokio::test]
+async fn concurrent_first_start_imports_only_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = RegistryConfig::in_directory(directory.path());
+    let registry = std::sync::Arc::new(JsonProfileRegistry::new(config).unwrap());
+    let legacy = directory.path().join("projects.json");
+    let backup = directory.path().join("projects.json.v1.bak");
+    std::fs::write(
+        &legacy,
+        br#"[{"name":"Checkout","working_dir":"/tmp/checkout","config_files":["compose.yml"]}]"#,
+    )
+    .unwrap();
+    let first_registry = registry.clone();
+    let second_registry = registry.clone();
+    let first = tokio::spawn(async move {
+        import_v1_if_needed(&first_registry, &legacy, &backup, &deterministic_ids()).await
+    });
+    let legacy = directory.path().join("projects.json");
+    let backup = directory.path().join("projects.json.v1.bak");
+    let second = tokio::spawn(async move {
+        import_v1_if_needed(&second_registry, &legacy, &backup, &deterministic_ids()).await
+    });
+    let first = first.await.unwrap().unwrap();
+    let second = second.await.unwrap().unwrap();
+    assert_eq!(first.imported_profiles + second.imported_profiles, 1);
+    assert_eq!(registry.load().await.unwrap().profiles.len(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn legacy_read_failures_use_permission_denied() {
+    let directory = tempfile::tempdir().unwrap();
+    let blocked = directory.path().join("blocked");
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::set_permissions(
+        &blocked,
+        std::os::unix::fs::PermissionsExt::from_mode(0o000),
+    )
+    .unwrap();
+    let registry =
+        JsonProfileRegistry::new(RegistryConfig::in_directory(directory.path())).unwrap();
+    let result = import_v1_if_needed(
+        &registry,
+        &blocked.join("projects.json"),
+        &directory.path().join("backup"),
+        &deterministic_ids(),
+    )
+    .await;
+    std::fs::set_permissions(
+        &blocked,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    assert_eq!(result.unwrap_err().code, AppErrorCode::PermissionDenied);
 }
 
 #[test]

@@ -53,3 +53,49 @@ No Task 6 files, `.DS_Store`, or legacy source files were changed.
 - No pre-existing application startup coordinator exists in this increment.
   `import_v1_if_needed` is therefore exposed as adapter orchestration for the
   eventual startup caller. Task 6 remains untouched.
+
+## Review Fix Report
+
+### Findings fixed
+
+- Serialized canonical existence check, legacy read, backup, parse, and v2
+  write under the registry's existing exclusive lock. Concurrent first-start
+  callers now produce one import; later callers skip after seeing canonical
+  v2 under the lock.
+- Removed separate empty initialization path, so malformed import handling
+  cannot overwrite a canonical registry created by another caller.
+- Preserved `_` during Compose namespace normalization; invalid characters
+  remain the only separator runs.
+- Preserved `PermissionDenied` for legacy read, backup, and related filesystem
+  failures through the existing typed filesystem error mapping.
+- Replaced direct backup overwrite with durable sibling temp-file write,
+  file sync, atomic rename, and parent-directory sync.
+
+### TDD Evidence
+
+1. Added failing underscore normalization regression test.
+2. Ran focused test; observed `checkout-api` instead of expected
+   `checkout_api`.
+3. Added failing concurrent first-start test.
+4. Ran focused test; observed two imports instead of one.
+5. Added failing legacy permission test.
+6. Ran focused test; observed `RegistryWriteFailed` instead of
+   `PermissionDenied`.
+7. Implemented lock-scoped orchestration, normalization, error mapping, and
+   atomic backup.
+8. Ran adapter tests; 25 passed.
+
+### Verification Commands and Output
+
+- `cargo fmt --all -- --check`: PASS.
+- `cargo test -p colui-adapters --test registry`: PASS, 25 passed, 0 failed.
+- `cargo test --workspace`: PASS; adapter 25, app 13, domain 12; all doc
+  tests passed.
+- `git diff --check`: PASS.
+
+### Remaining concerns
+
+- `import_v1_if_needed` currently invokes lock-scoped synchronous filesystem
+  work directly from its async function. Existing registry mutation already
+  uses `spawn_blocking`; future startup integration should likewise dispatch
+  this orchestration from a blocking worker without changing importer scope.
