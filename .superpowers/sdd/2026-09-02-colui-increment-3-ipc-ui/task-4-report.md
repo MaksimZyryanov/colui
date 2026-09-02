@@ -75,3 +75,43 @@ The first boundary-script run exposed its own overly broad `invoke(` matcher bec
 - Mock uses one deterministic UUID sequence and simplified runtime/lifecycle semantics; it is suitable as protocol fake, not application parity.
 - `npm install` reports 5 dependency vulnerabilities (3 moderate, 1 high, 1 critical); dependency remediation is outside Task 4.
 - No React UI or query foundation was added; those belong to later Task 5/6 work.
+
+## Review Fixes
+
+- Aligned Zod AppError optional fields, Rust-compatible empty strings, and nonnegative u64 revisions.
+- Added request validation before dispatch for real/mock parity, retaining one response decoder boundary and profileId-only lifecycle calls.
+- Added mock domain draft validation, duplicate compose-project-name checks on create/update, full draft persistence, lifecycle operation recording, and typed unknown-command errors.
+- Parsed serialized Tauri AppError payloads, preserved optional fields, bounded Error/object transport details, and expanded protocol mismatch details with paths/messages.
+- Expanded DTO, fixture, command-shape, mock parity, error, and lifecycle tests.
+- Added `packageManager: "pnpm@9.15.5"`; local pnpm executable remains unavailable, so npm remains reproducible fallback through committed `package-lock.json`.
+
+## Review Fix Verification
+
+```text
+$ npm test -- src/ipc/__tests__
+Test Files  3 passed (3)
+Tests  16 passed (16)
+
+$ npm run test:contracts
+Test Files  3 passed (3)
+Tests  16 passed (16)
+
+$ npm run typecheck
+tsc --noEmit
+exit 0
+
+$ npm run build
+vite v5.4.21 building for production...
+dist/index.html  0.06 kB | gzip: 0.07 kB
+exit 0
+
+$ bash scripts/check-boundaries.sh --self-test
+Boundary parser self-test OK
+Dependency boundaries OK
+
+$ git diff --check
+exit 0
+
+$ pnpm --version
+zsh: command not found: pnpm
+```

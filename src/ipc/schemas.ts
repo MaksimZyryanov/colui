@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { appErrorSchema } from './errors';
-const uuid = z.string().uuid(); const revision = z.number().int().positive(); const timestamp = z.string().datetime({ offset: true });
+const uuid = z.string().uuid(); const revision = z.number().int().nonnegative(); const timestamp = z.string().datetime({ offset: true });
 export { appErrorSchema };
 export const registrationOriginSchema = z.enum(['manual','discovered','migrated']);
 export const issueSchema = z.object({ message: z.string() });
-export const profileSummarySchema = z.object({ id: uuid, revision, displayName: z.string().min(1), composeProjectName: z.string().min(1), workingDirectory: z.string().min(1), registrationOrigin: registrationOriginSchema });
+export const profileSummarySchema = z.object({ id: uuid, revision, displayName: z.string(), composeProjectName: z.string(), workingDirectory: z.string(), registrationOrigin: registrationOriginSchema });
 export const profileDraftSchema = z.object({ displayName: z.string(), composeProjectName: z.string(), workingDirectory: z.string(), composeFiles: z.array(z.string()), environmentFiles: z.array(z.string()) });
 export const profilePatchSchema = profileDraftSchema;
 export const profileDetailsSchema = z.object({ profile: profileSummarySchema, composeFiles: z.array(z.string()), environmentFiles: z.array(z.string()) });
@@ -16,7 +16,7 @@ export const daemonFingerprintSchema = z.object({ daemonId: z.string(), serverVe
 export const sessionContextSchema = z.object({ sessionId: uuid, endpoint: z.string(), daemonFingerprint: daemonFingerprintSchema, connectedAt: timestamp });
 export const mismatchDetailsSchema = z.object({ endpoint: z.string(), apiFingerprint: daemonFingerprintSchema, cliFingerprint: daemonFingerprintSchema });
 export const runtimeStateSchema = z.discriminatedUnion('state', [z.object({state:z.literal('disconnected')}),z.object({state:z.literal('connecting')}),z.object({state:z.literal('ready'),context:sessionContextSchema}),z.object({state:z.literal('contextMismatch'),details:mismatchDetailsSchema}),z.object({state:z.literal('failed'),error:appErrorSchema})]);
-export const runtimeProjectionSchema = z.object({presence:z.enum(['unavailable','absent','present']),activity:z.enum(['all-running','mixed','none-running']).nullable(),containerCount:z.number().int().nonnegative(),runningContainerCount:z.number().int().nonnegative(),observedAt:timestamp.nullable()});
-export const projectStatusSchema = z.object({profileId:uuid,runtime:runtimeProjectionSchema,definition:z.object({state:z.enum(['unchecked','valid','invalid','stale']),revision:z.string().nullable(),serviceCount:z.number().int().nonnegative().nullable()}),operation:z.object({kind:z.enum(['apply','stop','tear-down','restart']),phase:z.enum(['queued','running','succeeded','failed']),startedAt:timestamp}).nullable(),issues:z.array(issueSchema)});
+export const runtimeProjectionSchema = z.object({presence:z.enum(['unavailable','absent','present']),activity:z.enum(['all-running','mixed','none-running']).nullable().optional(),containerCount:z.number().int().nonnegative(),runningContainerCount:z.number().int().nonnegative(),observedAt:timestamp.nullable().optional()});
+export const projectStatusSchema = z.object({profileId:uuid,runtime:runtimeProjectionSchema,definition:z.object({state:z.enum(['unchecked','valid','invalid','stale']),revision:z.string().nullable().optional(),serviceCount:z.number().int().nonnegative().nullable().optional()}),operation:z.object({kind:z.enum(['apply','stop','tear-down','restart']),phase:z.enum(['queued','running','succeeded','failed']),startedAt:timestamp}).nullable().optional(),issues:z.array(issueSchema)});
 export const lifecycleResultSchema = z.object({profileId:uuid,success:z.boolean()});
 export const unitSchema = z.union([z.undefined(), z.null(), z.object({}).strict()]).transform(() => undefined);

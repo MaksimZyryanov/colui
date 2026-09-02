@@ -23,4 +23,20 @@ describe('browser mock backend', () => {
     mockBackend.setResponseOverride('list_profiles', { invalid: true });
     await expect(listProfiles()).rejects.toMatchObject({ code: 'protocol_mismatch' });
   });
+
+  it('applies domain draft validation and rejects duplicate names on create/update', async () => {
+    mockBackend.reset();
+    await expect(createProfile({ ...draft, displayName: '' })).rejects.toMatchObject({ code: 'profile_invalid' });
+    const created = await createProfile(draft);
+    await expect(createProfile({ ...draft, displayName: 'Other' })).rejects.toMatchObject({ code: 'profile_already_registered' });
+    await expect(updateProfile({ profileId: created.id, expectedRevision: 1, patch: { ...draft, displayName: 'Changed', composeProjectName: 'demo' } })).resolves.toMatchObject({ revision: 2 });
+  });
+
+  it('records lifecycle operation in project status', async () => {
+    mockBackend.reset();
+    const created = await createProfile(draft);
+    await import('../commands').then(({ applyProject }) => applyProject(created.id));
+    const status = await import('../commands').then(({ getProjectStatus }) => getProjectStatus(created.id));
+    expect(status.operation).toMatchObject({ kind: 'apply', phase: 'succeeded' });
+  });
 });
