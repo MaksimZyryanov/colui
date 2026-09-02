@@ -1,14 +1,31 @@
 use bollard::models::SystemInfo;
-use colui_domain::DaemonFingerprint;
+use colui_domain::{AppError, AppErrorCode, DaemonFingerprint};
 use std::collections::BTreeMap;
 
-pub fn bollard_fingerprint(info: &SystemInfo) -> DaemonFingerprint {
-    DaemonFingerprint::new(
-        info.id.as_deref().unwrap_or_default(),
-        info.server_version.as_deref().unwrap_or_default(),
-        info.os_type.as_deref().unwrap_or_default(),
-        info.architecture.as_deref().unwrap_or_default(),
-    )
+pub fn bollard_fingerprint(info: &SystemInfo) -> Result<DaemonFingerprint, AppError> {
+    let required = |value: &Option<String>, field: &str| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                AppError::new(
+                    AppErrorCode::RuntimeConnectionFailed,
+                    "bollard_fingerprint",
+                    None,
+                    "Docker API fingerprint field missing",
+                )
+                .with_details(field)
+            })
+    };
+
+    Ok(DaemonFingerprint::new(
+        required(&info.id, "ID")?,
+        required(&info.server_version, "ServerVersion")?,
+        required(&info.os_type, "OSType")?,
+        required(&info.architecture, "Architecture")?,
+    ))
 }
 
 pub fn parse_cli_fingerprint(output: &str) -> Result<DaemonFingerprint, &'static str> {

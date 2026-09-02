@@ -2,6 +2,7 @@ use colui_adapters::runtime::{
     bollard_fingerprint, build_cli_environment, parse_cli_fingerprint, resolve_endpoint,
     EndpointPreference,
 };
+use colui_domain::AppErrorCode;
 use std::collections::BTreeMap;
 
 fn inherited_fixture_env() -> BTreeMap<String, String> {
@@ -78,9 +79,18 @@ fn bollard_info_maps_four_fingerprint_fields() {
         r#"{"ID":"abc","ServerVersion":"20.10.17","OSType":"linux","Architecture":"aarch64"}"#,
     )
     .unwrap();
-    let fingerprint = bollard_fingerprint(&info);
+    let fingerprint = bollard_fingerprint(&info).unwrap();
     assert_eq!(fingerprint.server_version(), "20.10.17");
     assert_eq!(fingerprint.daemon_id, "abc");
     assert_eq!(fingerprint.os_type, "linux");
     assert_eq!(fingerprint.architecture, "aarch64");
+}
+
+#[test]
+fn bollard_info_rejects_incomplete_fingerprint_fields() {
+    let info: bollard::models::SystemInfo =
+        serde_json::from_str(r#"{"ID":"abc","ServerVersion":"20.10.17","OSType":"linux"}"#)
+            .unwrap();
+    let error = bollard_fingerprint(&info).unwrap_err();
+    assert_eq!(error.code, AppErrorCode::RuntimeConnectionFailed);
 }

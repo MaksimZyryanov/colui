@@ -50,3 +50,25 @@ Implemented endpoint resolution, CLI environment construction, Bollard fingerpri
 ## Commit
 
 Pending commit: `feat(runtime): resolve endpoint and fingerprints`
+
+## Reviewer Fix
+
+### Finding
+
+`bollard_fingerprint` used `unwrap_or_default()` for missing `SystemInfo` fields, converting incomplete API observations into empty canonical fingerprint fields.
+
+### Fix
+
+- Changed `bollard_fingerprint` to return `Result<DaemonFingerprint, AppError>`.
+- Missing or whitespace-only `ID`, `ServerVersion`, `OSType`, or `Architecture` now returns `RuntimeConnectionFailed` with field details.
+- Valid values are trimmed and passed unchanged to domain canonicalization; no version normalization was added.
+- Updated complete mapping test caller and added incomplete-field rejection test.
+
+### Fix Verification
+
+- `cargo test -p colui-adapters --test runtime bollard_info_rejects_incomplete_fingerprint_fields`: PASS, 1 passed.
+- `cargo test -p colui-adapters --test runtime`: PASS, 7 passed.
+- `cargo fmt --all -- --check`: PASS.
+- `cargo test --workspace`: PASS.
+- `bash scripts/check-boundaries.sh`: PASS, `Dependency boundaries OK`.
+- `git diff --check`: PASS.
