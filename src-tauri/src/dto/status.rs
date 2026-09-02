@@ -36,7 +36,7 @@ pub struct RuntimeProjectionDto {
         serialize_with = "super::serialize_optional_rfc3339",
         deserialize_with = "super::deserialize_optional_rfc3339"
     )]
-    #[schemars(schema_with = "super::optional_rfc3339_schema")]
+    #[schemars(with = "Option<super::Rfc3339Schema>")]
     pub observed_at: Option<String>,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

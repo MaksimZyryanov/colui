@@ -233,3 +233,36 @@ bash scripts/verify-increment-3.sh
 ```
 
 Result: exit 1 with recursive diff showing committed `outcome` versus generated `success`; original schema restored afterward. Temporary comparison tree was cleaned by verifier trap.
+
+## Fix Round 2 Evidence
+
+### Finding Addressed
+
+- Fixed custom `schemars` generation marking optional `AppErrorDto.subjectId` and `RuntimeProjectionDto.observedAt` as required. `schema_with` replaces field type with synthetic non-`Option` type before requiredness inference; `#[schemars(with = "Option<...>")]` now preserves optionality while wrapper schemas retain `uuid` and `date-time` formats. Serde attributes and runtime validation behavior are unchanged.
+- Regenerated committed schemas. Updated `AppErrorDto.json`, `RuntimeStateDto.json`, `RuntimeProjectionDto.json`, and `ProjectStatusDto.json`; fixtures remained deterministic and unchanged.
+- Added regression assertions proving both fields are absent from generated `required` arrays and preserving RFC3339 format assertion through generated wrapper definition.
+
+### Exact Fix Verification Commands And Outputs
+
+RED:
+
+```bash
+cargo test -p colui-tauri --test dto_contracts generated_schemas_constrain_uuid_and_rfc3339_fields
+```
+
+```text
+test generated_schemas_constrain_uuid_and_rfc3339_fields ... FAILED
+assertion failed: !schemas["AppErrorDto"]["required"]...any(|field| field == "subjectId")
+```
+
+GREEN and covering verification:
+
+```bash
+cargo test -p colui-tauri --test dto_contracts && bash scripts/generate-schemas.sh && bash scripts/verify-increment-3.sh && cargo test --workspace && cargo fmt --all -- --check && git diff --check
+```
+
+```text
+DTO contract tests: 10 passed, 0 failed
+Workspace tests: 10 suites passed; 0 failed
+Generator, verifier, formatting, and diff checks: exit 0
+```

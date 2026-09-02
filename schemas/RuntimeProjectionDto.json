@@ -1,6 +1,10 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "Rfc3339Schema": {
+      "format": "date-time",
+      "type": "string"
+    },
     "RuntimeActivityDto": {
       "enum": [
         "all-running",
@@ -37,11 +41,10 @@
     "observedAt": {
       "anyOf": [
         {
-          "format": "date-time",
-          "type": "string"
+          "$ref": "#/definitions/Rfc3339Schema"
         },
         {
-          "const": null
+          "type": "null"
         }
       ]
     },
@@ -56,7 +59,6 @@
   },
   "required": [
     "containerCount",
-    "observedAt",
     "presence",
     "runningContainerCount"
   ],

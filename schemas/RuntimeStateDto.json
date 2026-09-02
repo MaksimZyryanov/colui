@@ -46,11 +46,10 @@
         "subjectId": {
           "anyOf": [
             {
-              "format": "uuid",
-              "type": "string"
+              "$ref": "#/definitions/UuidSchema"
             },
             {
-              "const": null
+              "type": "null"
             }
           ]
         }
@@ -59,8 +58,7 @@
         "code",
         "message",
         "operation",
-        "retryable",
-        "subjectId"
+        "retryable"
       ],
       "type": "object"
     },
@@ -130,6 +128,10 @@
         "sessionId"
       ],
       "type": "object"
+    },
+    "UuidSchema": {
+      "format": "uuid",
+      "type": "string"
     }
   },
   "oneOf": [

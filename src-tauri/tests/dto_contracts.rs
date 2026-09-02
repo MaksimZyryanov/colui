@@ -276,9 +276,23 @@ fn generated_schemas_constrain_uuid_and_rfc3339_fields() {
     );
     assert_eq!(
         schemas["ProjectStatusDto"]["definitions"]["RuntimeProjectionDto"]["properties"]
-            ["observedAt"]["anyOf"][0]["format"],
+            ["observedAt"]["anyOf"][0]["$ref"],
+        "#/definitions/Rfc3339Schema"
+    );
+    assert_eq!(
+        schemas["ProjectStatusDto"]["definitions"]["Rfc3339Schema"]["format"],
         "date-time"
     );
+    assert!(!schemas["AppErrorDto"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "subjectId"));
+    assert!(!schemas["RuntimeProjectionDto"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "observedAt"));
 }
 
 #[test]

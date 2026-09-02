@@ -22,6 +22,10 @@
         "protocol_mismatch"
       ],
       "type": "string"
+    },
+    "UuidSchema": {
+      "format": "uuid",
+      "type": "string"
     }
   },
   "properties": {
@@ -46,11 +50,10 @@
     "subjectId": {
       "anyOf": [
         {
-          "format": "uuid",
-          "type": "string"
+          "$ref": "#/definitions/UuidSchema"
         },
         {
-          "const": null
+          "type": "null"
         }
       ]
     }
@@ -59,8 +62,7 @@
     "code",
     "message",
     "operation",
-    "retryable",
-    "subjectId"
+    "retryable"
   ],
   "title": "AppErrorDto",
   "type": "object"
