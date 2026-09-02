@@ -34,6 +34,30 @@ pub struct ProjectProfile {
 }
 
 impl ProjectProfile {
+    pub fn id(&self) -> &ProfileId {
+        &self.id
+    }
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+    pub fn display_name(&self) -> &DisplayName {
+        &self.display_name
+    }
+    pub fn compose_project_name(&self) -> &ComposeProjectName {
+        &self.compose_project_name
+    }
+    pub fn working_directory(&self) -> &PathBuf {
+        &self.working_directory
+    }
+    pub fn compose_files(&self) -> &[PathBuf] {
+        &self.compose_files
+    }
+    pub fn environment_files(&self) -> &[PathBuf] {
+        &self.environment_files
+    }
+    pub fn registration_origin(&self) -> &RegistrationOrigin {
+        &self.registration_origin
+    }
     pub fn from_draft(id: ProfileId, draft: ProfileDraft) -> Result<Self, AppError> {
         validate_draft(&draft)?;
         Ok(Self {

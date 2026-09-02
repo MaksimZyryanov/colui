@@ -27,13 +27,13 @@ pub trait LifecycleRuntime: Send + Sync {
     ) -> LifecycleFuture<'_, LifecycleResult>;
 }
 
-struct LifecycleUseCase<'a, R, T> {
+struct LifecycleUseCase<'a, R: ?Sized, T: ?Sized> {
     reader: &'a R,
     runtime: &'a T,
     operation: LifecycleOperation,
 }
 
-impl<'a, R: ProfileReader, T: LifecycleRuntime> LifecycleUseCase<'a, R, T> {
+impl<'a, R: ProfileReader + ?Sized, T: LifecycleRuntime + ?Sized> LifecycleUseCase<'a, R, T> {
     fn new(reader: &'a R, runtime: &'a T, operation: LifecycleOperation) -> Self {
         Self {
             reader,
@@ -64,11 +64,11 @@ impl<'a, R: ProfileReader, T: LifecycleRuntime> LifecycleUseCase<'a, R, T> {
 
 macro_rules! lifecycle_wrapper {
     ($name:ident, $operation:ident) => {
-        pub struct $name<'a, R, T> {
+        pub struct $name<'a, R: ?Sized, T: ?Sized> {
             inner: LifecycleUseCase<'a, R, T>,
         }
 
-        impl<'a, R: ProfileReader + Sync, T: LifecycleRuntime> $name<'a, R, T> {
+        impl<'a, R: ProfileReader + Sync + ?Sized, T: LifecycleRuntime + ?Sized> $name<'a, R, T> {
             pub fn new(reader: &'a R, runtime: &'a T) -> Self {
                 Self {
                     inner: LifecycleUseCase::new(reader, runtime, LifecycleOperation::$operation),

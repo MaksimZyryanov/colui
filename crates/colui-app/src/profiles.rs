@@ -16,7 +16,7 @@ pub struct RegistrySnapshot {
     pub profiles: Vec<ProjectProfile>,
 }
 
-pub trait ProfileReader {
+pub trait ProfileReader: Send + Sync {
     fn load(&self) -> StoreFuture<'_, RegistrySnapshot>;
 }
 
@@ -24,16 +24,16 @@ pub trait ProfileStore: ProfileReader {
     fn mutate(&self, mutation: ProfileMutation) -> StoreFuture<'_, RegistrySnapshot>;
 }
 
-pub trait IdGenerator {
+pub trait IdGenerator: Send + Sync {
     fn generate(&self) -> ProfileId;
 }
 
-pub struct CreateProfile<'a, S, G> {
+pub struct CreateProfile<'a, S: ?Sized, G: ?Sized> {
     store: &'a S,
     ids: &'a G,
 }
 
-impl<'a, S: ProfileStore, G: IdGenerator> CreateProfile<'a, S, G> {
+impl<'a, S: ProfileStore + ?Sized, G: IdGenerator + ?Sized> CreateProfile<'a, S, G> {
     pub fn new(store: &'a S, ids: &'a G) -> Self {
         Self { store, ids }
     }
@@ -78,11 +78,11 @@ impl<'a, S: ProfileStore, G: IdGenerator> CreateProfile<'a, S, G> {
     }
 }
 
-pub struct ListProfiles<'a, R> {
+pub struct ListProfiles<'a, R: ?Sized> {
     reader: &'a R,
 }
 
-impl<'a, R: ProfileReader> ListProfiles<'a, R> {
+impl<'a, R: ProfileReader + ?Sized> ListProfiles<'a, R> {
     pub fn new(reader: &'a R) -> Self {
         Self { reader }
     }
@@ -92,11 +92,11 @@ impl<'a, R: ProfileReader> ListProfiles<'a, R> {
     }
 }
 
-pub struct GetProfile<'a, R> {
+pub struct GetProfile<'a, R: ?Sized> {
     reader: &'a R,
 }
 
-impl<'a, R: ProfileReader> GetProfile<'a, R> {
+impl<'a, R: ProfileReader + ?Sized> GetProfile<'a, R> {
     pub fn new(reader: &'a R) -> Self {
         Self { reader }
     }
@@ -121,11 +121,11 @@ pub struct ProfilePatch {
     pub environment_files: Option<Vec<PathBuf>>,
 }
 
-pub struct UpdateProfile<'a, S> {
+pub struct UpdateProfile<'a, S: ?Sized> {
     store: &'a S,
 }
 
-impl<'a, S: ProfileStore> UpdateProfile<'a, S> {
+impl<'a, S: ProfileStore + ?Sized> UpdateProfile<'a, S> {
     pub fn new(store: &'a S) -> Self {
         Self { store }
     }
@@ -190,11 +190,11 @@ impl<'a, S: ProfileStore> UpdateProfile<'a, S> {
     }
 }
 
-pub struct RemoveProfile<'a, S> {
+pub struct RemoveProfile<'a, S: ?Sized> {
     store: &'a S,
 }
 
-impl<'a, S: ProfileStore> RemoveProfile<'a, S> {
+impl<'a, S: ProfileStore + ?Sized> RemoveProfile<'a, S> {
     pub fn new(store: &'a S) -> Self {
         Self { store }
     }

@@ -11,6 +11,10 @@ impl ProfileId {
         Self(value)
     }
 
+    pub fn parse(value: &str) -> Result<Self, uuid::Error> {
+        Ok(Self(Uuid::parse_str(value)?))
+    }
+
     pub fn as_uuid(&self) -> &Uuid {
         &self.0
     }
@@ -24,6 +28,12 @@ impl fmt::Display for ProfileId {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct DisplayName(String);
+
+impl AsRef<str> for DisplayName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
 
 impl TryFrom<&str> for DisplayName {
     type Error = &'static str;
@@ -57,6 +67,12 @@ impl<'de> Deserialize<'de> for DisplayName {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct ComposeProjectName(String);
+
+impl AsRef<str> for ComposeProjectName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
 
 impl TryFrom<&str> for ComposeProjectName {
     type Error = &'static str;
@@ -104,6 +120,10 @@ impl Revision {
 
     pub fn initial() -> Self {
         Self(1)
+    }
+
+    pub fn value(self) -> u64 {
+        self.0
     }
 
     pub fn next(self) -> Result<Self, crate::AppError> {

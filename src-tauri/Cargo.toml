@@ -1,0 +1,26 @@
+[package]
+name = "colui-tauri"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "colui_tauri_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "colui-tauri"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+colui-app = { path = "../crates/colui-app" }
+colui-domain = { path = "../crates/colui-domain" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+tauri = { version = "2", features = [] }
+
+[dev-dependencies]
+serde_json = "1"

@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
-members = ["crates/colui-domain", "crates/colui-app", "crates/colui-adapters"]
+members = ["crates/colui-domain", "crates/colui-app", "crates/colui-adapters", "src-tauri"]
 default-members = ["crates/colui-domain", "crates/colui-app", "crates/colui-adapters"]
