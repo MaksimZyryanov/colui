@@ -10,6 +10,7 @@
           "type": "string"
         },
         "id": {
+          "format": "uuid",
           "type": "string"
         },
         "registrationOrigin": {

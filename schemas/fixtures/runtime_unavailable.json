@@ -1,3 +1,11 @@
 {
-  "state": "disconnected"
+  "error": {
+    "code": "runtime_unavailable",
+    "details": null,
+    "message": "runtime unavailable",
+    "operation": "connect_runtime",
+    "retryable": false,
+    "subjectId": null
+  },
+  "state": "failed"
 }

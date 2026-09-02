@@ -55,6 +55,7 @@
           "$ref": "#/definitions/OperationPhaseDto"
         },
         "startedAt": {
+          "format": "date-time",
           "type": "string"
         }
       },
@@ -117,9 +118,14 @@
           "type": "integer"
         },
         "observedAt": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "const": null
+            }
           ]
         },
         "presence": {
@@ -133,6 +139,7 @@
       },
       "required": [
         "containerCount",
+        "observedAt",
         "presence",
         "runningContainerCount"
       ],
@@ -160,6 +167,7 @@
       ]
     },
     "profileId": {
+      "format": "uuid",
       "type": "string"
     },
     "runtime": {

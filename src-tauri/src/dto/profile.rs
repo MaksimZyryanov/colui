@@ -18,6 +18,7 @@ pub enum RegistrationOriginDto {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSummaryDto {
+    #[schemars(schema_with = "super::uuid_schema")]
     pub id: String,
     pub revision: u64,
     pub display_name: String,

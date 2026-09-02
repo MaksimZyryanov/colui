@@ -45,6 +45,7 @@
       "$ref": "#/definitions/ProfilePatchDto"
     },
     "profileId": {
+      "format": "uuid",
       "type": "string"
     }
   },

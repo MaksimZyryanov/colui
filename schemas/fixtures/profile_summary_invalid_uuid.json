@@ -1,0 +1,8 @@
+{
+  "composeProjectName": "demo",
+  "displayName": "Demo",
+  "id": "not-a-uuid",
+  "registrationOrigin": "manual",
+  "revision": 1,
+  "workingDirectory": "/tmp/demo"
+}

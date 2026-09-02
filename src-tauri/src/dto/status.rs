@@ -36,6 +36,7 @@ pub struct RuntimeProjectionDto {
         serialize_with = "super::serialize_optional_rfc3339",
         deserialize_with = "super::deserialize_optional_rfc3339"
     )]
+    #[schemars(schema_with = "super::optional_rfc3339_schema")]
     pub observed_at: Option<String>,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -48,6 +49,7 @@ pub struct DefinitionProjectionDto {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectStatusDto {
+    #[schemars(schema_with = "super::uuid_schema")]
     pub profile_id: String,
     pub runtime: RuntimeProjectionDto,
     pub definition: DefinitionProjectionDto,
@@ -63,6 +65,7 @@ pub struct OperationDto {
         serialize_with = "super::serialize_rfc3339",
         deserialize_with = "super::deserialize_rfc3339"
     )]
+    #[schemars(schema_with = "super::rfc3339_schema")]
     pub started_at: String,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -90,6 +93,7 @@ pub struct ProfileValidationDto {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LifecycleResultDto {
+    #[schemars(schema_with = "super::uuid_schema")]
     pub profile_id: String,
     pub success: bool,
 }

@@ -183,3 +183,53 @@ Output:
 - Schemars 0.8 cannot infer RFC 3339 format from custom serde timestamp functions, so generated timestamp fields are plain JSON Schema strings. Malformed timestamp rejection remains enforced by Rust serde and represented by the negative fixture; Task 4 manual Zod schemas must apply runtime timestamp validation.
 - JSON Schema expresses ID fields as strings, not UUID format, matching current Task 2 DTO annotations. Invalid UUID semantics remain decoder/backend validation responsibility unless future DTO schema annotations add explicit formats.
 - `scripts/verify-increment-3.sh` temporarily overlays `schemas/` to satisfy the plan-required `git diff --exit-code schemas/` command, then restores the prior tree with a trap. Concurrent edits to `schemas/` during that brief verification window could be overwritten.
+
+## Fix Round 1 Evidence
+
+### Findings Addressed
+
+- Replaced working-tree overlay verification with recursive `diff -ruN` between committed `schemas/` and separately generated temporary tree. Added, removed, and changed schema or fixture paths now produce non-zero status; verifier never mutates working `schemas/`.
+- Restricted schema writer cleanup to explicit current schema and fixture artifact names. Unrelated files such as `keep.json` remain untouched.
+- Added schemars `uuid` formats to UUID-bearing DTO fields and `date-time` formats to RFC3339 DTO fields, including nested and nullable fields. Runtime serde validators remain authoritative.
+- Corrected `runtime_unavailable.json` to `RuntimeStateDto::Failed` with `runtime_unavailable` error. Corrected context mismatch fixture to contain distinct API and CLI fingerprints.
+- Added `profile_summary_invalid_uuid.json` and `project_status_invalid_runtime_combination.json` negative fixtures.
+- Strengthened contract tests with exact schema count, deterministic property manifest, byte-for-byte repeated writer output, explicit format assertions, and exact fixture manifest assertions.
+
+### Exact Fix Verification Commands And Outputs
+
+```bash
+cargo test -p colui-tauri --test dto_contracts
+```
+
+```text
+running 10 tests
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+```bash
+cargo test --workspace && git diff --check && bash scripts/generate-schemas.sh && bash scripts/verify-increment-3.sh
+```
+
+```text
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Generator and verifier emitted no output and exited 0; `git diff --check` emitted no output.
+
+Changed-schema negative proof:
+
+```bash
+cp schemas/LifecycleResultDto.json /tmp/colui-lifecycle-schema.json
+perl -0pi -e 's/"success"/"outcome"/' schemas/LifecycleResultDto.json
+bash scripts/verify-increment-3.sh
+```
+
+Result: exit 1 with recursive diff showing committed `outcome` versus generated `success`; original schema restored afterward. Temporary comparison tree was cleaned by verifier trap.

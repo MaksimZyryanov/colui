@@ -44,9 +44,14 @@
       "type": "boolean"
     },
     "subjectId": {
-      "type": [
-        "string",
-        "null"
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "const": null
+        }
       ]
     }
   },
@@ -54,7 +59,8 @@
     "code",
     "message",
     "operation",
-    "retryable"
+    "retryable",
+    "subjectId"
   ],
   "title": "AppErrorDto",
   "type": "object"

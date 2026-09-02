@@ -49,8 +49,8 @@ pub fn generate_all_schemas() -> BTreeMap<String, Value> {
 pub fn write_schemas(root: impl AsRef<Path>) -> io::Result<()> {
     let root = root.as_ref();
     fs::create_dir_all(root.join("fixtures"))?;
-    remove_json_files(root)?;
-    remove_json_files(&root.join("fixtures"))?;
+    remove_known_artifacts(root)?;
+    remove_known_artifacts(&root.join("fixtures"))?;
     for (name, schema) in generate_all_schemas() {
         let bytes = serde_json::to_vec_pretty(&schema).unwrap();
         fs::write(
@@ -68,13 +68,21 @@ pub fn write_schemas(root: impl AsRef<Path>) -> io::Result<()> {
     Ok(())
 }
 
-fn remove_json_files(directory: &Path) -> io::Result<()> {
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-        {
+fn remove_known_artifacts(directory: &Path) -> io::Result<()> {
+    let names: Vec<String> = if directory.ends_with("fixtures") {
+        fixtures()
+            .into_iter()
+            .map(|(name, _)| name.to_owned())
+            .collect()
+    } else {
+        generate_all_schemas()
+            .keys()
+            .map(|name| format!("{name}.json"))
+            .collect::<Vec<_>>()
+    };
+    for name in names {
+        let path = directory.join(name);
+        if path.is_file() {
             fs::remove_file(path)?;
         }
     }
@@ -92,10 +100,13 @@ fn fixtures() -> Vec<(&'static str, Value)> {
             "profile_summary_invalid_missing_id.json",
             json!({"revision":1,"displayName":"Demo","composeProjectName":"demo","workingDirectory":"/tmp/demo","registrationOrigin":"manual"}),
         ),
-        ("runtime_unavailable.json", json!({"state":"disconnected"})),
+        (
+            "runtime_unavailable.json",
+            json!({"state":"failed","error":{"code":"runtime_unavailable","operation":"connect_runtime","subjectId":null,"message":"runtime unavailable","details":null,"retryable":false}}),
+        ),
         (
             "runtime_context_mismatch.json",
-            json!({"state":"contextMismatch","details":{"endpoint":"unix:///var/run/docker.sock","apiFingerprint":fingerprint,"cliFingerprint":fingerprint}}),
+            json!({"state":"contextMismatch","details":{"endpoint":"unix:///var/run/docker.sock","apiFingerprint":fingerprint,"cliFingerprint":{"daemonId":"daemon-2","serverVersion":"27.0","osType":"linux","architecture":"amd64"}}}),
         ),
         (
             "project_status_runtime_unavailable.json",
@@ -112,6 +123,14 @@ fn fixtures() -> Vec<(&'static str, Value)> {
         (
             "profile_summary_invalid_enum.json",
             json!({"id":"id-1","revision":1,"displayName":"Demo","composeProjectName":"demo","workingDirectory":"/tmp/demo","registrationOrigin":"unknown"}),
+        ),
+        (
+            "profile_summary_invalid_uuid.json",
+            json!({"id":"not-a-uuid","revision":1,"displayName":"Demo","composeProjectName":"demo","workingDirectory":"/tmp/demo","registrationOrigin":"manual"}),
+        ),
+        (
+            "project_status_invalid_runtime_combination.json",
+            json!({"profileId":"00000000-0000-0000-0000-000000000001","runtime":{"presence":"unavailable","activity":"mixed","containerCount":2,"runningContainerCount":1,"observedAt":"2026-09-02T00:00:00Z"},"definition":{"state":"unchecked","revision":null,"serviceCount":null},"operation":null,"issues":[]}),
         ),
         (
             "session_context_invalid_timestamp.json",

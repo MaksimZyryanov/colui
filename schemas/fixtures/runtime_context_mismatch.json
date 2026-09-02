@@ -8,7 +8,7 @@
     },
     "cliFingerprint": {
       "architecture": "amd64",
-      "daemonId": "daemon-1",
+      "daemonId": "daemon-2",
       "osType": "linux",
       "serverVersion": "27.0"
     },

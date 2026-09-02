@@ -27,6 +27,7 @@
   },
   "properties": {
     "connectedAt": {
+      "format": "date-time",
       "type": "string"
     },
     "daemonFingerprint": {
@@ -36,6 +37,7 @@
       "type": "string"
     },
     "sessionId": {
+      "format": "uuid",
       "type": "string"
     }
   },

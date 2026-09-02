@@ -4,6 +4,55 @@ mod request;
 mod runtime;
 mod status;
 
+use schemars::{
+    r#gen::SchemaGenerator,
+    schema::{Schema, SchemaObject, SubschemaValidation},
+    JsonSchema,
+};
+use serde_json::json;
+
+pub(crate) fn uuid_schema(generator: &mut SchemaGenerator) -> Schema {
+    let mut schema: SchemaObject = <String>::json_schema(generator).into();
+    schema.format = Some("uuid".to_owned());
+    schema.into()
+}
+
+pub(crate) fn optional_uuid_schema(generator: &mut SchemaGenerator) -> Schema {
+    SchemaObject {
+        subschemas: Some(Box::new(SubschemaValidation {
+            any_of: Some(vec![uuid_schema(generator), null_schema()]),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+    .into()
+}
+
+pub(crate) fn rfc3339_schema(generator: &mut SchemaGenerator) -> Schema {
+    let mut schema: SchemaObject = <String>::json_schema(generator).into();
+    schema.format = Some("date-time".to_owned());
+    schema.into()
+}
+
+pub(crate) fn optional_rfc3339_schema(generator: &mut SchemaGenerator) -> Schema {
+    SchemaObject {
+        subschemas: Some(Box::new(SubschemaValidation {
+            any_of: Some(vec![rfc3339_schema(generator), null_schema()]),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+    .into()
+}
+
+fn null_schema() -> Schema {
+    SchemaObject {
+        const_value: Some(json!(null)),
+        ..Default::default()
+    }
+    .into()
+}
+
 pub use error::*;
 pub use profile::*;
 pub use request::*;

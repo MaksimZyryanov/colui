@@ -29,6 +29,7 @@ pub enum AppErrorCodeDto {
 pub struct AppErrorDto {
     pub code: AppErrorCodeDto,
     pub operation: String,
+    #[schemars(schema_with = "super::optional_uuid_schema")]
     pub subject_id: Option<String>,
     pub message: String,
     pub details: Option<String>,

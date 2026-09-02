@@ -197,16 +197,100 @@ fn generated_schema_files_are_deterministic() {
         "string"
     );
     assert_eq!(generated, generate_all_schemas());
+    let bytes = serde_json::to_vec_pretty(&generated["LifecycleResultDto"]).unwrap();
+    assert_eq!(bytes.last(), Some(&b'}'));
+    assert_eq!(
+        bytes,
+        serde_json::to_vec_pretty(&generated["LifecycleResultDto"]).unwrap()
+    );
+    assert_eq!(generated.len(), 26);
+    assert_eq!(
+        generated["ProjectStatusDto"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        vec!["definition", "issues", "operation", "profileId", "runtime"]
+    );
+
+    let first = std::env::temp_dir().join(format!("colui-schemas-first-{}", std::process::id()));
+    let second = std::env::temp_dir().join(format!("colui-schemas-second-{}", std::process::id()));
+    write_schemas(&first).unwrap();
+    write_schemas(&second).unwrap();
+    for entry in fs::read_dir(&first).unwrap() {
+        let name = entry.unwrap().file_name();
+        let first_path = first.join(&name);
+        let second_path = second.join(&name);
+        if first_path.is_dir() {
+            for fixture in fs::read_dir(&first_path).unwrap() {
+                let fixture_name = fixture.unwrap().file_name();
+                assert_eq!(
+                    fs::read(first_path.join(&fixture_name)).unwrap(),
+                    fs::read(second_path.join(&fixture_name)).unwrap()
+                );
+            }
+        } else {
+            assert_eq!(
+                fs::read(first_path).unwrap(),
+                fs::read(second_path).unwrap()
+            );
+        }
+    }
+    fs::remove_dir_all(first).unwrap();
+    fs::remove_dir_all(second).unwrap();
 }
 
 #[test]
 fn schema_writer_removes_obsolete_generated_files() {
     let output = std::env::temp_dir().join(format!("colui-schemas-{}", std::process::id()));
     fs::create_dir_all(&output).unwrap();
-    fs::write(output.join("ObsoleteDto.json"), "{}\n").unwrap();
+    fs::write(output.join("LifecycleResultDto.json"), "{}\n").unwrap();
+    fs::write(output.join("keep.json"), "keep\n").unwrap();
 
     write_schemas(&output).unwrap();
 
-    assert!(!output.join("ObsoleteDto.json").exists());
+    assert_ne!(
+        fs::read(output.join("LifecycleResultDto.json")).unwrap(),
+        b"{}\n"
+    );
+    assert!(output.join("keep.json").exists());
+    fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn generated_schemas_constrain_uuid_and_rfc3339_fields() {
+    let schemas = generate_all_schemas();
+    assert_eq!(
+        schemas["ProfileSummaryDto"]["properties"]["id"]["format"],
+        "uuid"
+    );
+    assert_eq!(
+        schemas["RuntimeStateDto"]["definitions"]["SessionContextDto"]["properties"]["sessionId"]
+            ["format"],
+        "uuid"
+    );
+    assert_eq!(
+        schemas["RuntimeStateDto"]["definitions"]["SessionContextDto"]["properties"]["connectedAt"]
+            ["format"],
+        "date-time"
+    );
+    assert_eq!(
+        schemas["ProjectStatusDto"]["definitions"]["RuntimeProjectionDto"]["properties"]
+            ["observedAt"]["anyOf"][0]["format"],
+        "date-time"
+    );
+}
+
+#[test]
+fn generated_fixture_manifest_has_expected_negative_cases() {
+    let output = std::env::temp_dir().join(format!("colui-fixtures-{}", std::process::id()));
+    write_schemas(&output).unwrap();
+    let fixtures = fs::read_dir(output.join("fixtures"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(fixtures.contains("profile_summary_invalid_uuid.json"));
+    assert!(fixtures.contains("project_status_invalid_runtime_combination.json"));
+    assert_eq!(fixtures.len(), 12);
     fs::remove_dir_all(output).unwrap();
 }

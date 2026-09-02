@@ -14,6 +14,7 @@ pub struct DaemonFingerprintDto {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionContextDto {
+    #[schemars(schema_with = "super::uuid_schema")]
     pub session_id: String,
     pub endpoint: String,
     pub daemon_fingerprint: DaemonFingerprintDto,
@@ -21,6 +22,7 @@ pub struct SessionContextDto {
         serialize_with = "super::serialize_rfc3339",
         deserialize_with = "super::deserialize_rfc3339"
     )]
+    #[schemars(schema_with = "super::rfc3339_schema")]
     pub connected_at: String,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

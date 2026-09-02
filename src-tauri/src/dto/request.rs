@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateProfileRequestDto {
+    #[schemars(schema_with = "super::uuid_schema")]
     pub profile_id: String,
     pub expected_revision: u64,
     pub patch: ProfilePatchDto,
@@ -12,12 +13,14 @@ pub struct UpdateProfileRequestDto {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveProfileRequestDto {
+    #[schemars(schema_with = "super::uuid_schema")]
     pub profile_id: String,
     pub expected_revision: u64,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileIdRequestDto {
+    #[schemars(schema_with = "super::uuid_schema")]
     pub profile_id: String,
 }
 impl UpdateProfileRequestDto {
