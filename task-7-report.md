@@ -116,3 +116,40 @@ passed
 - `pnpm` remains unavailable; equivalent `npm` commands used.
 - Full frontend test output includes expected jsdom stderr from intentional error-boundary and unnamed icon-button tests.
 - Live Docker lifecycle matrix not rerun; local daemon availability remains outside this UI/DTO fix.
+
+## Task 7 Round 2 Verification Output
+
+Exact final command output:
+
+```text
+$ npm test -- src/features/projects/__tests__/ProjectsView.test.tsx
+Test Files  1 passed (1)
+Tests  8 passed (8)
+
+$ npm test
+Test Files  7 passed (7)
+Tests  48 passed (48)
+
+$ npm run typecheck
+tsc --noEmit: passed
+
+$ cargo fmt --all -- --check
+passed
+
+$ cargo test --workspace
+Test result: 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Test result: 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Test result: 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Test result: 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Test result: 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Test result: 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Test result: 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Test result: 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Test result: 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ bash scripts/check-boundaries.sh
+Dependency boundaries OK
+
+$ git diff --check
+passed
+```
