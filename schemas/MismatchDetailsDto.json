@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "DaemonFingerprintDto": {
+      "properties": {
+        "architecture": {
+          "type": "string"
+        },
+        "daemonId": {
+          "type": "string"
+        },
+        "osType": {
+          "type": "string"
+        },
+        "serverVersion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "architecture",
+        "daemonId",
+        "osType",
+        "serverVersion"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "apiFingerprint": {
+      "$ref": "#/definitions/DaemonFingerprintDto"
+    },
+    "cliFingerprint": {
+      "$ref": "#/definitions/DaemonFingerprintDto"
+    },
+    "endpoint": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "apiFingerprint",
+    "cliFingerprint",
+    "endpoint"
+  ],
+  "title": "MismatchDetailsDto",
+  "type": "object"
+}

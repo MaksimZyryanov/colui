@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "DaemonFingerprintDto": {
+      "properties": {
+        "architecture": {
+          "type": "string"
+        },
+        "daemonId": {
+          "type": "string"
+        },
+        "osType": {
+          "type": "string"
+        },
+        "serverVersion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "architecture",
+        "daemonId",
+        "osType",
+        "serverVersion"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "connectedAt": {
+      "type": "string"
+    },
+    "daemonFingerprint": {
+      "$ref": "#/definitions/DaemonFingerprintDto"
+    },
+    "endpoint": {
+      "type": "string"
+    },
+    "sessionId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "connectedAt",
+    "daemonFingerprint",
+    "endpoint",
+    "sessionId"
+  ],
+  "title": "SessionContextDto",
+  "type": "object"
+}

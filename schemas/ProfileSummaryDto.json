@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "RegistrationOriginDto": {
+      "enum": [
+        "manual",
+        "discovered",
+        "migrated"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "composeProjectName": {
+      "type": "string"
+    },
+    "displayName": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "registrationOrigin": {
+      "$ref": "#/definitions/RegistrationOriginDto"
+    },
+    "revision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "workingDirectory": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "composeProjectName",
+    "displayName",
+    "id",
+    "registrationOrigin",
+    "revision",
+    "workingDirectory"
+  ],
+  "title": "ProfileSummaryDto",
+  "type": "object"
+}

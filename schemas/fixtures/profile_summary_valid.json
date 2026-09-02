@@ -1,0 +1,8 @@
+{
+  "composeProjectName": "demo",
+  "displayName": "Demo",
+  "id": "00000000-0000-0000-0000-000000000001",
+  "registrationOrigin": "manual",
+  "revision": 1,
+  "workingDirectory": "/tmp/demo"
+}

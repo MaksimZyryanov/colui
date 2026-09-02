@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "enum": [
+    "runtime_unavailable",
+    "runtime_connection_failed",
+    "runtime_context_mismatch",
+    "profile_not_found",
+    "profile_already_registered",
+    "profile_revision_conflict",
+    "profile_invalid",
+    "definition_failed",
+    "compose_failed",
+    "container_operation_failed",
+    "operation_conflict",
+    "operation_timeout",
+    "registry_corrupt",
+    "registry_locked",
+    "registry_write_failed",
+    "permission_denied",
+    "protocol_mismatch"
+  ],
+  "title": "AppErrorCodeDto",
+  "type": "string"
+}

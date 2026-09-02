@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "RuntimeActivityDto": {
+      "enum": [
+        "all-running",
+        "mixed",
+        "none-running"
+      ],
+      "type": "string"
+    },
+    "RuntimePresenceDto": {
+      "enum": [
+        "unavailable",
+        "absent",
+        "present"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "activity": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RuntimeActivityDto"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "containerCount": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "observedAt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "presence": {
+      "$ref": "#/definitions/RuntimePresenceDto"
+    },
+    "runningContainerCount": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "containerCount",
+    "presence",
+    "runningContainerCount"
+  ],
+  "title": "RuntimeProjectionDto",
+  "type": "object"
+}

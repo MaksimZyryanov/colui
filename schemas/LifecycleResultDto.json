@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "profileId": {
+      "type": "string"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "profileId",
+    "success"
+  ],
+  "title": "LifecycleResultDto",
+  "type": "object"
+}

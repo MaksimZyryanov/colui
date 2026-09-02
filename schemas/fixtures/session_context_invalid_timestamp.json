@@ -1,0 +1,11 @@
+{
+  "connectedAt": "not-a-timestamp",
+  "daemonFingerprint": {
+    "architecture": "amd64",
+    "daemonId": "daemon-1",
+    "osType": "linux",
+    "serverVersion": "27.0"
+  },
+  "endpoint": "unix:///tmp/docker.sock",
+  "sessionId": "00000000-0000-0000-0000-000000000001"
+}

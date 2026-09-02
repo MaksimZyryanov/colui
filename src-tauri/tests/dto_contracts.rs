@@ -5,6 +5,7 @@ use colui_tauri_lib::dto::{
     RegistrationOriginDto, RuntimeActivityDto, RuntimePresenceDto, RuntimeStateDto,
     UpdateProfileRequestDto,
 };
+use colui_tauri_lib::schema_generation::generate_all_schemas;
 
 #[test]
 fn update_request_serializes_only_camel_case_metadata_and_patch() {
@@ -185,4 +186,14 @@ fn lifecycle_result_preserves_application_success() {
         success: false,
     });
     assert!(!dto.success);
+}
+
+#[test]
+fn generated_schema_files_are_deterministic() {
+    let generated = generate_all_schemas();
+    assert_eq!(
+        generated.get("LifecycleResultDto").unwrap()["properties"]["profileId"]["type"],
+        "string"
+    );
+    assert_eq!(generated, generate_all_schemas());
 }

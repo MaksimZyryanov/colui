@@ -1,0 +1,177 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "DefinitionProjectionDto": {
+      "properties": {
+        "revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/DefinitionStateDto"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "DefinitionStateDto": {
+      "enum": [
+        "unchecked",
+        "valid",
+        "invalid",
+        "stale"
+      ],
+      "type": "string"
+    },
+    "IssueDto": {
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "OperationDto": {
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/OperationKindDto"
+        },
+        "phase": {
+          "$ref": "#/definitions/OperationPhaseDto"
+        },
+        "startedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "phase",
+        "startedAt"
+      ],
+      "type": "object"
+    },
+    "OperationKindDto": {
+      "enum": [
+        "apply",
+        "stop",
+        "tear-down",
+        "restart"
+      ],
+      "type": "string"
+    },
+    "OperationPhaseDto": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "RuntimeActivityDto": {
+      "enum": [
+        "all-running",
+        "mixed",
+        "none-running"
+      ],
+      "type": "string"
+    },
+    "RuntimePresenceDto": {
+      "enum": [
+        "unavailable",
+        "absent",
+        "present"
+      ],
+      "type": "string"
+    },
+    "RuntimeProjectionDto": {
+      "properties": {
+        "activity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RuntimeActivityDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "containerCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "observedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "presence": {
+          "$ref": "#/definitions/RuntimePresenceDto"
+        },
+        "runningContainerCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "containerCount",
+        "presence",
+        "runningContainerCount"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "definition": {
+      "$ref": "#/definitions/DefinitionProjectionDto"
+    },
+    "issues": {
+      "items": {
+        "$ref": "#/definitions/IssueDto"
+      },
+      "type": "array"
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/OperationDto"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "profileId": {
+      "type": "string"
+    },
+    "runtime": {
+      "$ref": "#/definitions/RuntimeProjectionDto"
+    }
+  },
+  "required": [
+    "definition",
+    "issues",
+    "profileId",
+    "runtime"
+  ],
+  "title": "ProjectStatusDto",
+  "type": "object"
+}

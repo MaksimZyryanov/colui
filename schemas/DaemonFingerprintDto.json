@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "architecture": {
+      "type": "string"
+    },
+    "daemonId": {
+      "type": "string"
+    },
+    "osType": {
+      "type": "string"
+    },
+    "serverVersion": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "architecture",
+    "daemonId",
+    "osType",
+    "serverVersion"
+  ],
+  "title": "DaemonFingerprintDto",
+  "type": "object"
+}

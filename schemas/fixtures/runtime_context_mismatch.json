@@ -1,0 +1,18 @@
+{
+  "details": {
+    "apiFingerprint": {
+      "architecture": "amd64",
+      "daemonId": "daemon-1",
+      "osType": "linux",
+      "serverVersion": "27.0"
+    },
+    "cliFingerprint": {
+      "architecture": "amd64",
+      "daemonId": "daemon-1",
+      "osType": "linux",
+      "serverVersion": "27.0"
+    },
+    "endpoint": "unix:///var/run/docker.sock"
+  },
+  "state": "contextMismatch"
+}

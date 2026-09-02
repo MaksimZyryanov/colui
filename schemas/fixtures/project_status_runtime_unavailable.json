@@ -1,0 +1,17 @@
+{
+  "definition": {
+    "revision": null,
+    "serviceCount": null,
+    "state": "unchecked"
+  },
+  "issues": [],
+  "operation": null,
+  "profileId": "00000000-0000-0000-0000-000000000001",
+  "runtime": {
+    "activity": null,
+    "containerCount": 0,
+    "observedAt": null,
+    "presence": "unavailable",
+    "runningContainerCount": 0
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ProfilePatchDto": {
+      "properties": {
+        "composeFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "composeProjectName": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "environmentFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workingDirectory": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "composeFiles",
+        "composeProjectName",
+        "displayName",
+        "environmentFiles",
+        "workingDirectory"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "expectedRevision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "patch": {
+      "$ref": "#/definitions/ProfilePatchDto"
+    },
+    "profileId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "expectedRevision",
+    "patch",
+    "profileId"
+  ],
+  "title": "UpdateProfileRequestDto",
+  "type": "object"
+}

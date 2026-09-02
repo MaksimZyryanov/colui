@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod dto;
+pub mod schema_generation;
 
 use colui_adapters::{
     runtime::{ComposeProcessRunner, RuntimeGateway},

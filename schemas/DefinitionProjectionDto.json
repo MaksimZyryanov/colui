@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "DefinitionStateDto": {
+      "enum": [
+        "unchecked",
+        "valid",
+        "invalid",
+        "stale"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "serviceCount": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "state": {
+      "$ref": "#/definitions/DefinitionStateDto"
+    }
+  },
+  "required": [
+    "state"
+  ],
+  "title": "DefinitionProjectionDto",
+  "type": "object"
+}

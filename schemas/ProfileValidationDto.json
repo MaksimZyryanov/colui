@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "IssueDto": {
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "issues": {
+      "items": {
+        "$ref": "#/definitions/IssueDto"
+      },
+      "type": "array"
+    },
+    "valid": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "issues",
+    "valid"
+  ],
+  "title": "ProfileValidationDto",
+  "type": "object"
+}
