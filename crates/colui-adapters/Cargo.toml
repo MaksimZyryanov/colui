@@ -4,13 +4,27 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bollard = "0.18"
 colui-app = { path = "../colui-app" }
 colui-domain = { path = "../colui-domain" }
 fs2 = "0.4"
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process", "io-util"] }
 uuid = { version = "1", features = ["v4"] }
+
+[features]
+docker-tests = ["test-support"]
+test-support = []
 
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "runtime"
+required-features = ["test-support"]
+
+[[test]]
+name = "docker"
+required-features = ["docker-tests"]
