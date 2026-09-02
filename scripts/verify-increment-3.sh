@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root_dir=${COLUI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+cd "$root_dir"
 temporary_dir=$(mktemp -d)
 cleanup() {
   rm -rf "$temporary_dir"

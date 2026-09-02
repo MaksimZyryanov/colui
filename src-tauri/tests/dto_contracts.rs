@@ -395,6 +395,6 @@ fn generated_fixture_manifest_has_expected_negative_cases() {
         .collect::<std::collections::BTreeSet<_>>();
     assert!(fixtures.contains("profile_summary_invalid_uuid.json"));
     assert!(fixtures.contains("project_status_invalid_runtime_combination.json"));
-    assert_eq!(fixtures.len(), 12);
+    assert_eq!(fixtures.len(), 16);
     fs::remove_dir_all(output).unwrap();
 }

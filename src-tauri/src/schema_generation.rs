@@ -93,6 +93,14 @@ fn fixtures() -> Vec<(&'static str, Value)> {
     let fingerprint = json!({"daemonId":"daemon-1","serverVersion":"27.0","osType":"linux","architecture":"amd64"});
     vec![
         (
+            "app_error_invalid_code.json",
+            json!({"code":"not_an_error","operation":"connect_runtime","message":"bad","retryable":false}),
+        ),
+        (
+            "app_error_missing_retryable.json",
+            json!({"code":"profile_invalid","operation":"create_profile","message":"bad"}),
+        ),
+        (
             "profile_summary_valid.json",
             json!({"id":"00000000-0000-0000-0000-000000000001","revision":1,"displayName":"Demo","composeProjectName":"demo","workingDirectory":"/tmp/demo","registrationOrigin":"manual"}),
         ),
@@ -117,6 +125,10 @@ fn fixtures() -> Vec<(&'static str, Value)> {
             json!({"profileId":"00000000-0000-0000-0000-000000000001","success":true}),
         ),
         (
+            "lifecycle_result_invalid_missing_success.json",
+            json!({"profileId":"00000000-0000-0000-0000-000000000001"}),
+        ),
+        (
             "profile_validation_valid.json",
             json!({"valid":true,"issues":[]}),
         ),
@@ -139,6 +151,10 @@ fn fixtures() -> Vec<(&'static str, Value)> {
         (
             "profile_details_invalid_missing_required.json",
             json!({"profile":{"id":"id-1"},"composeFiles":[]}),
+        ),
+        (
+            "request_invalid_extra_field.json",
+            json!({"profileId":"00000000-0000-0000-0000-000000000001","unexpected":true}),
         ),
     ]
 }

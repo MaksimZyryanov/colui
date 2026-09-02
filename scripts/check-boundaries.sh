@@ -68,19 +68,7 @@ check_forbidden "$root_dir/crates/colui-adapters/Cargo.toml" \
   'tauri'
 
 if [[ -d "$root_dir/src" ]]; then
-  if rg -n --glob '*.ts' --glob '*.tsx' "@tauri-apps/api" \
-    "$root_dir/src" --glob '!src/ipc/dispatch.ts' --glob '!ipc/dispatch.ts'; then
-    printf 'Forbidden direct Tauri import/invoke outside src/ipc/dispatch.ts\n' >&2
-    exit 1
-  fi
-  if rg -n --glob '*.ts' --glob '*.tsx' --glob '!**/__tests__/**' "(applyProject|stopProject|tearDownProject|restartProject|apply_project|stop_project|tear_down_project|restart_project)\([^)]*(compose|workingDirectory|expectedRevision|revision)" "$root_dir/src"; then
-    printf 'Forbidden lifecycle payload source field outside profileId\n' >&2
-    exit 1
-  fi
-  if rg -n --glob '*.tsx' --glob '!**/__tests__/**' "key=\{[^}]*\.(displayName|composeProjectName)" "$root_dir/src"; then
-    printf 'Forbidden React key based on display or Compose name\n' >&2
-    exit 1
-  fi
+  node "$root_dir/scripts/check-boundaries-node.mjs" "$root_dir"
 fi
 
 if rg -n 'Result<[^,>]*,\s*String\s*>' "$root_dir/src-tauri" --glob '*.rs'; then
@@ -122,6 +110,15 @@ if [[ ${1:-} == "--self-test" ]]; then
       exit 1
     fi
   done
+  mkdir -p "$fixture/src/ipc"
+  printf '%s\n' "import { invoke as tauriInvoke } from '@tauri-apps/api/core';" > "$fixture/src/bad-import.ts"
+  if COLUI_ROOT="$fixture" "$0" >/dev/null 2>&1; then printf 'Self-test failed: aliased multiline import was not detected\n' >&2; exit 1; fi
+  printf '%s\n' 'import {' '  invoke as tauriInvoke' "} from '@tauri-apps/api/core';" > "$fixture/src/bad-multiline.ts"
+  if COLUI_ROOT="$fixture" "$0" >/dev/null 2>&1; then printf 'Self-test failed: multiline import was not detected\n' >&2; exit 1; fi
+  printf '%s\n' 'applyProject({ ...payload });' > "$fixture/src/bad-spread.ts"
+  if COLUI_ROOT="$fixture" "$0" >/dev/null 2>&1; then printf 'Self-test failed: lifecycle spread was not detected\n' >&2; exit 1; fi
+  printf '%s\n' 'const node = <div key={profile.displayName} />;' > "$fixture/src/bad-key.tsx"
+  if COLUI_ROOT="$fixture" "$0" >/dev/null 2>&1; then printf 'Self-test failed: unstable JSX key was not detected\n' >&2; exit 1; fi
   printf 'Boundary parser self-test OK\n'
 fi
 

@@ -7,6 +7,30 @@ import { decodeResponse } from '../validation';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+const fixtureRoot = resolve('schemas/fixtures');
+const dtoManifest = [
+  ['AppErrorCodeDto', errorCodeSchema], ['AppErrorDto', appErrorSchema], ['IssueDto', s.issueSchema],
+  ['RegistrationOriginDto', s.registrationOriginSchema], ['ProfileSummaryDto', profileSummarySchema], ['ProfileDraftDto', profileDraftSchema],
+  ['ProfilePatchDto', s.profilePatchSchema], ['ProfileDetailsDto', profileDetailsSchema], ['ProfileValidationDto', profileValidationSchema],
+  ['ProfileIdRequestDto', profileIdRequestSchema], ['UpdateProfileRequestDto', s.updateProfileRequestSchema], ['RemoveProfileRequestDto', s.removeProfileRequestSchema],
+  ['DaemonFingerprintDto', daemonFingerprintSchema], ['SessionContextDto', sessionContextSchema], ['MismatchDetailsDto', mismatchDetailsSchema],
+  ['RuntimePresenceDto', z.enum(['unavailable', 'absent', 'present'])], ['RuntimeActivityDto', z.enum(['all-running', 'mixed', 'none-running'])],
+  ['DefinitionStateDto', z.enum(['unchecked', 'valid', 'invalid', 'stale'])], ['OperationKindDto', z.enum(['apply', 'stop', 'tear-down', 'restart'])],
+  ['OperationPhaseDto', z.enum(['queued', 'running', 'succeeded', 'failed'])], ['RuntimeProjectionDto', runtimeProjectionSchema],
+  ['DefinitionProjectionDto', z.object({ state: z.enum(['unchecked', 'valid', 'invalid', 'stale']), revision: z.string().nullable().optional(), serviceCount: z.number().int().nonnegative().nullable().optional() })],
+  ['OperationDto', z.object({ kind: z.enum(['apply', 'stop', 'tear-down', 'restart']), phase: z.enum(['queued', 'running', 'succeeded', 'failed']), startedAt: z.string().datetime({ offset: true }) })],
+  ['ProjectStatusDto', projectStatusSchema], ['RuntimeStateDto', runtimeStateSchema], ['LifecycleResultDto', lifecycleResultSchema],
+] as const;
+const fixtureManifest: Array<[string, { safeParse: (value: unknown) => { success: boolean } }, boolean]> = [
+  ['app_error_invalid_code.json', appErrorSchema, false], ['app_error_missing_retryable.json', appErrorSchema, false],
+  ['lifecycle_result_invalid_missing_success.json', lifecycleResultSchema, false], ['lifecycle_result_valid.json', lifecycleResultSchema, true],
+  ['profile_details_invalid_missing_required.json', profileDetailsSchema, false], ['profile_summary_invalid_enum.json', profileSummarySchema, false],
+  ['profile_summary_invalid_missing_id.json', profileSummarySchema, false], ['profile_summary_invalid_uuid.json', profileSummarySchema, false], ['profile_summary_valid.json', profileSummarySchema, true],
+  ['profile_validation_valid.json', profileValidationSchema, true], ['project_status_invalid_runtime_combination.json', projectStatusSchema, false], ['project_status_runtime_unavailable.json', projectStatusSchema, true],
+  ['request_invalid_extra_field.json', profileIdRequestSchema.strict(), false], ['runtime_context_mismatch.json', runtimeStateSchema, true], ['runtime_unavailable.json', runtimeStateSchema, true],
+  ['session_context_invalid_timestamp.json', sessionContextSchema, false],
+];
+
 const normalizeSchema = (value: unknown, root = value): unknown => {
   if (Array.isArray(value)) return value.map(child => normalizeSchema(child, root));
   if (!value || typeof value !== 'object') return value;
@@ -99,6 +123,12 @@ describe('IPC contracts', () => {
     expect(decodeResponse(runtimeStateSchema, fixture('runtime_unavailable.json'), 'fixture')).toMatchObject({ state: 'failed' });
   });
 
+  it('preserves unknown-field behavior at IPC boundary', () => {
+    const parsed = profileIdRequestSchema.parse({ profileId: '00000000-0000-0000-0000-000000000001', extra: true });
+    expect(parsed).toEqual({ profileId: '00000000-0000-0000-0000-000000000001' });
+    expect(s.profileIdRequestSchema.strict().safeParse({ profileId: '00000000-0000-0000-0000-000000000001', extra: true }).success).toBe(false);
+  });
+
   it('checks every committed fixture against its corresponding DTO schema', () => {
     const fixture = (name: string) => JSON.parse(readFileSync(resolve('schemas/fixtures', name), 'utf8'));
     const cases: Array<[string, { safeParse: (value: unknown) => { success: boolean } }, boolean]> = [
@@ -132,38 +162,17 @@ describe('IPC contracts', () => {
 
   it('compares every TypeScript DTO against generated Rust schema semantically', async () => {
     const { zodToJsonSchema } = await import('zod-to-json-schema');
-    const schemas = [
-      ['AppErrorCodeDto', errorCodeSchema], ['AppErrorDto', appErrorSchema], ['IssueDto', s.issueSchema],
-      ['RegistrationOriginDto', s.registrationOriginSchema], ['ProfileSummaryDto', profileSummarySchema], ['ProfileDraftDto', profileDraftSchema],
-      ['ProfilePatchDto', s.profilePatchSchema], ['ProfileDetailsDto', profileDetailsSchema], ['ProfileValidationDto', profileValidationSchema],
-      ['ProfileIdRequestDto', profileIdRequestSchema], ['UpdateProfileRequestDto', s.updateProfileRequestSchema], ['RemoveProfileRequestDto', s.removeProfileRequestSchema],
-      ['DaemonFingerprintDto', daemonFingerprintSchema], ['SessionContextDto', sessionContextSchema], ['MismatchDetailsDto', mismatchDetailsSchema],
-      ['RuntimePresenceDto', z.enum(['unavailable', 'absent', 'present'])], ['RuntimeActivityDto', z.enum(['all-running', 'mixed', 'none-running'])],
-      ['DefinitionStateDto', z.enum(['unchecked', 'valid', 'invalid', 'stale'])], ['OperationKindDto', z.enum(['apply', 'stop', 'tear-down', 'restart'])],
-      ['OperationPhaseDto', z.enum(['queued', 'running', 'succeeded', 'failed'])], ['RuntimeProjectionDto', runtimeProjectionSchema],
-      ['DefinitionProjectionDto', z.object({ state: z.enum(['unchecked', 'valid', 'invalid', 'stale']), revision: z.string().nullable().optional(), serviceCount: z.number().int().nonnegative().nullable().optional() })],
-      ['OperationDto', z.object({ kind: z.enum(['apply', 'stop', 'tear-down', 'restart']), phase: z.enum(['queued', 'running', 'succeeded', 'failed']), startedAt: z.string().datetime({ offset: true }) })],
-      ['ProjectStatusDto', projectStatusSchema], ['RuntimeStateDto', runtimeStateSchema], ['LifecycleResultDto', lifecycleResultSchema],
-    ] as const;
-    for (const [name, schema] of schemas) {
+    for (const [name, schema] of dtoManifest) {
       const rust = JSON.parse(readFileSync(resolve('schemas', `${name}.json`), 'utf8'));
       const generated = zodToJsonSchema(schema, { name, $refStrategy: 'none' });
       expect(normalizeSchema(generated), name).toEqual(normalizeSchema(rust));
     }
-    expect(schemas).toHaveLength(26);
+    expect(dtoManifest).toHaveLength(26);
   });
 
   it('exercises every committed fixture exactly once', () => {
-    const fixture = (name: string) => JSON.parse(readFileSync(resolve('schemas/fixtures', name), 'utf8'));
-    const cases: Array<[string, { safeParse: (value: unknown) => { success: boolean } }, boolean]> = [
-      ['profile_summary_valid.json', profileSummarySchema, true], ['profile_summary_invalid_uuid.json', profileSummarySchema, false],
-      ['profile_summary_invalid_enum.json', profileSummarySchema, false], ['profile_summary_invalid_missing_id.json', profileSummarySchema, false],
-      ['profile_details_invalid_missing_required.json', profileDetailsSchema, false], ['profile_validation_valid.json', profileValidationSchema, true],
-      ['runtime_unavailable.json', runtimeStateSchema, true], ['runtime_context_mismatch.json', runtimeStateSchema, true],
-      ['session_context_invalid_timestamp.json', sessionContextSchema, false], ['project_status_runtime_unavailable.json', projectStatusSchema, true],
-      ['project_status_invalid_runtime_combination.json', projectStatusSchema, false], ['lifecycle_result_valid.json', lifecycleResultSchema, true],
-    ];
-    expect(cases.map(([name]) => name).sort()).toEqual(readdirSync(resolve('schemas/fixtures')).sort());
-    for (const [name, schema, expected] of cases) expect(schema.safeParse(fixture(name)).success, name).toBe(expected);
+    const fixture = (name: string) => JSON.parse(readFileSync(resolve(fixtureRoot, name), 'utf8'));
+    expect(fixtureManifest.map(([name]) => name).sort()).toEqual(readdirSync(fixtureRoot).sort());
+    for (const [name, schema, expected] of fixtureManifest) expect(schema.safeParse(fixture(name)).success, name).toBe(expected);
   });
 });

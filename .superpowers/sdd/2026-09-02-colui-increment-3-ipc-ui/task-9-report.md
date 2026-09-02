@@ -88,3 +88,73 @@ Browser mock smoke OK
 
 - Required `pnpm` commands could not run because `pnpm` is absent from environment. Equivalent `npx` commands passed.
 - Full Vitest output contains expected jsdom stderr from intentional error-boundary and unnamed-icon tests; all 63 tests passed.
+
+## Task 9 Review Remediation Verification
+
+Commands were run from `/Users/max/Documents/colui2`. `pnpm` was resolved as `npx --yes pnpm@9.15.5` because no global `pnpm` or `corepack` executable was available. `pnpm-lock.yaml` is committed; obsolete `package-lock.json` was removed.
+
+```text
+$ cargo fmt --all -- --check
+[exit 0]
+
+$ cargo test --workspace
+test result: ok. 1 passed; 0 failed
+test result: ok. 27 passed; 0 failed
+test result: ok. 4 passed; 0 failed
+test result: ok. 17 passed; 0 failed
+test result: ok. 7 passed; 0 failed
+test result: ok. 15 passed; 0 failed
+test result: ok. 7 passed; 0 failed
+[exit 0]
+
+$ cargo test -p colui-tauri --test dto_contracts
+test result: ok. 15 passed; 0 failed
+[exit 0]
+
+$ npx pnpm@9.15.5 lint
+> colui-ipc@ lint
+> tsc --noEmit
+[exit 0]
+
+$ npx pnpm@9.15.5 typecheck
+> colui-ipc@ typecheck
+> tsc --noEmit
+[exit 0]
+
+$ npx pnpm@9.15.5 test
+Test Files  9 passed (9)
+Tests  64 passed (64)
+[exit 0]
+
+$ npx pnpm@9.15.5 test:contracts
+Test Files  3 passed (3)
+Tests  26 passed (26)
+[exit 0]
+
+$ npx pnpm@9.15.5 build
+dist/index.html  0.21 kB | gzip: 0.17 kB
+dist/assets/index-C96abK4H.css  1.22 kB | gzip: 0.57 kB
+dist/assets/core-DhEqZVGG.js  2.44 kB | gzip: 0.98 kB
+dist/assets/index-CtKNEFMC.js  350.78 kB | gzip: 107.64 kB
+✓ built in 1.40s
+[exit 0]
+
+$ bash scripts/check-boundaries.sh --self-test
+Boundary parser self-test OK
+Dependency boundaries OK
+[exit 0]
+
+$ bash scripts/verify-increment-3.sh
+[exit 0]
+
+$ bash scripts/browser-smoke.sh
+Test Files  1 passed (1)
+Tests  2 passed (2)
+Browser mock smoke OK
+[exit 0]
+
+$ git diff --check
+[exit 0]
+```
+
+Remediation coverage: explicit 26-entry DTO manifest; typed 16-entry fixture manifest including request, error, runtime, and lifecycle negatives; unknown-field strip/strict behavior; TypeScript AST boundary checks with multiline import, alias, spread, and JSX-key adversarial self-tests; served Firefox Vite smoke with edit persistence, connection-failure visibility, and exact lifecycle payloads; verifier root normalization; pnpm lockfile consistency.
