@@ -1,0 +1,3 @@
+import { z } from 'zod';
+import * as s from './schemas';
+export type ProfileSummary = z.infer<typeof s.profileSummarySchema>; export type ProfileDraft = z.infer<typeof s.profileDraftSchema>; export type ProfilePatch = z.infer<typeof s.profilePatchSchema>; export type ProfileDetails = z.infer<typeof s.profileDetailsSchema>; export type ProfileValidation = z.infer<typeof s.profileValidationSchema>; export type UpdateProfileRequest = z.infer<typeof s.updateProfileRequestSchema>; export type RemoveProfileRequest = z.infer<typeof s.removeProfileRequestSchema>; export type RuntimeState = z.infer<typeof s.runtimeStateSchema>; export type ProjectStatus = z.infer<typeof s.projectStatusSchema>; export type LifecycleResult = z.infer<typeof s.lifecycleResultSchema>;

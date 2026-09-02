@@ -67,6 +67,14 @@ check_forbidden "$root_dir/crates/colui-app/Cargo.toml" \
 check_forbidden "$root_dir/crates/colui-adapters/Cargo.toml" \
   'tauri'
 
+if [[ -d "$root_dir/src" ]]; then
+  if rg -n --glob '*.ts' --glob '*.tsx' "@tauri-apps/api" \
+    "$root_dir/src" --glob '!src/ipc/dispatch.ts' --glob '!ipc/dispatch.ts'; then
+    printf 'Forbidden direct Tauri import/invoke outside src/ipc/dispatch.ts\n' >&2
+    exit 1
+  fi
+fi
+
 if [[ ${1:-} == "--self-test" ]]; then
   fixture=$(mktemp -d)
   trap 'rm -rf "$fixture"' EXIT
