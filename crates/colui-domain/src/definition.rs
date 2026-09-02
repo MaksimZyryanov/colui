@@ -80,5 +80,6 @@ pub struct ProjectDefinition {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Issue {
+    pub field: Option<String>,
     pub message: String,
 }

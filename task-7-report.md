@@ -60,3 +60,59 @@ passed
 ## Scope Confirmation
 
 No lifecycle controls, Increment 4 features, direct Tauri imports, path-bearing lifecycle payloads, or subagents/reviewers added.
+
+## Task 7 Review Fixes
+
+- Edit action now hydrates `getProfile(profileId)` before opening edit form; IDs remain query/cache keys.
+- `IssueDto.field` maps optional field associations through Rust DTO, JSON schema, and TypeScript decoder; form maps fields to `aria-invalid` and `aria-describedby` and renders alert summary.
+- `inspectProfileDraft` failures are caught into typed local `Error | AppErrorException` state; entered values remain mounted.
+- Lifecycle status invalidation runs only when decoded `LifecycleResult.success` is true.
+- Profile and status loading states use accessible `role="status"` skeletons.
+- Status issue list uses stable semantic keys; profile cards continue using `profile.id` keys.
+- No lifecycle payload paths or Increment 4 behavior added.
+
+## Review Fix Verification
+
+Exact commands and outputs from current worktree:
+
+```text
+npm test -- src/features/projects
+Test Files  2 passed (2)
+Tests  10 passed (10)
+
+npm test
+Test Files  7 passed (7)
+Tests  45 passed (45)
+
+npm run typecheck
+tsc --noEmit: passed
+
+npm run lint
+tsc --noEmit: passed
+
+cargo fmt --all -- --check
+passed
+
+cargo test --workspace
+Test result: 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+Test result: 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.04s
+Test result: 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+Test result: 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+Test result: 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+Test result: 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+Test result: 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+Test result: 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+Test result: 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+bash scripts/check-boundaries.sh
+Dependency boundaries OK
+
+git diff --check
+passed
+```
+
+## Review Fix Concerns
+
+- `pnpm` remains unavailable; equivalent `npm` commands used.
+- Full frontend test output includes expected jsdom stderr from intentional error-boundary and unnamed icon-button tests.
+- Live Docker lifecycle matrix not rerun; local daemon availability remains outside this UI/DTO fix.

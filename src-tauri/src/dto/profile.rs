@@ -59,6 +59,8 @@ pub struct ProfilePatchDto {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
     pub message: String,
 }
 

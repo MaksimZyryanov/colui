@@ -267,6 +267,19 @@ fn lifecycle_result_preserves_application_success() {
 }
 
 #[test]
+fn issue_dto_preserves_optional_field_mapping() {
+    let value = serde_json::to_value(colui_tauri_lib::dto::IssueDto {
+        field: Some("composeProjectName".to_owned()),
+        message: "must be lowercase".to_owned(),
+    })
+    .unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"field":"composeProjectName","message":"must be lowercase"})
+    );
+}
+
+#[test]
 fn generated_schema_files_are_deterministic() {
     let generated = generate_all_schemas();
     assert_eq!(

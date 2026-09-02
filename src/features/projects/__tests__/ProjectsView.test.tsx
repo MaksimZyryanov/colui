@@ -41,4 +41,23 @@ describe('ProjectsView', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('offline'));
     expect(screen.getByRole('main')).toBeVisible();
   });
+
+  it('opens edit form after hydrating profile details', async () => {
+    const profileId = '00000000-0000-0000-0000-000000000001';
+    mockBackend.setResponseOverride('list_profiles', [{ id: profileId, revision: 2, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
+    mockBackend.setResponseOverride('get_profile', { profile: { id: profileId, revision: 2, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: ['.env'] });
+    const user = userEvent.setup();
+    renderProjects();
+    await user.click(await screen.findByRole('button', { name: /edit demo/i }));
+    expect(await screen.findByRole('dialog', { name: /edit project/i })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByDisplayValue('.env')).toBeVisible();
+  });
+
+  it('renders accessible status and profile loading skeletons', async () => {
+    mockBackend.setResponseOverride('list_profiles', [{ id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
+    mockBackend.setResponseOverride('get_project_status', new Promise(() => {}));
+    renderProjects();
+    expect(await screen.findByRole('status', { name: /loading project status/i })).toBeVisible();
+  });
 });

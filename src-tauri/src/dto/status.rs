@@ -151,6 +151,7 @@ impl From<ProjectStatus> for ProjectStatusDto {
                 .issues
                 .into_iter()
                 .map(|issue| IssueDto {
+                    field: issue.field,
                     message: issue.message,
                 })
                 .collect(),

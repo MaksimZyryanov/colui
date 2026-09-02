@@ -5,4 +5,12 @@ import { Button } from '../../../ui/components/Button';
 import { useProjectStatus } from '../hooks/useProjectStatus';
 import { StatusBadge } from './StatusBadge';
 import { StatusDetails } from './StatusDetails';
-export function ProfileCard({ profile }: { profile: ProfileSummary }) { const [open, setOpen] = useState(false); const status = useProjectStatus(profile.id); return <Card><h2>{profile.displayName}</h2><p>{profile.workingDirectory}</p>{status.isLoading ? <span>Loading status...</span> : status.isError ? <span>Status unavailable</span> : status.data ? <><StatusBadge status={status.data} /><Button onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={`status-${profile.id}`}> {open ? 'Hide' : 'Show'} status details</Button>{open ? <div id={`status-${profile.id}`}><StatusDetails status={status.data} /></div> : null}</> : null}</Card>; }
+import { useProfile } from '../hooks/useProfile';
+import { ProfileFormDialog } from './ProfileFormDialog';
+export function ProfileCard({ profile }: { profile: ProfileSummary }) {
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const status = useProjectStatus(profile.id);
+  const details = useProfile(editing ? profile.id : undefined);
+  return <Card><h2>{profile.displayName}</h2><p>{profile.workingDirectory}</p><Button onClick={() => setEditing(true)} aria-label={`Edit ${profile.displayName}`}>Edit</Button>{status.isLoading ? <span role="status" aria-label="Loading project status" className="skeleton">Loading status...</span> : status.isError ? <span>Status unavailable</span> : status.data ? <><StatusBadge status={status.data} /><Button onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={`status-${profile.id}`}> {open ? 'Hide' : 'Show'} status details</Button>{open ? <div id={`status-${profile.id}`}><StatusDetails status={status.data} /></div> : null}</> : null}{editing ? details.isLoading ? <span role="status" aria-label="Loading project details" className="skeleton">Loading project details...</span> : details.data ? <ProfileFormDialog profile={profile} details={details.data} onClose={() => setEditing(false)} /> : details.isError ? <span role="alert">Unable to load project details</span> : null : null}</Card>;
+}

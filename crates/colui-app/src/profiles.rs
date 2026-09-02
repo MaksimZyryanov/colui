@@ -46,6 +46,7 @@ impl InspectProfileDraft {
             Err(error) => ProfileValidation {
                 valid: false,
                 issues: vec![Issue {
+                    field: None,
                     message: error.message,
                 }],
             },

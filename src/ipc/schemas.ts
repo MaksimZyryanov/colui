@@ -3,7 +3,7 @@ import { appErrorSchema } from './errors';
 const uuid = z.string().uuid().refine(value => value === value.toLowerCase() && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value), 'must be canonical lowercase hyphenated UUID'); const revision = z.number().int().nonnegative(); const timestamp = z.string().datetime({ offset: true });
 export { appErrorSchema };
 export const registrationOriginSchema = z.enum(['manual','discovered','migrated']);
-export const issueSchema = z.object({ message: z.string() });
+export const issueSchema = z.object({ field: z.string().nullable().optional(), message: z.string() });
 export const profileSummarySchema = z.object({ id: uuid, revision, displayName: z.string(), composeProjectName: z.string(), workingDirectory: z.string(), registrationOrigin: registrationOriginSchema });
 export const profileDraftSchema = z.object({ displayName: z.string(), composeProjectName: z.string(), workingDirectory: z.string(), composeFiles: z.array(z.string()), environmentFiles: z.array(z.string()) });
 export const profilePatchSchema = profileDraftSchema;

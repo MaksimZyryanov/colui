@@ -50,6 +50,7 @@ pub async fn inspect_profile_draft(
             return Ok(ProfileValidationDto {
                 valid: false,
                 issues: vec![IssueDto {
+                    field: None,
                     message: error.message,
                 }],
             })
@@ -62,6 +63,7 @@ pub async fn inspect_profile_draft(
             .issues
             .into_iter()
             .map(|issue| IssueDto {
+                field: issue.field,
                 message: issue.message,
             })
             .collect(),
