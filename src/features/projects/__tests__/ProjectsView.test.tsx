@@ -79,6 +79,29 @@ describe('ProjectsView', () => {
     expect(screen.getByDisplayValue('User edit')).toBeVisible();
   });
 
+  it('preserves edits made while deferred profile details refresh', async () => {
+    const profileId = '00000000-0000-0000-0000-000000000001';
+    let resolveDetails!: (details: unknown) => void;
+    mockBackend.setResponseOverride('list_profiles', [{ id: profileId, revision: 2, displayName: 'Cached', composeProjectName: 'cached', workingDirectory: '/cached', registrationOrigin: 'manual' }]);
+    mockBackend.setResponseOverride('get_profile', new Promise(resolve => { resolveDetails = resolve; }));
+    client.setQueryData(['projects', 'detail', profileId], { profile: { id: profileId, revision: 2, displayName: 'Cached', composeProjectName: 'cached', workingDirectory: '/cached', registrationOrigin: 'manual' }, composeFiles: ['cached.yml'], environmentFiles: ['cached.env'] });
+    const user = userEvent.setup();
+    renderProjects();
+
+    await user.click(await screen.findByRole('button', { name: /edit cached/i }));
+    await waitFor(() => expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'get_profile')).toHaveLength(1));
+    const displayName = await screen.findByDisplayValue('Cached');
+    await user.clear(displayName);
+    await user.type(displayName, 'User edit');
+    resolveDetails({ profile: { id: profileId, revision: 3, displayName: 'Fresh', composeProjectName: 'fresh', workingDirectory: '/fresh', registrationOrigin: 'manual' }, composeFiles: ['fresh.yml'], environmentFiles: ['fresh.env'] });
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('User edit')).toBeVisible();
+      expect(screen.getByDisplayValue('fresh')).toBeVisible();
+      expect(screen.getByDisplayValue('/fresh')).toBeVisible();
+    });
+  });
+
   it('renders unknown backend issue fields in accessible form-level summary', async () => {
     const profileId = '00000000-0000-0000-0000-000000000001';
     mockBackend.setResponseOverride('list_profiles', [{ id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);

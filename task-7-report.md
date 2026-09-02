@@ -153,3 +153,35 @@ Dependency boundaries OK
 $ git diff --check
 passed
 ```
+
+## Task 7 Round 3 Verification Output
+
+Added deferred `get_profile` response regression coverage. Test starts from cached details, edits display name while fresh details remain pending, then resolves fresh details and verifies edited display name survives while fresh Compose name and working directory replace cached values.
+
+Exact commands and outputs:
+
+```text
+$ npm test -- src/features/projects/__tests__/ProjectsView.test.tsx
+Test Files  1 passed (1)
+Tests  9 passed (9)
+
+$ npm test -- src/features/projects
+Test Files  2 passed (2)
+Tests  14 passed (14)
+
+$ npm test
+Test Files  7 passed (7)
+Tests  49 passed (49)
+
+$ npm run typecheck
+tsc --noEmit: passed
+
+$ npm run lint
+tsc --noEmit: passed
+```
+
+## Task 7 Round 3 Concerns
+
+- `pnpm` remains unavailable; equivalent `npm` commands used.
+- Full frontend test output emits expected jsdom stderr from intentional error-boundary and unnamed icon-button tests; all tests pass.
+- Production files unchanged; round 3 scope adds test coverage and evidence only.
