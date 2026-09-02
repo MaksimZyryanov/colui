@@ -231,6 +231,7 @@ async fn runner_decodes_invalid_utf8_and_maps_failure() {
     assert_eq!(error.code, AppErrorCode::ComposeFailed);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn runner_terminates_process_group_and_reaps_after_timeout() {
     let dir = TempDir::new().unwrap();
