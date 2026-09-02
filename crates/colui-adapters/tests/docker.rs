@@ -252,13 +252,23 @@ impl TempComposeFixture {
 
 fn bounded_diagnostic(bytes: &[u8]) -> String {
     const MAX_DIAGNOSTIC_BYTES: usize = 4096;
-    if bytes.len() <= MAX_DIAGNOSTIC_BYTES {
-        return String::from_utf8_lossy(bytes).trim().to_owned();
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.trim();
+    if text.len() <= MAX_DIAGNOSTIC_BYTES {
+        return text.to_owned();
     }
-    format!(
-        "...{}",
-        String::from_utf8_lossy(&bytes[bytes.len() - MAX_DIAGNOSTIC_BYTES..]).trim()
-    )
+    let mut start = text.len() - (MAX_DIAGNOSTIC_BYTES - 3);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("...{}", &text[start..])
+}
+
+#[test]
+fn bounded_diagnostic_caps_lossy_utf8_rendering() {
+    let rendered = bounded_diagnostic(&[0xff; 4096]);
+    assert!(rendered.starts_with("..."));
+    assert!(rendered.len() <= 4096);
 }
 
 struct CleanupGuard<'a> {

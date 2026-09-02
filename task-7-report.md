@@ -92,6 +92,19 @@ No frontend/Tauri IPC, `InventoryCoordinator`, definition cache, Discovery, life
 - `git diff --check`: passed.
 - Docker Desktop/Colima live matrix unavailable locally; no live-Docker evidence claimed.
 
+## Diagnostic Bound Follow-Up
+
+- `bounded_diagnostic` now converts invalid UTF-8 first, then caps rendered String length at 4096 bytes on a valid character boundary.
+- Added focused coverage proving lossy UTF-8 replacement expansion cannot exceed diagnostic bound.
+
+## Diagnostic Bound Verification
+
+- `cargo test -p colui-adapters --features docker-tests --test docker -- --nocapture`: passed; focused diagnostic test passed and two Docker tests explicitly skipped due unavailable daemon.
+- `cargo test --workspace`: passed.
+- `cargo fmt --all -- --check`: passed.
+- `bash scripts/check-boundaries.sh`: passed, `Dependency boundaries OK`.
+- `git diff --check`: passed.
+
 ## Resource Query Follow-Up
 
 - `--all` now applies only to `docker container ls`; network and volume queries retain standard `ls` behavior while using exact Compose project labels.
