@@ -3,7 +3,10 @@
 use colui_adapters::runtime::{
     compose_args, ComposeOperation, ComposeProcessRunner, RuntimeGateway,
 };
-use colui_app::{DockerApi, ProfileReader, RegistrySnapshot, RuntimeConnector};
+use colui_app::{
+    DockerApi, LifecycleOperation, LifecycleRuntime, ProfileReader, RegistrySnapshot,
+    RuntimeConnector,
+};
 use colui_domain::{
     ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin, RuntimeSessionState,
 };
@@ -144,22 +147,35 @@ impl TempComposeFixture {
         } else {
             ComposeOperation::Up
         };
-        gateway
-            .invoke_profile(self, self.profile.id.clone(), operation)
-            .await
-            .map(|_| ())
+        if scale_worker {
+            gateway
+                .invoke_backend_for_tests(colui_app::ComposeInvocation {
+                    executable: "docker".into(),
+                    args: compose_args(&self.profile, operation),
+                    working_directory: self.profile.working_directory.clone(),
+                    environment: std::env::vars().collect(),
+                    deadline: Instant::now() + Duration::from_secs(120),
+                })
+                .await
+                .map(|_| ())
+        } else {
+            gateway
+                .run_profile(self.profile.clone(), LifecycleOperation::Apply)
+                .await
+                .map(|_| ())
+        }
     }
 
     async fn stop(&self, gateway: &RuntimeGateway) -> Result<(), colui_domain::AppError> {
         gateway
-            .invoke_profile(self, self.profile.id.clone(), ComposeOperation::Stop)
+            .run_profile(self.profile.clone(), LifecycleOperation::Stop)
             .await
             .map(|_| ())
     }
 
     async fn tear_down(&self, gateway: &RuntimeGateway) -> Result<(), colui_domain::AppError> {
         gateway
-            .invoke_profile(self, self.profile.id.clone(), ComposeOperation::Down)
+            .run_profile(self.profile.clone(), LifecycleOperation::TearDown)
             .await
             .map(|_| ())
     }

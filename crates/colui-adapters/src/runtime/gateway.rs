@@ -3,8 +3,8 @@ use super::{build_cli_environment, resolve_endpoint, DockerControl};
 use bollard::Docker;
 use colui_app::{
     ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleFuture,
-    LifecycleOperation, LifecycleResult, LifecycleRuntime, ProfileReader, RuntimeConnector,
-    RuntimeFuture, RuntimeStateReader,
+    LifecycleOperation, LifecycleResult, LifecycleRuntime, RuntimeConnector, RuntimeFuture,
+    RuntimeStateReader,
 };
 use colui_domain::{
     AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerInstance, DaemonFingerprint,
@@ -114,28 +114,6 @@ impl RuntimeGateway {
         *current = runner;
     }
 
-    pub async fn invoke_profile<R: ProfileReader + ?Sized>(
-        &self,
-        reader: &R,
-        profile_id: colui_domain::ProfileId,
-        operation: ComposeOperation,
-    ) -> Result<ComposeProcessResult, AppError> {
-        let profile = reader
-            .load()
-            .await?
-            .profiles
-            .into_iter()
-            .find(|profile| profile.id == profile_id)
-            .ok_or_else(|| {
-                error(
-                    AppErrorCode::ProfileNotFound,
-                    "compose",
-                    "profile not found",
-                )
-            })?;
-        self.invoke_loaded_profile(profile, operation).await
-    }
-
     async fn invoke_loaded_profile(
         &self,
         profile: colui_domain::ProjectProfile,
@@ -148,7 +126,8 @@ impl RuntimeGateway {
                 "compose gate closed",
             )
         })?;
-        let endpoint = match self.snapshot.lock().await.state.clone() {
+        let state = self.snapshot.lock().await.state.clone();
+        let endpoint = match state {
             RuntimeSessionState::Ready(context) => context.endpoint,
             _ => {
                 return Err(self
@@ -169,8 +148,7 @@ impl RuntimeGateway {
         runner.invoke(invocation).await
     }
 
-    /// Raw process invocation exists only behind adapter test support. Application code uses
-    /// `invoke_profile`, which derives argv, cwd, and environment from stored profile data.
+    /// Raw process invocation exists only behind adapter test support.
     #[doc(hidden)]
     #[cfg(feature = "test-support")]
     pub async fn invoke_backend_for_tests(

@@ -7,8 +7,8 @@ use colui_adapters::runtime::{
 use colui_adapters::runtime::{ComposeOperation, RuntimeGateway};
 use colui_adapters::runtime::{ComposeProcessRunner, TerminationConfig};
 use colui_app::{
-    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, ProfileReader,
-    RegistrySnapshot, RuntimeConnector, RuntimeStateReader,
+    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleOperation,
+    LifecycleRuntime, RuntimeConnector, RuntimeStateReader,
 };
 use colui_domain::AppErrorCode;
 use colui_domain::{
@@ -420,7 +420,7 @@ async fn gateway_reconnect_replaces_mismatch_without_restart() {
 }
 
 #[tokio::test]
-async fn gateway_profile_route_builds_backend_controlled_invocation() {
+async fn lifecycle_runtime_maps_all_operations_to_distinct_compose_verbs() {
     let last = Arc::new(std::sync::Mutex::new(None));
     let gateway = RuntimeGateway::new_for_tests(
         Box::new(FakeDocker::new("same")),
@@ -439,43 +439,82 @@ async fn gateway_profile_route_builds_backend_controlled_invocation() {
         },
     )
     .unwrap();
-    let reader = StaticProfiles(profile.clone());
-    gateway
-        .invoke_profile(&reader, profile.id.clone(), ComposeOperation::Stop)
-        .await
-        .unwrap();
-    let invocation = last.lock().unwrap().clone().unwrap();
-    assert_eq!(invocation.executable, PathBuf::from("docker"));
-    assert_eq!(
-        invocation.args,
-        vec![
-            "compose",
-            "-f",
-            "/workspace/compose.yml",
-            "--project-name",
-            "project",
-            "stop"
-        ]
-    );
-    assert_eq!(invocation.working_directory, profile.working_directory);
+    for (operation, verb) in [
+        (LifecycleOperation::Apply, "up"),
+        (LifecycleOperation::Stop, "stop"),
+        (LifecycleOperation::TearDown, "down"),
+        (LifecycleOperation::Restart, "restart"),
+    ] {
+        gateway
+            .run_profile(profile.clone(), operation)
+            .await
+            .unwrap();
+        let invocation = last.lock().unwrap().clone().unwrap();
+        assert_eq!(invocation.executable, PathBuf::from("docker"));
+        assert!(invocation.args.iter().any(|arg| arg == verb));
+        assert_eq!(invocation.working_directory, profile.working_directory);
+    }
 }
 
 #[tokio::test]
 async fn gateway_profile_route_returns_typed_error_when_not_ready() {
+    let last = Arc::new(std::sync::Mutex::new(None));
     let gateway = RuntimeGateway::new_for_tests(
         Box::new(FakeDocker::new("same")),
-        Box::new(RecordingRunner::default()),
+        Box::new(RecordingRunner { last: last.clone() }),
     );
     let profile = test_profile();
-    let reader = StaticProfiles(profile.clone());
-
     let error = gateway
-        .invoke_profile(&reader, profile.id, ComposeOperation::Stop)
+        .run_profile(profile, LifecycleOperation::Stop)
         .await
         .unwrap_err();
 
     assert_eq!(error.code, AppErrorCode::RuntimeUnavailable);
     assert_eq!(error.operation, "compose");
+    assert!(last.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn lifecycle_runtime_mismatch_does_not_invoke_runner() {
+    let last = Arc::new(std::sync::Mutex::new(None));
+    let gateway = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("mismatch")),
+        Box::new(RecordingRunner { last: last.clone() }),
+    );
+    gateway.connect_runtime(None).await.unwrap();
+
+    let error = gateway
+        .run_profile(test_profile(), LifecycleOperation::Apply)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, AppErrorCode::RuntimeContextMismatch);
+    assert!(last.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn lifecycle_runtime_maps_nonzero_and_timeout_results() {
+    for (result, code) in [
+        (
+            ComposeProcessResult::completed(7, "", "", Duration::ZERO),
+            AppErrorCode::ComposeFailed,
+        ),
+        (
+            ComposeProcessResult::from_timeout("", "", false, false, Duration::ZERO),
+            AppErrorCode::OperationTimeout,
+        ),
+    ] {
+        let gateway = RuntimeGateway::new_for_tests(
+            Box::new(FakeDocker::new("same")),
+            Box::new(LifecycleStatusRunner { result }),
+        );
+        gateway.connect_runtime(None).await.unwrap();
+        let error = gateway
+            .run_profile(test_profile(), LifecycleOperation::Stop)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, code);
+    }
 }
 
 #[tokio::test]
@@ -498,14 +537,9 @@ async fn gateway_profile_lookup_waits_for_connect_operation_gate() {
         .unwrap();
 
     let profile = test_profile();
-    let reader = StaticProfiles(profile.clone());
     let invoke = tokio::spawn({
         let gateway = gateway.clone();
-        async move {
-            gateway
-                .invoke_profile(&reader, profile.id, ComposeOperation::Stop)
-                .await
-        }
+        async move { gateway.run_profile(profile, LifecycleOperation::Stop).await }
     });
     tokio::task::yield_now().await;
     assert!(!invoke.is_finished());
@@ -764,19 +798,6 @@ impl ComposeRunner for BlockingInfoRunner {
     }
 }
 
-struct StaticProfiles(ProjectProfile);
-impl ProfileReader for StaticProfiles {
-    fn load(&self) -> colui_app::StoreFuture<'_, RegistrySnapshot> {
-        let profile = self.0.clone();
-        Box::pin(async move {
-            Ok(RegistrySnapshot {
-                registry_revision: 1,
-                profiles: vec![profile],
-            })
-        })
-    }
-}
-
 impl ComposeRunner for RecordingRunner {
     fn invoke(
         &self,
@@ -798,6 +819,10 @@ impl ComposeRunner for RecordingRunner {
 }
 
 struct StatusRunner {
+    result: ComposeProcessResult,
+}
+
+struct LifecycleStatusRunner {
     result: ComposeProcessResult,
 }
 
@@ -863,6 +888,26 @@ impl colui_app::ComposeRunner for StatusRunner {
     fn invoke(&self, _: ComposeInvocation) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
         let result = self.result.clone();
         Box::pin(async move { Ok(result) })
+    }
+}
+
+impl colui_app::ComposeRunner for LifecycleStatusRunner {
+    fn invoke(
+        &self,
+        invocation: ComposeInvocation,
+    ) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
+        let result = self.result.clone();
+        Box::pin(async move {
+            if invocation.args == vec!["info"] {
+                return Ok(ComposeProcessResult::completed(
+                    0,
+                    "ID: same\nServer Version: 1\nOSType: linux\nArchitecture: x86_64\n",
+                    "",
+                    Duration::ZERO,
+                ));
+            }
+            Ok(result)
+        })
     }
 }
 
