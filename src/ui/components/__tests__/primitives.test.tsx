@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
+import { createElement } from 'react';
 import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -45,6 +46,16 @@ describe('accessible primitives', () => {
   it('gives icon-only buttons accessible names', () => {
     render(<Button iconOnly aria-label="Close panel">X</Button>);
     expect(screen.getByRole('button', { name: 'Close panel' })).toBeVisible();
+  });
+
+  it('rejects unnamed icon-only buttons at runtime', () => {
+    expect(() => render(createElement(Button, { iconOnly: true } as never, 'X'))).toThrow(/accessible name/i);
+  });
+
+  it('requires an accessible name for icon-only buttons at type level', () => {
+    // @ts-expect-error icon-only buttons require aria-label or aria-labelledby
+    const unnamed = <Button iconOnly>X</Button>;
+    expect(unnamed).toBeDefined();
   });
 
   it('supports keyboard navigation in dropdown menus', async () => {
