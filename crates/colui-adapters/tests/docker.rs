@@ -3,7 +3,7 @@
 use colui_adapters::runtime::{
     compose_args, ComposeOperation, ComposeProcessRunner, RuntimeGateway,
 };
-use colui_app::{ComposeInvocation, ComposeRunner, DockerApi, RuntimeConnector};
+use colui_app::{DockerApi, ProfileReader, RegistrySnapshot, RuntimeConnector};
 use colui_domain::{
     ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin, RuntimeSessionState,
 };
@@ -58,6 +58,8 @@ async fn disposable_compose_fixture_scales_worker_to_two_containers() {
     fixture.apply(&gateway, true).await.unwrap();
     let workers = fixture.containers_with_service(&gateway, "worker").await;
     assert_eq!(workers, 2, "expected two scaled worker containers");
+    fixture.stop(&gateway).await.unwrap();
+    fixture.assert_containers_stopped(&gateway).await;
     fixture.tear_down(&gateway).await.unwrap();
     cleanup.disarm();
     fixture.assert_project_resources_absent().await;
@@ -84,6 +86,18 @@ struct TempComposeFixture {
     profile: ProjectProfile,
     compose_path: PathBuf,
     project_name: String,
+}
+
+impl ProfileReader for TempComposeFixture {
+    fn load(&self) -> colui_app::StoreFuture<'_, RegistrySnapshot> {
+        let profile = self.profile.clone();
+        Box::pin(async move {
+            Ok(RegistrySnapshot {
+                registry_revision: 1,
+                profiles: vec![profile],
+            })
+        })
+    }
 }
 
 impl TempComposeFixture {
@@ -122,23 +136,30 @@ impl TempComposeFixture {
         gateway: &RuntimeGateway,
         scale_worker: bool,
     ) -> Result<(), colui_domain::AppError> {
-        let mut args = compose_args(&self.profile, ComposeOperation::Up);
-        if scale_worker {
-            args.extend(["--scale".into(), "worker=2".into()]);
-        }
-        gateway.invoke(self.invocation(args)).await.map(|_| ())
+        let operation = if scale_worker {
+            ComposeOperation::UpScaled {
+                service: "worker".into(),
+                replicas: 2,
+            }
+        } else {
+            ComposeOperation::Up
+        };
+        gateway
+            .invoke_profile(self, self.profile.id.clone(), operation)
+            .await
+            .map(|_| ())
     }
 
     async fn stop(&self, gateway: &RuntimeGateway) -> Result<(), colui_domain::AppError> {
         gateway
-            .invoke(self.invocation(compose_args(&self.profile, ComposeOperation::Stop)))
+            .invoke_profile(self, self.profile.id.clone(), ComposeOperation::Stop)
             .await
             .map(|_| ())
     }
 
     async fn tear_down(&self, gateway: &RuntimeGateway) -> Result<(), colui_domain::AppError> {
         gateway
-            .invoke(self.invocation(compose_args(&self.profile, ComposeOperation::Down)))
+            .invoke_profile(self, self.profile.id.clone(), ComposeOperation::Down)
             .await
             .map(|_| ())
     }
@@ -159,9 +180,10 @@ impl TempComposeFixture {
         let matching = self
             .containers_with_exact_project(gateway, &containers)
             .await;
+        assert!(!matching.is_empty(), "expected project containers");
         assert!(matching
             .iter()
-            .any(|container| { container.state == colui_domain::ContainerState::Stopped }));
+            .all(|container| { container.state == colui_domain::ContainerState::Stopped }));
     }
 
     async fn containers_with_service(&self, gateway: &RuntimeGateway, service: &str) -> usize {
@@ -231,22 +253,6 @@ impl TempComposeFixture {
         assert!(self.directory.path().is_dir());
         assert!(self.compose_path.is_file());
         assert_eq!(&self.profile, expected);
-    }
-
-    fn invocation(&self, args: Vec<String>) -> ComposeInvocation {
-        ComposeInvocation {
-            executable: PathBuf::from("docker"),
-            args,
-            working_directory: self.profile.working_directory.clone(),
-            environment: colui_adapters::runtime::build_cli_environment(
-                std::env::var("DOCKER_HOST")
-                    .ok()
-                    .as_deref()
-                    .unwrap_or("unix:///var/run/docker.sock"),
-                std::env::vars().collect(),
-            ),
-            deadline: Instant::now() + Duration::from_secs(120),
-        }
     }
 }
 

@@ -15,7 +15,16 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "proce
 uuid = { version = "1", features = ["v4"] }
 
 [features]
-docker-tests = []
+docker-tests = ["test-support"]
+test-support = []
 
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "runtime"
+required-features = ["test-support"]
+
+[[test]]
+name = "docker"
+required-features = ["docker-tests"]

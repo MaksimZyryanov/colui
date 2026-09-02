@@ -1,8 +1,9 @@
+use super::ComposeOperation;
 use super::{build_cli_environment, resolve_endpoint, DockerControl};
 use bollard::Docker;
 use colui_app::{
-    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, RuntimeConnector,
-    RuntimeFuture, RuntimeStateReader,
+    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, ProfileReader,
+    RuntimeConnector, RuntimeFuture, RuntimeStateReader,
 };
 use colui_domain::{
     AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerInstance, DaemonFingerprint,
@@ -111,6 +112,72 @@ impl RuntimeGateway {
         let mut current = self.runner.try_lock().expect("test runner is idle");
         *current = runner;
     }
+
+    pub async fn invoke_profile<R: ProfileReader + ?Sized>(
+        &self,
+        reader: &R,
+        profile_id: colui_domain::ProfileId,
+        operation: ComposeOperation,
+    ) -> Result<ComposeProcessResult, AppError> {
+        let profile = reader
+            .load()
+            .await?
+            .profiles
+            .into_iter()
+            .find(|profile| profile.id == profile_id)
+            .ok_or_else(|| {
+                error(
+                    AppErrorCode::ProfileNotFound,
+                    "compose",
+                    "profile not found",
+                )
+            })?;
+        let args = super::compose_args(&profile, operation);
+        let endpoint = match &self.snapshot.lock().await.state {
+            RuntimeSessionState::Ready(context) => context.endpoint.clone(),
+            _ => unreachable!("compose readiness checked while operation gate is held"),
+        };
+        let invocation = ComposeInvocation {
+            executable: "docker".into(),
+            args,
+            working_directory: profile.working_directory,
+            environment: build_cli_environment(endpoint.as_str(), std::env::vars().collect()),
+            deadline: Instant::now() + Duration::from_secs(120),
+        };
+        self.execute_compose(invocation).await
+    }
+
+    /// Raw process invocation exists only behind adapter test support. Application code uses
+    /// `invoke_profile`, which derives argv, cwd, and environment from stored profile data.
+    #[doc(hidden)]
+    #[cfg(feature = "test-support")]
+    pub async fn invoke_backend_for_tests(
+        &self,
+        invocation: ComposeInvocation,
+    ) -> Result<ComposeProcessResult, AppError> {
+        self.execute_compose(invocation).await
+    }
+
+    async fn execute_compose(
+        &self,
+        invocation: ComposeInvocation,
+    ) -> Result<ComposeProcessResult, AppError> {
+        if let Some(error) = self.compose_error().await {
+            return Err(error);
+        }
+        let _permit = self.gate.acquire().await.map_err(|_| {
+            error(
+                AppErrorCode::ComposeFailed,
+                "compose",
+                "compose gate closed",
+            )
+        })?;
+        if let Some(error) = self.compose_error().await {
+            return Err(error);
+        }
+        let runner = self.runner.lock().await.clone();
+        runner.invoke(invocation).await
+    }
 }
 
 fn error(code: AppErrorCode, operation: &str, message: &str) -> AppError {
@@ -132,6 +199,13 @@ impl RuntimeConnector for RuntimeGateway {
         preference: Option<DockerEndpoint>,
     ) -> RuntimeFuture<'_, RuntimeSessionState> {
         Box::pin(async move {
+            let _permit = self.gate.acquire().await.map_err(|_| {
+                error(
+                    AppErrorCode::RuntimeUnavailable,
+                    "connect_runtime",
+                    "runtime operation gate closed",
+                )
+            })?;
             let endpoint = match resolve_endpoint(
                 preference.as_ref().map(DockerEndpoint::as_str),
                 std::env::var("DOCKER_HOST").ok().as_deref(),
@@ -346,27 +420,6 @@ impl DockerApi for RuntimeGateway {
                 ));
             }
             Ok(result)
-        })
-    }
-}
-impl ComposeRunner for RuntimeGateway {
-    fn invoke(&self, invocation: ComposeInvocation) -> RuntimeFuture<'_, ComposeProcessResult> {
-        Box::pin(async move {
-            if let Some(error) = self.compose_error().await {
-                return Err(error);
-            }
-            let _permit = self.gate.acquire().await.map_err(|_| {
-                error(
-                    AppErrorCode::ComposeFailed,
-                    "compose",
-                    "compose gate closed",
-                )
-            })?;
-            if let Some(error) = self.compose_error().await {
-                return Err(error);
-            }
-            let runner = self.runner.lock().await.clone();
-            runner.invoke(invocation).await
         })
     }
 }

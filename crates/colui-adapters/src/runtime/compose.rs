@@ -1,11 +1,12 @@
 use colui_domain::ProjectProfile;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ComposeOperation {
     Up,
     Stop,
     Down,
     Restart,
+    UpScaled { service: String, replicas: u16 },
 }
 
 pub fn compose_args(profile: &ProjectProfile, operation: ComposeOperation) -> Vec<String> {
@@ -26,6 +27,12 @@ pub fn compose_args(profile: &ProjectProfile, operation: ComposeOperation) -> Ve
     }
     match operation {
         ComposeOperation::Up => args.extend(["up".into(), "-d".into()]),
+        ComposeOperation::UpScaled { service, replicas } => args.extend([
+            "up".into(),
+            "-d".into(),
+            "--scale".into(),
+            format!("{service}={replicas}"),
+        ]),
         ComposeOperation::Stop => args.push("stop".into()),
         ComposeOperation::Down => args.push("down".into()),
         ComposeOperation::Restart => args.push("restart".into()),
