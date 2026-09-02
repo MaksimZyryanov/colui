@@ -10,10 +10,14 @@ export function RuntimeInitializer({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!attempted.current) {
       attempted.current = true;
-      void connect.mutateAsync();
+      void connect.mutate();
     }
   }, [connect.mutateAsync]);
 
   const error = state.error instanceof AppErrorException ? state.error : null;
-  return <>{children}{error ? <p role="alert">{error.code === 'protocol_mismatch' ? `Response format mismatch: ${error.message}` : error.message}</p> : null}</>;
+  const connectError = connect.error instanceof AppErrorException ? connect.error : null;
+  return <>{children}
+    {error ? <p role="alert">{error.code === 'protocol_mismatch' ? `Response format mismatch: ${error.message}` : error.message}</p> : null}
+    {connectError ? <p role="alert">{connectError.code === 'protocol_mismatch' ? `Response format mismatch: ${connectError.message}` : connectError.message}</p> : null}
+  </>;
 }

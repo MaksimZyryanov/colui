@@ -11,7 +11,7 @@ export function useConnectRuntime() {
   return useMutation({
     mutationFn: connectRuntime,
     onSuccess: state => {
-      if (client.getQueryState(runtimeKeys.state())?.status !== 'error') client.setQueryData(runtimeKeys.state(), state);
+      client.setQueryData(runtimeKeys.state(), state);
     },
   });
 }

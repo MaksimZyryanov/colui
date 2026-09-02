@@ -12,15 +12,18 @@ let drafts = new Map<string, ProfileDraft>();
 let runtime: unknown = { state: 'disconnected' };
 let statuses = new Map<string, unknown>();
 const overrides = new Map<string, unknown>();
+const errors = new Map<string, unknown>();
 let invocations: Array<{ command: string; args?: unknown }> = [];
 const baseStatus = (profileId: string) => ({ profileId, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null }, definition: { state: 'unchecked', revision: null, serviceCount: null }, operation: null, issues: [] });
 function validateId(args: unknown, operation: string) { const result = profileIdRequestSchema.safeParse(args); if (!result.success) error('profile_invalid', operation, 'profileId must be a UUID'); return result.data!.profileId; }
 export const mockBackend = {
-  reset() { profiles = []; drafts = new Map(); runtime = { state: 'disconnected' }; statuses = new Map(); overrides.clear(); invocations = []; nextId = 1; },
+  reset() { profiles = []; drafts = new Map(); runtime = { state: 'disconnected' }; statuses = new Map(); overrides.clear(); errors.clear(); invocations = []; nextId = 1; },
   getInvocations() { return [...invocations]; },
   setResponseOverride(command: string, value: unknown) { overrides.set(command, value); },
+  setErrorOverride(command: string, value: unknown) { errors.set(command, value); },
   async invoke(command: string, args?: unknown): Promise<unknown> {
     invocations.push({ command, args });
+    if (errors.has(command)) throw errors.get(command);
     if (overrides.has(command)) return overrides.get(command);
     switch (command) {
       case 'list_profiles': if (args !== undefined) error('profile_invalid', command, 'unexpected arguments'); return profiles;
