@@ -6,6 +6,7 @@ use colui_adapters::runtime::{ComposeOperation, RuntimeGateway};
 use colui_adapters::runtime::{ComposeProcessRunner, TerminationConfig};
 use colui_app::{
     ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, RuntimeConnector,
+    RuntimeStateReader,
 };
 use colui_domain::AppErrorCode;
 use colui_domain::{
@@ -457,6 +458,54 @@ async fn gateway_disconnect_waits_for_active_compose_operation() {
     assert!(disconnect.await.unwrap().is_ok());
 }
 
+#[tokio::test]
+async fn compose_gate_serializes_two_profiles() {
+    let runner = Arc::new(CountingRunner::default());
+    let maximum_active = runner.maximum_active.clone();
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(CountingRunner {
+            active: runner.active.clone(),
+            maximum_active: runner.maximum_active.clone(),
+        }),
+    ));
+    gateway.connect_runtime(None).await.unwrap();
+
+    let first_gateway = gateway.clone();
+    let second_gateway = gateway.clone();
+    let first = tokio::spawn(async move { first_gateway.invoke(fake_invocation()).await });
+    let second = tokio::spawn(async move { second_gateway.invoke(fake_invocation()).await });
+    assert!(first.await.unwrap().is_ok());
+    assert!(second.await.unwrap().is_ok());
+    assert_eq!(maximum_active.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn reconnect_invalidates_old_api_observation() {
+    let docker = Arc::new(StaleDocker::default());
+    let started = docker.started.clone();
+    let release = docker.release.clone();
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(StaleDocker { started, release }),
+        Box::new(FakeRunner::new("same")),
+    ));
+    gateway.connect_runtime(None).await.unwrap();
+    let old_session = ready_session_id(&gateway).await;
+
+    let list = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.list_containers().await }
+    });
+    docker.started.notified().await;
+    gateway.connect_runtime(None).await.unwrap();
+    let new_session = ready_session_id(&gateway).await;
+    docker.release.notify_one();
+
+    let error = list.await.unwrap().unwrap_err();
+    assert_ne!(old_session, new_session);
+    assert_eq!(error.code, AppErrorCode::RuntimeUnavailable);
+}
+
 #[derive(Clone)]
 struct FakeDocker {
     fingerprint: String,
@@ -488,12 +537,56 @@ impl colui_adapters::runtime::DockerControl for FakeDocker {
     }
 }
 
+impl colui_adapters::runtime::DockerControl for StaleDocker {
+    fn info(&self) -> colui_app::RuntimeFuture<'_, DaemonFingerprint> {
+        Box::pin(async { Ok(fp_for("same")) })
+    }
+    fn list(&self) -> colui_app::RuntimeFuture<'_, Vec<ContainerInstance>> {
+        let started = self.started.clone();
+        let release = self.release.clone();
+        Box::pin(async move {
+            started.notify_one();
+            release.notified().await;
+            Ok(vec![])
+        })
+    }
+    fn inspect(&self, _: &ContainerId) -> colui_app::RuntimeFuture<'_, ContainerDetails> {
+        Box::pin(async {
+            Err(AppError::new(
+                AppErrorCode::RuntimeUnavailable,
+                "inspect",
+                None,
+                "missing",
+            ))
+        })
+    }
+}
+
 struct FakeRunner {
     fingerprint: String,
 }
 
 struct StatusRunner {
     result: ComposeProcessResult,
+}
+
+#[derive(Default)]
+struct CountingRunner {
+    active: Arc<AtomicUsize>,
+    maximum_active: Arc<AtomicUsize>,
+}
+
+#[derive(Default)]
+struct StaleDocker {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+async fn ready_session_id(gateway: &RuntimeGateway) -> uuid::Uuid {
+    match gateway.session_state().await.unwrap() {
+        colui_domain::RuntimeSessionState::Ready(context) => *context.session_id.as_uuid(),
+        state => panic!("expected ready state, got {state:?}"),
+    }
 }
 
 #[derive(Clone)]
@@ -535,6 +628,33 @@ impl colui_app::ComposeRunner for StatusRunner {
     fn invoke(&self, _: ComposeInvocation) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
         let result = self.result.clone();
         Box::pin(async move { Ok(result) })
+    }
+}
+
+impl colui_app::ComposeRunner for CountingRunner {
+    fn invoke(
+        &self,
+        invocation: ComposeInvocation,
+    ) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
+        if invocation.args == vec!["info"] {
+            return Box::pin(async {
+                Ok(ComposeProcessResult::completed(
+                    0,
+                    "ID: same\nServer Version: 1\nOSType: linux\nArchitecture: x86_64\n",
+                    "",
+                    Duration::ZERO,
+                ))
+            });
+        }
+        let active = &self.active;
+        let maximum_active = &self.maximum_active;
+        Box::pin(async move {
+            let current = active.fetch_add(1, Ordering::AcqRel) + 1;
+            maximum_active.fetch_max(current, Ordering::AcqRel);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            active.fetch_sub(1, Ordering::AcqRel);
+            Ok(ComposeProcessResult::completed(0, "", "", Duration::ZERO))
+        })
     }
 }
 impl FakeRunner {
