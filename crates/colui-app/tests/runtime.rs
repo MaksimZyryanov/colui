@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 struct FakeRuntime;
@@ -126,6 +127,39 @@ async fn compose_runner_accepts_structured_invocation() {
     assert_eq!(result.exit_code(), Some(0));
 }
 
+#[tokio::test]
+async fn compose_runner_receives_complete_structured_invocation() {
+    let seen = Arc::new(Mutex::new(None));
+    let runner = RecordingRunner { seen: seen.clone() };
+    let invocation = ComposeInvocation {
+        executable: PathBuf::from("fake-compose"),
+        args: vec!["--profile".into(), "blue".into()],
+        working_directory: PathBuf::from("/tmp/project"),
+        environment: BTreeMap::from([("PROFILE".into(), "blue".into())]),
+        deadline: Instant::now() + Duration::from_secs(5),
+    };
+    let expected = invocation.clone();
+
+    let result = runner.invoke(invocation).await.unwrap();
+
+    assert_eq!(result.exit_code(), Some(0));
+    assert_eq!(seen.lock().unwrap().as_ref(), Some(&expected));
+}
+
+#[tokio::test]
+async fn runtime_connector_exposes_connection_lifecycle_contract() {
+    let fake = FakeRuntime::ready();
+    let endpoint = DockerEndpoint::try_from("unix:///tmp/docker.sock").unwrap();
+
+    assert_eq!(
+        RuntimeConnector::connect_runtime(&fake, Some(endpoint))
+            .await
+            .unwrap(),
+        RuntimeSessionState::Disconnected
+    );
+    RuntimeConnector::disconnect_runtime(&fake).await.unwrap();
+}
+
 #[test]
 fn process_result_exposes_independent_truncation_and_timeout() {
     let result =
@@ -133,4 +167,18 @@ fn process_result_exposes_independent_truncation_and_timeout() {
     assert!(result.timed_out());
     assert!(result.stdout_truncated());
     assert!(!result.stderr_truncated());
+}
+
+struct RecordingRunner {
+    seen: Arc<Mutex<Option<ComposeInvocation>>>,
+}
+
+impl ComposeRunner for RecordingRunner {
+    fn invoke(
+        &self,
+        invocation: ComposeInvocation,
+    ) -> Pin<Box<dyn Future<Output = Result<ComposeProcessResult, AppError>> + Send + '_>> {
+        *self.seen.lock().unwrap() = Some(invocation);
+        Box::pin(async { Ok(ComposeProcessResult::completed(0, "", "", Duration::ZERO)) })
+    }
 }

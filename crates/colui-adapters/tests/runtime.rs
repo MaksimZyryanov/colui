@@ -444,7 +444,9 @@ async fn gateway_disconnect_waits_for_active_compose_operation() {
         let gateway = gateway.clone();
         async move { gateway.invoke(fake_invocation()).await }
     });
-    runner.started.notified().await;
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
 
     let disconnect = tokio::spawn({
         let gateway = gateway.clone();
@@ -460,24 +462,41 @@ async fn gateway_disconnect_waits_for_active_compose_operation() {
 
 #[tokio::test]
 async fn compose_gate_serializes_two_profiles() {
-    let runner = Arc::new(CountingRunner::default());
-    let maximum_active = runner.maximum_active.clone();
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum_active = Arc::new(AtomicUsize::new(0));
+    let observed_args = Arc::new(std::sync::Mutex::new(Vec::new()));
     let gateway = Arc::new(RuntimeGateway::new_for_tests(
         Box::new(FakeDocker::new("same")),
         Box::new(CountingRunner {
-            active: runner.active.clone(),
-            maximum_active: runner.maximum_active.clone(),
+            active,
+            maximum_active: maximum_active.clone(),
+            observed_args: observed_args.clone(),
         }),
     ));
     gateway.connect_runtime(None).await.unwrap();
 
     let first_gateway = gateway.clone();
     let second_gateway = gateway.clone();
-    let first = tokio::spawn(async move { first_gateway.invoke(fake_invocation()).await });
-    let second = tokio::spawn(async move { second_gateway.invoke(fake_invocation()).await });
+    let first = tokio::spawn(async move {
+        first_gateway
+            .invoke(invocation_with_args("profile-a"))
+            .await
+    });
+    let second = tokio::spawn(async move {
+        second_gateway
+            .invoke(invocation_with_args("profile-b"))
+            .await
+    });
     assert!(first.await.unwrap().is_ok());
     assert!(second.await.unwrap().is_ok());
     assert_eq!(maximum_active.load(Ordering::Acquire), 1);
+    let observed_args = observed_args.lock().unwrap();
+    assert!(observed_args
+        .iter()
+        .any(|args| args == &vec![String::from("profile-a")]));
+    assert!(observed_args
+        .iter()
+        .any(|args| args == &vec![String::from("profile-b")]));
 }
 
 #[tokio::test]
@@ -486,7 +505,11 @@ async fn reconnect_invalidates_old_api_observation() {
     let started = docker.started.clone();
     let release = docker.release.clone();
     let gateway = Arc::new(RuntimeGateway::new_for_tests(
-        Box::new(StaleDocker { started, release }),
+        Box::new(StaleDocker {
+            started,
+            release,
+            lists: AtomicUsize::new(0),
+        }),
         Box::new(FakeRunner::new("same")),
     ));
     gateway.connect_runtime(None).await.unwrap();
@@ -496,7 +519,9 @@ async fn reconnect_invalidates_old_api_observation() {
         let gateway = gateway.clone();
         async move { gateway.list_containers().await }
     });
-    docker.started.notified().await;
+    tokio::time::timeout(Duration::from_secs(1), docker.started.notified())
+        .await
+        .unwrap();
     gateway.connect_runtime(None).await.unwrap();
     let new_session = ready_session_id(&gateway).await;
     docker.release.notify_one();
@@ -504,6 +529,11 @@ async fn reconnect_invalidates_old_api_observation() {
     let error = list.await.unwrap().unwrap_err();
     assert_ne!(old_session, new_session);
     assert_eq!(error.code, AppErrorCode::RuntimeUnavailable);
+    assert!(matches!(
+        gateway.session_state().await.unwrap(),
+        colui_domain::RuntimeSessionState::Ready(_)
+    ));
+    assert!(gateway.list_containers().await.is_ok());
 }
 
 #[derive(Clone)]
@@ -544,9 +574,14 @@ impl colui_adapters::runtime::DockerControl for StaleDocker {
     fn list(&self) -> colui_app::RuntimeFuture<'_, Vec<ContainerInstance>> {
         let started = self.started.clone();
         let release = self.release.clone();
+        let first = self.lists.fetch_add(1, Ordering::AcqRel) == 0;
         Box::pin(async move {
-            started.notify_one();
-            release.notified().await;
+            if first {
+                started.notify_one();
+                tokio::time::timeout(Duration::from_secs(1), release.notified())
+                    .await
+                    .unwrap();
+            }
             Ok(vec![])
         })
     }
@@ -574,12 +609,14 @@ struct StatusRunner {
 struct CountingRunner {
     active: Arc<AtomicUsize>,
     maximum_active: Arc<AtomicUsize>,
+    observed_args: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
 }
 
 #[derive(Default)]
 struct StaleDocker {
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
+    lists: AtomicUsize,
 }
 
 async fn ready_session_id(gateway: &RuntimeGateway) -> uuid::Uuid {
@@ -619,7 +656,9 @@ impl colui_app::ComposeRunner for BlockingRunner {
                 ));
             }
             started.notify_one();
-            release.notified().await;
+            tokio::time::timeout(Duration::from_secs(1), release.notified())
+                .await
+                .unwrap();
             Ok(ComposeProcessResult::completed(0, "", "", Duration::ZERO))
         })
     }
@@ -646,6 +685,7 @@ impl colui_app::ComposeRunner for CountingRunner {
                 ))
             });
         }
+        self.observed_args.lock().unwrap().push(invocation.args);
         let active = &self.active;
         let maximum_active = &self.maximum_active;
         Box::pin(async move {
@@ -695,4 +735,10 @@ fn fake_invocation() -> ComposeInvocation {
         environment: BTreeMap::new(),
         deadline: Instant::now() + Duration::from_secs(1),
     }
+}
+
+fn invocation_with_args(profile: &str) -> ComposeInvocation {
+    let mut invocation = fake_invocation();
+    invocation.args = vec![profile.into()];
+    invocation
 }
