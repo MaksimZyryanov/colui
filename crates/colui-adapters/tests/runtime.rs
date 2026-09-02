@@ -319,15 +319,15 @@ fn compose_argv_comes_only_from_profile_and_operation() {
         vec![
             "compose",
             "-f",
-            "a.yml",
+            "/workspace/a.yml",
             "-f",
-            "b.yml",
+            "/workspace/b.yml",
             "--project-name",
             "demo",
             "--env-file",
-            "one.env",
+            "/workspace/one.env",
             "--env-file",
-            "two.env",
+            "/workspace/two.env",
             "up",
             "-d"
         ]
@@ -398,6 +398,28 @@ async fn gateway_reconnect_replaces_mismatch_without_restart() {
     ));
 }
 
+#[tokio::test]
+async fn gateway_rejects_unsuccessful_or_timed_out_cli_info() {
+    for result in [
+        ComposeProcessResult::completed(1, "", "", Duration::ZERO),
+        ComposeProcessResult::from_timeout("", "", false, false, Duration::ZERO),
+    ] {
+        let gateway = RuntimeGateway::new_for_tests(
+            Box::new(FakeDocker::new("same")),
+            Box::new(StatusRunner { result }),
+        );
+        let state = gateway.connect_runtime(None).await.unwrap();
+        assert!(matches!(
+            state,
+            colui_domain::RuntimeSessionState::Failed(_)
+        ));
+        assert_eq!(
+            gateway.list_containers().await.unwrap_err().code,
+            AppErrorCode::RuntimeUnavailable
+        );
+    }
+}
+
 #[derive(Clone)]
 struct FakeDocker {
     fingerprint: String,
@@ -431,6 +453,16 @@ impl colui_adapters::runtime::DockerControl for FakeDocker {
 
 struct FakeRunner {
     fingerprint: String,
+}
+
+struct StatusRunner {
+    result: ComposeProcessResult,
+}
+impl colui_app::ComposeRunner for StatusRunner {
+    fn invoke(&self, _: ComposeInvocation) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
+        let result = self.result.clone();
+        Box::pin(async move { Ok(result) })
+    }
 }
 impl FakeRunner {
     fn new(fingerprint: &str) -> Self {

@@ -135,12 +135,71 @@ fn inspected(value: ContainerInspectResponse) -> ContainerDetails {
                 .labels
                 .as_ref()
                 .and_then(|v| v.get("com.docker.compose.service").cloned()),
-            published_ports: vec![],
+            published_ports: inspect_ports(value.network_settings.as_ref()),
         },
         labels: config
             .labels
             .unwrap_or_default()
             .into_iter()
             .collect::<BTreeMap<_, _>>(),
+    }
+}
+
+fn inspect_ports(settings: Option<&bollard::models::NetworkSettings>) -> Vec<PortBinding> {
+    let Some(ports) = settings.and_then(|settings| settings.ports.as_ref()) else {
+        return vec![];
+    };
+    ports
+        .iter()
+        .flat_map(|(container, bindings)| {
+            let Some((port, protocol)) = container.rsplit_once('/') else {
+                return vec![];
+            };
+            let Ok(container_port) = port.parse::<u16>() else {
+                return vec![];
+            };
+            bindings
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(move |binding| {
+                    Some(PortBinding {
+                        host_ip: binding.host_ip.clone().unwrap_or_default(),
+                        host_port: binding.host_port.as_deref()?.parse().ok()?,
+                        container_port,
+                        protocol: protocol.to_owned(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inspect_ports;
+
+    #[test]
+    fn inspect_ports_maps_multiple_hosts_and_protocols() {
+        let settings: bollard::models::NetworkSettings = serde_json::from_str(
+            r#"{"Ports":{"80/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"},{"HostIp":"0.0.0.0","HostPort":"18080"}],"53/udp":[{"HostIp":"127.0.0.1","HostPort":"5353"}]}}"#,
+        ).unwrap();
+        let ports = inspect_ports(Some(&settings));
+        assert_eq!(ports.len(), 3);
+        assert!(ports.iter().any(|port| {
+            port.container_port == 80
+                && port.host_port == 8080
+                && port.host_ip == "127.0.0.1"
+                && port.protocol == "tcp"
+        }));
+        assert!(ports.iter().any(|port| {
+            port.container_port == 80
+                && port.host_port == 18080
+                && port.host_ip == "0.0.0.0"
+                && port.protocol == "tcp"
+        }));
+        assert!(ports.iter().any(|port| port.container_port == 53
+            && port.host_port == 5353
+            && port.protocol == "udp"));
     }
 }
