@@ -112,5 +112,5 @@ pub trait RuntimeConnector: Send + Sync {
 }
 
 pub trait RuntimeStateReader: Send + Sync {
-    fn session_state(&self) -> RuntimeSessionState;
+    fn session_state(&self) -> RuntimeFuture<'_, RuntimeSessionState>;
 }

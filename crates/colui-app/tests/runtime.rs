@@ -77,8 +77,10 @@ impl RuntimeConnector for FakeRuntime {
 }
 
 impl RuntimeStateReader for FakeRuntime {
-    fn session_state(&self) -> RuntimeSessionState {
-        RuntimeSessionState::Disconnected
+    fn session_state(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<RuntimeSessionState, AppError>> + Send + '_>> {
+        Box::pin(async { Ok(RuntimeSessionState::Disconnected) })
     }
 }
 
@@ -97,6 +99,22 @@ async fn ports_use_shared_borrow_and_do_not_construct_runtime_clients() {
     let fake = FakeRuntime::ready();
     let containers = DockerApi::list_containers(&fake).await.unwrap();
     assert_eq!(containers.len(), 1);
+}
+
+#[tokio::test]
+async fn runtime_state_reader_returns_state_asynchronously() {
+    let fake = FakeRuntime::ready();
+    let state = RuntimeStateReader::session_state(&fake).await.unwrap();
+    assert_eq!(state, RuntimeSessionState::Disconnected);
+}
+
+#[tokio::test]
+async fn docker_api_inspection_can_return_typed_error() {
+    let fake = FakeRuntime::ready();
+    let error = DockerApi::inspect_container(&fake, &ContainerId("missing".into()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, colui_domain::AppErrorCode::RuntimeUnavailable);
 }
 
 #[tokio::test]
