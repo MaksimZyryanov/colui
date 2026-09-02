@@ -1,0 +1,11 @@
+[package]
+name = "colui-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+colui-domain = { path = "../colui-domain" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+uuid = "1"
