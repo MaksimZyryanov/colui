@@ -1,9 +1,52 @@
 import { describe, expect, it } from 'vitest';
-import { appErrorSchema } from '../errors';
+import { z } from 'zod';
+import { appErrorSchema, errorCodeSchema } from '../errors';
 import { daemonFingerprintSchema, lifecycleResultSchema, mismatchDetailsSchema, profileDetailsSchema, profileDraftSchema, profileIdRequestSchema, profileSummarySchema, profileValidationSchema, projectStatusSchema, runtimeProjectionSchema, runtimeStateSchema, sessionContextSchema } from '../schemas';
+import * as s from '../schemas';
 import { decodeResponse } from '../validation';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+
+const normalizeSchema = (value: unknown, root = value): unknown => {
+  if (Array.isArray(value)) return value.map(child => normalizeSchema(child, root));
+  if (!value || typeof value !== 'object') return value;
+  const object = value as Record<string, unknown>;
+  if (typeof object.$ref === 'string' && object.$ref.startsWith('#/definitions/')) {
+    const definition = (root as Record<string, unknown>).definitions as Record<string, unknown> | undefined;
+    const target = definition?.[object.$ref.slice('#/definitions/'.length)];
+    if (target) return normalizeSchema(target, root);
+  }
+  const normalized = Object.fromEntries(Object.entries(object)
+    .filter(([key]) => !['$schema', 'title', 'description', 'additionalProperties'].includes(key))
+    .filter(([key]) => key !== 'definitions')
+    .map(([key, child]) => [key, normalizeSchema(child, root)]));
+  if (normalized.const !== undefined) {
+    normalized.enum = [normalized.const];
+    delete normalized.const;
+  }
+  if (normalized.anyOf !== undefined) {
+    normalized.oneOf = normalized.anyOf;
+    delete normalized.anyOf;
+  }
+  if (Array.isArray(normalized.oneOf) && normalized.oneOf.every(item => item && typeof item === 'object' && Object.keys(item as object).every(key => key === 'type' || key === 'format' || key === 'minimum'))) {
+    const branches = normalized.oneOf as Array<Record<string, unknown>>;
+    if (branches.every(item => item.type === 'null' || item.type === 'string' || item.type === 'integer')) {
+      normalized.type = branches.map(item => item.type).sort();
+      const formatted = branches.find(item => item.format !== undefined);
+      const bounded = branches.find(item => item.minimum !== undefined);
+      if (formatted) normalized.format = formatted.format;
+      if (bounded) normalized.minimum = bounded.minimum;
+      delete normalized.oneOf;
+    }
+  }
+  if (typeof normalized.format === 'string' && normalized.format.startsWith('uint')) delete normalized.format;
+  for (const key of ['required', 'properties', 'definitions']) {
+    const child = normalized[key];
+    if (Array.isArray(child)) normalized[key] = [...child].sort();
+    if (child && typeof child === 'object' && !Array.isArray(child)) normalized[key] = Object.fromEntries(Object.entries(child).sort(([a], [b]) => a.localeCompare(b)));
+  }
+  return normalized;
+};
 
 describe('IPC contracts', () => {
   it('turns malformed success payload into protocol_mismatch', () => {
@@ -85,5 +128,42 @@ describe('IPC contracts', () => {
     expect(profileIdRequestSchema.safeParse({ profileId: '00000000000000000000000000000001' }).success).toBe(false);
     expect(profileIdRequestSchema.safeParse({ profileId: 'abcdefab-cdef-abcd-efab-cdefabcdefab' }).success).toBe(true);
     expect(profileIdRequestSchema.safeParse({ profileId: 'ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB' }).success).toBe(false);
+  });
+
+  it('compares every TypeScript DTO against generated Rust schema semantically', async () => {
+    const { zodToJsonSchema } = await import('zod-to-json-schema');
+    const schemas = [
+      ['AppErrorCodeDto', errorCodeSchema], ['AppErrorDto', appErrorSchema], ['IssueDto', s.issueSchema],
+      ['RegistrationOriginDto', s.registrationOriginSchema], ['ProfileSummaryDto', profileSummarySchema], ['ProfileDraftDto', profileDraftSchema],
+      ['ProfilePatchDto', s.profilePatchSchema], ['ProfileDetailsDto', profileDetailsSchema], ['ProfileValidationDto', profileValidationSchema],
+      ['ProfileIdRequestDto', profileIdRequestSchema], ['UpdateProfileRequestDto', s.updateProfileRequestSchema], ['RemoveProfileRequestDto', s.removeProfileRequestSchema],
+      ['DaemonFingerprintDto', daemonFingerprintSchema], ['SessionContextDto', sessionContextSchema], ['MismatchDetailsDto', mismatchDetailsSchema],
+      ['RuntimePresenceDto', z.enum(['unavailable', 'absent', 'present'])], ['RuntimeActivityDto', z.enum(['all-running', 'mixed', 'none-running'])],
+      ['DefinitionStateDto', z.enum(['unchecked', 'valid', 'invalid', 'stale'])], ['OperationKindDto', z.enum(['apply', 'stop', 'tear-down', 'restart'])],
+      ['OperationPhaseDto', z.enum(['queued', 'running', 'succeeded', 'failed'])], ['RuntimeProjectionDto', runtimeProjectionSchema],
+      ['DefinitionProjectionDto', z.object({ state: z.enum(['unchecked', 'valid', 'invalid', 'stale']), revision: z.string().nullable().optional(), serviceCount: z.number().int().nonnegative().nullable().optional() })],
+      ['OperationDto', z.object({ kind: z.enum(['apply', 'stop', 'tear-down', 'restart']), phase: z.enum(['queued', 'running', 'succeeded', 'failed']), startedAt: z.string().datetime({ offset: true }) })],
+      ['ProjectStatusDto', projectStatusSchema], ['RuntimeStateDto', runtimeStateSchema], ['LifecycleResultDto', lifecycleResultSchema],
+    ] as const;
+    for (const [name, schema] of schemas) {
+      const rust = JSON.parse(readFileSync(resolve('schemas', `${name}.json`), 'utf8'));
+      const generated = zodToJsonSchema(schema, { name, $refStrategy: 'none' });
+      expect(normalizeSchema(generated), name).toEqual(normalizeSchema(rust));
+    }
+    expect(schemas).toHaveLength(26);
+  });
+
+  it('exercises every committed fixture exactly once', () => {
+    const fixture = (name: string) => JSON.parse(readFileSync(resolve('schemas/fixtures', name), 'utf8'));
+    const cases: Array<[string, { safeParse: (value: unknown) => { success: boolean } }, boolean]> = [
+      ['profile_summary_valid.json', profileSummarySchema, true], ['profile_summary_invalid_uuid.json', profileSummarySchema, false],
+      ['profile_summary_invalid_enum.json', profileSummarySchema, false], ['profile_summary_invalid_missing_id.json', profileSummarySchema, false],
+      ['profile_details_invalid_missing_required.json', profileDetailsSchema, false], ['profile_validation_valid.json', profileValidationSchema, true],
+      ['runtime_unavailable.json', runtimeStateSchema, true], ['runtime_context_mismatch.json', runtimeStateSchema, true],
+      ['session_context_invalid_timestamp.json', sessionContextSchema, false], ['project_status_runtime_unavailable.json', projectStatusSchema, true],
+      ['project_status_invalid_runtime_combination.json', projectStatusSchema, false], ['lifecycle_result_valid.json', lifecycleResultSchema, true],
+    ];
+    expect(cases.map(([name]) => name).sort()).toEqual(readdirSync(resolve('schemas/fixtures')).sort());
+    for (const [name, schema, expected] of cases) expect(schema.safeParse(fixture(name)).success, name).toBe(expected);
   });
 });
