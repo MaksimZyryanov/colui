@@ -2,8 +2,9 @@ use super::ComposeOperation;
 use super::{build_cli_environment, resolve_endpoint, DockerControl};
 use bollard::Docker;
 use colui_app::{
-    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, ProfileReader,
-    RuntimeConnector, RuntimeFuture, RuntimeStateReader,
+    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleFuture,
+    LifecycleOperation, LifecycleResult, LifecycleRuntime, ProfileReader, RuntimeConnector,
+    RuntimeFuture, RuntimeStateReader,
 };
 use colui_domain::{
     AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerInstance, DaemonFingerprint,
@@ -119,23 +120,6 @@ impl RuntimeGateway {
         profile_id: colui_domain::ProfileId,
         operation: ComposeOperation,
     ) -> Result<ComposeProcessResult, AppError> {
-        let _permit = self.gate.acquire().await.map_err(|_| {
-            error(
-                AppErrorCode::ComposeFailed,
-                "compose",
-                "compose gate closed",
-            )
-        })?;
-        let state = self.snapshot.lock().await.state.clone();
-        let endpoint = match state {
-            RuntimeSessionState::Ready(context) => context.endpoint,
-            _ => {
-                return Err(self
-                    .compose_error()
-                    .await
-                    .expect("non-ready state has compose error"))
-            }
-        };
         let profile = reader
             .load()
             .await?
@@ -149,6 +133,30 @@ impl RuntimeGateway {
                     "profile not found",
                 )
             })?;
+        self.invoke_loaded_profile(profile, operation).await
+    }
+
+    async fn invoke_loaded_profile(
+        &self,
+        profile: colui_domain::ProjectProfile,
+        operation: ComposeOperation,
+    ) -> Result<ComposeProcessResult, AppError> {
+        let _permit = self.gate.acquire().await.map_err(|_| {
+            error(
+                AppErrorCode::ComposeFailed,
+                "compose",
+                "compose gate closed",
+            )
+        })?;
+        let endpoint = match self.snapshot.lock().await.state.clone() {
+            RuntimeSessionState::Ready(context) => context.endpoint,
+            _ => {
+                return Err(self
+                    .compose_error()
+                    .await
+                    .expect("non-ready state has compose error"))
+            }
+        };
         let args = super::compose_args(&profile, operation);
         let invocation = ComposeInvocation {
             executable: "docker".into(),
@@ -184,6 +192,47 @@ impl RuntimeGateway {
         }
         let runner = self.runner.lock().await.clone();
         runner.invoke(invocation).await
+    }
+}
+
+impl LifecycleRuntime for RuntimeGateway {
+    fn run_profile(
+        &self,
+        profile: colui_domain::ProjectProfile,
+        operation: LifecycleOperation,
+    ) -> LifecycleFuture<'_, LifecycleResult> {
+        Box::pin(async move {
+            let profile_id = profile.id.clone();
+            let compose_operation = match operation {
+                LifecycleOperation::Apply => ComposeOperation::Up,
+                LifecycleOperation::Stop => ComposeOperation::Stop,
+                LifecycleOperation::TearDown => ComposeOperation::Down,
+                LifecycleOperation::Restart => ComposeOperation::Restart,
+            };
+            let result = self
+                .invoke_loaded_profile(profile, compose_operation)
+                .await?;
+            if result.timed_out() {
+                return Err(AppError::new(
+                    AppErrorCode::OperationTimeout,
+                    "lifecycle",
+                    Some(profile_id),
+                    "compose operation timed out",
+                ));
+            }
+            if result.exit_code() != Some(0) {
+                return Err(AppError::new(
+                    AppErrorCode::ComposeFailed,
+                    "lifecycle",
+                    Some(profile_id),
+                    "compose exited unsuccessfully",
+                ));
+            }
+            Ok(LifecycleResult {
+                profile_id,
+                success: true,
+            })
+        })
     }
 }
 
