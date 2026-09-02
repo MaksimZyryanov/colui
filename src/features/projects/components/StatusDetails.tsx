@@ -1,0 +1,2 @@
+import type { ProjectStatus } from '../../../ipc/types';
+export function StatusDetails({ status }: { status: ProjectStatus }) { return <div><p>{status.runtime.runningContainerCount}/{status.runtime.containerCount} running</p><p>Definition: {status.definition.state}; Services: {status.definition.serviceCount ?? 'unknown'}</p><p>Observed: {status.runtime.observedAt ?? 'unknown'}</p>{status.issues.length ? <ul aria-label="Status issues">{status.issues.map((issue, i) => <li key={`${issue.message}-${i}`}>{issue.message}</li>)}</ul> : null}</div>; }

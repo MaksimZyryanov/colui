@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
+import { ProjectsView } from '../features/projects/ProjectsView';
 
 export function ProjectsRoute(): ReactNode {
-  return <main><h1>Projects</h1></main>;
+  return <ProjectsView />;
 }
 
 export function AppRoutes(): ReactNode {
