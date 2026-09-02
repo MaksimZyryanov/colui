@@ -62,6 +62,7 @@ DTOs use `Serialize`, `Deserialize`, `JsonSchema`, and `#[serde(rename_all = "ca
 ### 4.1 Profile DTOs
 
 ```rust
+#[serde(rename_all = "camelCase")]
 pub struct ProfileSummaryDto {
     pub id: String,
     pub revision: u64,
@@ -71,12 +72,14 @@ pub struct ProfileSummaryDto {
     pub registration_origin: RegistrationOriginDto,
 }
 
+#[serde(rename_all = "camelCase")]
 pub struct ProfileDetailsDto {
     pub profile: ProfileSummaryDto,
     pub compose_files: Vec<String>,
     pub environment_files: Vec<String>,
 }
 
+#[serde(rename_all = "camelCase")]
 pub struct ProfileDraftDto {
     pub display_name: String,
     pub compose_project_name: String,
@@ -85,6 +88,7 @@ pub struct ProfileDraftDto {
     pub environment_files: Vec<String>,
 }
 
+#[serde(rename_all = "camelCase")]
 pub struct ProfilePatchDto {
     pub display_name: String,
     pub compose_project_name: String,
@@ -93,14 +97,29 @@ pub struct ProfilePatchDto {
     pub environment_files: Vec<String>,
 }
 
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProfileRequestDto {
+    pub profile_id: String,
+    pub expected_revision: u64,
+    pub patch: ProfilePatchDto,
+}
+
+#[serde(rename_all = "camelCase")]
+pub struct RemoveProfileRequestDto {
+    pub profile_id: String,
+    pub expected_revision: u64,
+}
+
+#[serde(rename_all = "camelCase")]
 pub enum RegistrationOriginDto { Manual, Discovered, Migrated }
 ```
 
-Update and removal carry `expectedRevision` beside the immutable ID. The patch cannot contain an ID or revision. Backend validation preserves invalid profiles as visible registry entries.
+`ProfilePatchDto` contains editable fields only. `UpdateProfileRequestDto` and `RemoveProfileRequestDto` wrap the immutable `profileId` and `expectedRevision` metadata around the patch or removal request. The patch cannot contain an ID or revision. Backend validation preserves invalid profiles as visible registry entries. Each DTO explicitly declares `#[serde(rename_all = "camelCase")]`.
 
 ### 4.2 Runtime and status DTOs
 
 ```rust
+#[serde(rename_all = "camelCase", tag = "state")]
 pub enum RuntimeStateDto {
     Disconnected,
     Connecting,
@@ -109,6 +128,7 @@ pub enum RuntimeStateDto {
     Failed { error: AppErrorDto },
 }
 
+#[serde(rename_all = "camelCase")]
 pub struct ProjectStatusDto {
     pub profile_id: String,
     pub runtime: RuntimeProjectionDto,
@@ -117,6 +137,7 @@ pub struct ProjectStatusDto {
     pub issues: Vec<IssueDto>,
 }
 
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeProjectionDto {
     pub presence: RuntimePresenceDto,
     pub activity: Option<RuntimeActivityDto>,
@@ -125,20 +146,34 @@ pub struct RuntimeProjectionDto {
     pub observed_at: Option<String>,
 }
 
+#[serde(rename_all = "camelCase")]
 pub struct DefinitionProjectionDto {
     pub state: DefinitionStateDto,
     pub revision: Option<String>,
     pub service_count: Option<u32>,
 }
 
+#[serde(rename_all = "camelCase")]
 pub struct OperationDto {
     pub kind: OperationKindDto,
     pub phase: OperationPhaseDto,
     pub started_at: String,
 }
+
+#[serde(rename_all = "camelCase")]
+pub struct LifecycleResultDto {
+    pub profile_id: String,
+    pub success: bool,
+}
+
+#[serde(rename_all = "camelCase")]
+pub struct ProfileValidationDto {
+    pub valid: bool,
+    pub issues: Vec<IssueDto>,
+}
 ```
 
-`RuntimePresenceDto` is `unavailable | absent | present`; activity is `all-running | mixed | none-running`; definition state is `unchecked | valid | invalid | stale`; operation kind is `apply | stop | tear-down | restart`. Timestamps are RFC 3339 strings. Increment 3 `LifecycleResultDto` contains operation success and `profileId`, but no inventory generation. After success, the matching single-shot status query is invalidated exactly once. Generation-bearing lifecycle responses and generation acceptance belong to Increment 4.
+`RuntimePresenceDto` is `unavailable | absent | present`; activity is `all-running | mixed | none-running`; definition state is `unchecked | valid | invalid | stale`; operation kind is `apply | stop | tear-down | restart`. Timestamps are RFC 3339 strings. `LifecycleResultDto` contains operation success and `profileId`, but no inventory generation. After success, only the matching `projectKeys.status(profileId)` query is invalidated exactly once. Generation-bearing lifecycle responses and generation acceptance belong to Increment 4.
 
 ### 4.3 Errors
 
@@ -175,7 +210,7 @@ Commands decode input, call one existing use case/gateway operation, map the res
 | `tear_down_project` | `{ profileId }` | `LifecycleResultDto` | no |
 | `restart_project` | `{ profileId }` | `LifecycleResultDto` | no |
 
-`create_profile` and `update_profile` perform domain validation offline and persist valid drafts. Filesystem/definition inspection is surfaced separately and must not make an invalid path disappear. Lifecycle commands resolve the current profile and paths in backend state, verify `RuntimeGateway` readiness, then invoke the existing application operation. `ContextMismatch` blocks Compose operations but does not block profile list/detail or registry CRUD.
+`create_profile` and `update_profile` perform domain validation offline and persist valid drafts. Filesystem/definition inspection is surfaced separately and must not make an invalid path disappear. Increment 2 provides the `ComposeRunner`, `RuntimeGateway`, and Compose argument construction, but not lifecycle use-case objects. Increment 3 adds `ApplyProject`, `StopProject`, `TearDownProject`, and `RestartProject` in `colui-app`, each using the existing ports and shared backend-resolved profile lookup, with adapters only wiring the one existing Compose path. No compatibility endpoint or second lifecycle implementation is added. Lifecycle commands resolve the current profile and paths in backend state, verify `RuntimeGateway` readiness, then invoke the corresponding use case. `ContextMismatch` blocks Compose operations but does not block profile list/detail or registry CRUD.
 
 ## 6. TypeScript IPC boundary
 
@@ -219,7 +254,7 @@ schemas/
     app_error_context_mismatch.json
 ```
 
-The generation command is run in CI, then `git diff --exit-code schemas/` fails when committed schemas are stale. Contract tests convert each manual Zod schema with `zod-to-json-schema`, remove non-semantic metadata, normalize `$ref`/definitions, `additionalProperties`, required ordering, and property ordering, then compare against the Rust schema. The comparison is semantic, not raw JSON text comparison.
+The generation command is run in CI, then `git diff --exit-code schemas/` terminates with a non-zero status when committed schemas are stale. Contract tests convert each manual Zod schema with `zod-to-json-schema`, remove non-semantic metadata, normalize `$ref`/definitions, `additionalProperties`, required ordering, and property ordering, then compare against the Rust schema. The comparison is semantic, not raw JSON text comparison.
 
 Rust-generated positive and negative fixtures are checked by TypeScript Vitest contract tests. Positive fixtures must decode. Negative fixtures must fail for the intended structural reason. The fixture suite includes missing required fields, invalid enum values, invalid UUIDs, malformed timestamps, and invalid project status combinations where schema-level validation can express them. Domain semantic validation remains backend responsibility.
 
@@ -241,7 +276,7 @@ All mock responses call the same `commands.ts` decoders as Tauri responses. Test
 - no optimistic updates are used;
 - single-shot status queries are manually invalidated after lifecycle success;
 - profile list/detail queries invalidate after create/update/remove;
-- runtime state is set from successful connect and status queries are invalidated once.
+- runtime state is set from successful connect and only the matching status query is invalidated once.
 
 Query keys use immutable IDs:
 
@@ -348,7 +383,7 @@ Keyboard acceptance includes navigation to Add Project, form submission with Ent
 - Lifecycle request DTOs contain only `profileId`.
 - Profile list/query commands do not mutate registry.
 - Remove profile does not call Docker.
-- Stop, Tear down, Apply, and Restart delegate to distinct existing use cases.
+- Stop, Tear down, Apply, and Restart delegate to distinct Increment 3 application use cases built on Increment 2's existing runtime ports and Compose argument construction.
 - Schema generation is deterministic.
 
 ### TypeScript contract and IPC tests
@@ -385,7 +420,7 @@ bash scripts/check-boundaries.sh
 git diff --check
 ```
 
-Schema generation runs before `git diff --exit-code schemas/`. The implementation plan must add package scripts named `typecheck`, `lint`, `test`, `test:contracts`, and `build`, plus `scripts/check-boundaries.sh`; each command above must have one deterministic implementation and no Docker/network dependency except separately gated existing integration tests.
+Schema generation runs before `git diff --exit-code schemas/`; that command terminates with a non-zero status when generated and committed schemas differ. The canonical package scripts are `typecheck`, `lint`, `test`, `test:contracts`, and `build`, plus `scripts/check-boundaries.sh`; the implementation plan must add or preserve them with deterministic commands and no Docker/network dependency except separately gated existing integration tests.
 
 ## 14. Acceptance checklist
 
