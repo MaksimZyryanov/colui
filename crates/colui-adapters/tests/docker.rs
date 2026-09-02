@@ -20,6 +20,7 @@ async fn disposable_compose_fixture_passes_apply_stop_apply_teardown() {
     }
 
     let fixture = TempComposeFixture::new(false);
+    let profile_before = fixture.profile.clone();
     let gateway = RuntimeGateway::new(Box::new(ComposeProcessRunner::default()));
     assert!(matches!(
         gateway.connect_runtime(None).await.unwrap(),
@@ -34,8 +35,8 @@ async fn disposable_compose_fixture_passes_apply_stop_apply_teardown() {
     fixture.apply(&gateway, false).await.unwrap();
     fixture.tear_down(&gateway).await.unwrap();
     cleanup.disarm();
-    fixture.assert_no_containers(&gateway).await;
-    fixture.assert_profile_survives();
+    fixture.assert_project_resources_absent().await;
+    fixture.assert_profile_survives(&profile_before);
 }
 
 #[tokio::test]
@@ -46,6 +47,7 @@ async fn disposable_compose_fixture_scales_worker_to_two_containers() {
     }
 
     let fixture = TempComposeFixture::new(true);
+    let profile_before = fixture.profile.clone();
     let gateway = RuntimeGateway::new(Box::new(ComposeProcessRunner::default()));
     assert!(matches!(
         gateway.connect_runtime(None).await.unwrap(),
@@ -54,16 +56,12 @@ async fn disposable_compose_fixture_scales_worker_to_two_containers() {
 
     let mut cleanup = CleanupGuard::new(&fixture.profile);
     fixture.apply(&gateway, true).await.unwrap();
-    let containers = gateway.list_containers().await.unwrap();
-    let workers = containers
-        .iter()
-        .filter(|container| container.service_name.as_deref() == Some("worker"))
-        .count();
+    let workers = fixture.containers_with_service(&gateway, "worker").await;
     assert_eq!(workers, 2, "expected two scaled worker containers");
     fixture.tear_down(&gateway).await.unwrap();
     cleanup.disarm();
-    fixture.assert_no_containers(&gateway).await;
-    fixture.assert_profile_survives();
+    fixture.assert_project_resources_absent().await;
+    fixture.assert_profile_survives(&profile_before);
 }
 
 async fn docker_available() -> bool {
@@ -147,34 +145,86 @@ impl TempComposeFixture {
 
     async fn assert_containers_present(&self, gateway: &RuntimeGateway) {
         let containers = gateway.list_containers().await.unwrap();
-        assert!(containers.iter().any(|container| {
-            container.service_name.is_some() && container.name.starts_with(&self.project_name)
-        }));
+        let matching = self
+            .containers_with_exact_project(gateway, &containers)
+            .await;
+        assert!(
+            !matching.is_empty(),
+            "expected disposable project containers"
+        );
     }
 
     async fn assert_containers_stopped(&self, gateway: &RuntimeGateway) {
         let containers = gateway.list_containers().await.unwrap();
-        assert!(containers.iter().any(|container| {
-            container.service_name.is_some()
-                && container.name.starts_with(&self.project_name)
-                && container.state == colui_domain::ContainerState::Stopped
-        }));
-    }
-
-    async fn assert_no_containers(&self, gateway: &RuntimeGateway) {
-        let containers = gateway.list_containers().await.unwrap();
-        assert!(!containers
+        let matching = self
+            .containers_with_exact_project(gateway, &containers)
+            .await;
+        assert!(matching
             .iter()
-            .any(|container| { container.name.starts_with(&self.project_name) }));
+            .any(|container| { container.state == colui_domain::ContainerState::Stopped }));
     }
 
-    fn assert_profile_survives(&self) {
+    async fn containers_with_service(&self, gateway: &RuntimeGateway, service: &str) -> usize {
+        let containers = gateway.list_containers().await.unwrap();
+        self.containers_with_exact_project(gateway, &containers)
+            .await
+            .into_iter()
+            .filter(|container| container.service_name.as_deref() == Some(service))
+            .count()
+    }
+
+    async fn containers_with_exact_project(
+        &self,
+        gateway: &RuntimeGateway,
+        containers: &[colui_domain::ContainerInstance],
+    ) -> Vec<colui_domain::ContainerInstance> {
+        let mut matching = Vec::new();
+        for container in containers {
+            let details = gateway.inspect_container(&container.id).await.unwrap();
+            if details.labels.get("com.docker.compose.project") == Some(&self.project_name) {
+                matching.push(details.instance);
+            }
+        }
+        matching
+    }
+
+    async fn assert_project_resources_absent(&self) {
+        for kind in ["container", "network", "volume"] {
+            let output = self.run_docker_label_query(kind).await;
+            assert!(
+                output.trim().is_empty(),
+                "disposable project {kind}s remain: {}",
+                output.trim()
+            );
+        }
+    }
+
+    async fn run_docker_label_query(&self, kind: &str) -> String {
+        let endpoint =
+            std::env::var("DOCKER_HOST").unwrap_or_else(|_| "unix:///var/run/docker.sock".into());
+        let environment =
+            colui_adapters::runtime::build_cli_environment(&endpoint, std::env::vars().collect());
+        let output = tokio::process::Command::new("docker")
+            .args([
+                kind,
+                "ls",
+                "-q",
+                "--filter",
+                &format!("label=com.docker.compose.project={}", self.project_name),
+            ])
+            .env_clear()
+            .envs(environment)
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success(), "docker {kind} ls failed");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    fn assert_profile_survives(&self, expected: &ProjectProfile) {
         assert!(self.directory.path().is_dir());
         assert!(self.compose_path.is_file());
-        assert_eq!(
-            self.profile.compose_files,
-            vec![PathBuf::from("compose.yml")]
-        );
+        assert_eq!(&self.profile, expected);
     }
 
     fn invocation(&self, args: Vec<String>) -> ComposeInvocation {
@@ -222,11 +272,72 @@ impl Drop for CleanupGuard<'_> {
             std::env::var("DOCKER_HOST").unwrap_or_else(|_| "unix:///var/run/docker.sock".into());
         let environment =
             colui_adapters::runtime::build_cli_environment(&endpoint, std::env::vars().collect());
-        let _ = std::process::Command::new("docker")
+        let mut child = match std::process::Command::new("docker")
             .args(args)
             .current_dir(&self.profile.working_directory)
             .env_clear()
             .envs(environment)
-            .status();
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => {
+                eprintln!("CLEANUP FAILED: could not spawn docker compose down: {error}");
+                return;
+            }
+        };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return,
+                Ok(Some(status)) => {
+                    let stderr = child
+                        .stderr
+                        .take()
+                        .and_then(|mut stream| {
+                            use std::io::Read;
+                            let mut text = String::new();
+                            stream.read_to_string(&mut text).ok().map(|_| text)
+                        })
+                        .unwrap_or_default();
+                    eprintln!("CLEANUP FAILED: docker compose down exited {status}: {stderr}");
+                    return;
+                }
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50))
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let reap_deadline = Instant::now() + Duration::from_secs(2);
+                    while Instant::now() < reap_deadline {
+                        match child.try_wait() {
+                            Ok(Some(_)) => {
+                                eprintln!(
+                                    "CLEANUP FAILED: docker compose down exceeded 30s and was killed"
+                                );
+                                return;
+                            }
+                            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                            Err(error) => {
+                                eprintln!(
+                                    "CLEANUP FAILED: could not reap docker compose down: {error}"
+                                );
+                                return;
+                            }
+                        }
+                    }
+                    eprintln!(
+                        "CLEANUP FAILED: docker compose down exceeded 30s; kill reap timed out"
+                    );
+                    return;
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    eprintln!("CLEANUP FAILED: could not poll docker compose down: {error}");
+                    return;
+                }
+            }
+        }
     }
 }
