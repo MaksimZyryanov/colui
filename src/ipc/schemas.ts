@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { appErrorSchema } from './errors';
-const uuid = z.string().uuid(); const revision = z.number().int().nonnegative(); const timestamp = z.string().datetime({ offset: true });
+const uuid = z.string().uuid().refine(value => value === value.toLowerCase() && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value), 'must be canonical lowercase hyphenated UUID'); const revision = z.number().int().nonnegative(); const timestamp = z.string().datetime({ offset: true });
 export { appErrorSchema };
 export const registrationOriginSchema = z.enum(['manual','discovered','migrated']);
 export const issueSchema = z.object({ message: z.string() });

@@ -25,6 +25,14 @@ fn profile_id_is_not_derived_from_name_or_path() {
 }
 
 #[test]
+fn profile_id_parse_requires_canonical_lowercase_hyphenated_uuid() {
+    assert!(ProfileId::parse("00000000-0000-0000-0000-000000000001").is_ok());
+    assert!(ProfileId::parse("00000000000000000000000000000001").is_err());
+    assert!(ProfileId::parse("abcdefab-cdef-abcd-efab-cdefabcdefab").is_ok());
+    assert!(ProfileId::parse("ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB").is_err());
+}
+
+#[test]
 fn compose_name_rejects_invalid_namespace() {
     assert!(ComposeProjectName::try_from("Checkout API").is_err());
     assert!(ComposeProjectName::try_from("checkout_api-2").is_ok());

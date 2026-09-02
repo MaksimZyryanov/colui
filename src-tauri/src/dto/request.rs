@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct UpdateProfileRequestDto {
     #[schemars(schema_with = "super::uuid_schema")]
+    #[serde(deserialize_with = "super::deserialize_canonical_uuid")]
     pub profile_id: String,
     pub expected_revision: u64,
     pub patch: ProfilePatchDto,
@@ -14,6 +15,7 @@ pub struct UpdateProfileRequestDto {
 #[serde(rename_all = "camelCase")]
 pub struct RemoveProfileRequestDto {
     #[schemars(schema_with = "super::uuid_schema")]
+    #[serde(deserialize_with = "super::deserialize_canonical_uuid")]
     pub profile_id: String,
     pub expected_revision: u64,
 }
@@ -21,6 +23,7 @@ pub struct RemoveProfileRequestDto {
 #[serde(rename_all = "camelCase")]
 pub struct ProfileIdRequestDto {
     #[schemars(schema_with = "super::uuid_schema")]
+    #[serde(deserialize_with = "super::deserialize_canonical_uuid")]
     pub profile_id: String,
 }
 impl UpdateProfileRequestDto {

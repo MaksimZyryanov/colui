@@ -82,5 +82,8 @@ describe('IPC contracts', () => {
     expect(runtimeProjectionSchema.safeParse({ presence: 'present', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null }).success).toBe(true);
     expect(profileIdRequestSchema.safeParse({ profileId: id }).success).toBe(true);
     expect(profileIdRequestSchema.safeParse({ profileId: 'id-1' }).success).toBe(false);
+    expect(profileIdRequestSchema.safeParse({ profileId: '00000000000000000000000000000001' }).success).toBe(false);
+    expect(profileIdRequestSchema.safeParse({ profileId: 'abcdefab-cdef-abcd-efab-cdefabcdefab' }).success).toBe(true);
+    expect(profileIdRequestSchema.safeParse({ profileId: 'ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB' }).success).toBe(false);
   });
 });

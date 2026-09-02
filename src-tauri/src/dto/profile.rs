@@ -19,6 +19,7 @@ pub enum RegistrationOriginDto {
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSummaryDto {
     #[schemars(schema_with = "super::uuid_schema")]
+    #[serde(deserialize_with = "super::deserialize_canonical_uuid")]
     pub id: String,
     pub revision: u64,
     pub display_name: String,

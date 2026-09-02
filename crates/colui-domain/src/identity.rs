@@ -11,8 +11,13 @@ impl ProfileId {
         Self(value)
     }
 
-    pub fn parse(value: &str) -> Result<Self, uuid::Error> {
-        Ok(Self(Uuid::parse_str(value)?))
+    /// Parses only canonical lowercase, hyphenated UUIDs used by IPC DTOs.
+    pub fn parse(value: &str) -> Result<Self, &'static str> {
+        let uuid = Uuid::parse_str(value).map_err(|_| "profile id must be a UUID")?;
+        if uuid.to_string() != value {
+            return Err("profile id must be a canonical lowercase hyphenated UUID");
+        }
+        Ok(Self(uuid))
     }
 
     pub fn as_uuid(&self) -> &Uuid {

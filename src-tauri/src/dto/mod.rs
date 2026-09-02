@@ -9,11 +9,38 @@ use schemars::{
     schema::{Schema, SchemaObject},
     JsonSchema,
 };
+use serde::Deserialize;
 
 pub(crate) fn uuid_schema(generator: &mut SchemaGenerator) -> Schema {
     let mut schema: SchemaObject = <String>::json_schema(generator).into();
     schema.format = Some("uuid".to_owned());
     schema.into()
+}
+
+pub(crate) fn deserialize_canonical_uuid<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    colui_domain::ProfileId::parse(&value)
+        .map(|_| value)
+        .map_err(serde::de::Error::custom)
+}
+
+pub(crate) fn deserialize_optional_canonical_uuid<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    value
+        .map(|value| {
+            colui_domain::ProfileId::parse(&value)
+                .map(|_| value)
+                .map_err(serde::de::Error::custom)
+        })
+        .transpose()
 }
 
 pub(crate) struct UuidSchema;

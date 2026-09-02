@@ -30,6 +30,7 @@ pub struct AppErrorDto {
     pub code: AppErrorCodeDto,
     pub operation: String,
     #[schemars(with = "Option<super::UuidSchema>")]
+    #[serde(deserialize_with = "super::deserialize_optional_canonical_uuid")]
     pub subject_id: Option<String>,
     pub message: String,
     pub details: Option<String>,

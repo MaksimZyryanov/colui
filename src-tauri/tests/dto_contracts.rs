@@ -181,6 +181,14 @@ fn dto_boundary_rejects_non_rfc3339_timestamps() {
 }
 
 #[test]
+fn dto_boundary_rejects_noncanonical_profile_ids() {
+    let request = serde_json::json!({
+        "profileId": "00000000000000000000000000000001"
+    });
+    assert!(serde_json::from_value::<colui_tauri_lib::dto::ProfileIdRequestDto>(request).is_err());
+}
+
+#[test]
 fn lifecycle_result_preserves_application_success() {
     let dto = LifecycleResultDto::from(LifecycleResult {
         profile_id: ProfileId::parse("00000000-0000-0000-0000-000000000001").unwrap(),

@@ -24,13 +24,14 @@ describe('browser mock backend', () => {
     await expect(listProfiles()).rejects.toMatchObject({ code: 'protocol_mismatch' });
   });
 
-  it('applies domain draft validation and rejects duplicate names on create/update', async () => {
+  it('applies domain draft validation and allows duplicate compose names', async () => {
     mockBackend.reset();
     await expect(createProfile({ ...draft, displayName: '' })).rejects.toMatchObject({ code: 'profile_invalid' });
     await expect(createProfile({ ...draft, composeProjectName: 'Demo' })).rejects.toMatchObject({ code: 'profile_invalid' });
     await expect(createProfile({ ...draft, composeProjectName: ' demo' })).rejects.toMatchObject({ code: 'profile_invalid' });
     const created = await createProfile(draft);
-    await expect(createProfile({ ...draft, displayName: 'Other' })).rejects.toMatchObject({ code: 'profile_already_registered' });
+    const duplicate = await createProfile({ ...draft, displayName: 'Other' });
+    expect(duplicate.composeProjectName).toBe('demo');
     await expect(updateProfile({ profileId: created.id, expectedRevision: 1, patch: { ...draft, displayName: 'Changed', composeProjectName: 'demo' } })).resolves.toMatchObject({ revision: 2 });
   });
 
