@@ -119,6 +119,23 @@ impl RuntimeGateway {
         profile_id: colui_domain::ProfileId,
         operation: ComposeOperation,
     ) -> Result<ComposeProcessResult, AppError> {
+        let _permit = self.gate.acquire().await.map_err(|_| {
+            error(
+                AppErrorCode::ComposeFailed,
+                "compose",
+                "compose gate closed",
+            )
+        })?;
+        let state = self.snapshot.lock().await.state.clone();
+        let endpoint = match state {
+            RuntimeSessionState::Ready(context) => context.endpoint,
+            _ => {
+                return Err(self
+                    .compose_error()
+                    .await
+                    .expect("non-ready state has compose error"))
+            }
+        };
         let profile = reader
             .load()
             .await?
@@ -133,10 +150,6 @@ impl RuntimeGateway {
                 )
             })?;
         let args = super::compose_args(&profile, operation);
-        let endpoint = match &self.snapshot.lock().await.state {
-            RuntimeSessionState::Ready(context) => context.endpoint.clone(),
-            _ => unreachable!("compose readiness checked while operation gate is held"),
-        };
         let invocation = ComposeInvocation {
             executable: "docker".into(),
             args,
@@ -144,7 +157,8 @@ impl RuntimeGateway {
             environment: build_cli_environment(endpoint.as_str(), std::env::vars().collect()),
             deadline: Instant::now() + Duration::from_secs(120),
         };
-        self.execute_compose(invocation).await
+        let runner = self.runner.lock().await.clone();
+        runner.invoke(invocation).await
     }
 
     /// Raw process invocation exists only behind adapter test support. Application code uses
@@ -152,13 +166,6 @@ impl RuntimeGateway {
     #[doc(hidden)]
     #[cfg(feature = "test-support")]
     pub async fn invoke_backend_for_tests(
-        &self,
-        invocation: ComposeInvocation,
-    ) -> Result<ComposeProcessResult, AppError> {
-        self.execute_compose(invocation).await
-    }
-
-    async fn execute_compose(
         &self,
         invocation: ComposeInvocation,
     ) -> Result<ComposeProcessResult, AppError> {

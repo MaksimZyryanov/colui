@@ -461,6 +461,76 @@ async fn gateway_profile_route_builds_backend_controlled_invocation() {
 }
 
 #[tokio::test]
+async fn gateway_profile_route_returns_typed_error_when_not_ready() {
+    let gateway = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(RecordingRunner::default()),
+    );
+    let profile = test_profile();
+    let reader = StaticProfiles(profile.clone());
+
+    let error = gateway
+        .invoke_profile(&reader, profile.id, ComposeOperation::Stop)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, AppErrorCode::RuntimeUnavailable);
+    assert_eq!(error.operation, "compose");
+}
+
+#[tokio::test]
+async fn gateway_profile_lookup_waits_for_connect_operation_gate() {
+    let runner = Arc::new(BlockingInfoRunner::default());
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(BlockingInfoRunner {
+            started: runner.started.clone(),
+            release: runner.release.clone(),
+            calls: runner.calls.clone(),
+        }),
+    ));
+    let connect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
+
+    let profile = test_profile();
+    let reader = StaticProfiles(profile.clone());
+    let invoke = tokio::spawn({
+        let gateway = gateway.clone();
+        async move {
+            gateway
+                .invoke_profile(&reader, profile.id, ComposeOperation::Stop)
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    assert!(!invoke.is_finished());
+
+    runner.release.notify_one();
+    assert!(connect.await.unwrap().is_ok());
+    assert!(invoke.await.unwrap().is_ok());
+}
+
+fn test_profile() -> ProjectProfile {
+    ProjectProfile::from_draft(
+        ProfileId::new(uuid::Uuid::from_u128(3)),
+        ProfileDraft {
+            display_name: "Profile".try_into().unwrap(),
+            compose_project_name: "project".try_into().unwrap(),
+            working_directory: PathBuf::from("/workspace"),
+            compose_files: vec![PathBuf::from("compose.yml")],
+            environment_files: vec![],
+            registration_origin: RegistrationOrigin::Manual,
+        },
+    )
+    .unwrap()
+}
+
+#[tokio::test]
 async fn gateway_rejects_unsuccessful_or_timed_out_cli_info() {
     for result in [
         ComposeProcessResult::completed(1, "", "", Duration::ZERO),
@@ -662,6 +732,36 @@ struct FakeRunner {
 #[derive(Default)]
 struct RecordingRunner {
     last: Arc<std::sync::Mutex<Option<ComposeInvocation>>>,
+}
+
+#[derive(Clone, Default)]
+struct BlockingInfoRunner {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl ComposeRunner for BlockingInfoRunner {
+    fn invoke(&self, _: ComposeInvocation) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
+        let started = self.started.clone();
+        let release = self.release.clone();
+        let call = self.calls.fetch_add(1, Ordering::AcqRel);
+        Box::pin(async move {
+            if call > 0 {
+                return Ok(ComposeProcessResult::completed(0, "", "", Duration::ZERO));
+            }
+            started.notify_one();
+            tokio::time::timeout(Duration::from_secs(1), release.notified())
+                .await
+                .unwrap();
+            Ok(ComposeProcessResult::completed(
+                0,
+                "ID: same\nServer Version: 1\nOSType: linux\nArchitecture: x86_64\n",
+                "",
+                Duration::ZERO,
+            ))
+        })
+    }
 }
 
 struct StaticProfiles(ProjectProfile);

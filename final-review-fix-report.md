@@ -23,3 +23,17 @@ All four final review findings addressed in one wave.
 
 - Docker Desktop and Colima live matrix unavailable in current environment; no live-Docker result claimed.
 - `test-support` is intentionally test-only gateway escape hatch and is enabled by `docker-tests` solely for integration fixture execution.
+
+## Final Gateway Follow-Up
+
+- `invoke_profile` now acquires operation gate before profile lookup and holds it through readiness validation, endpoint capture, invocation construction, and runner start.
+- Non-ready states return typed Compose errors; no `unreachable!` remains on application state paths.
+- Added regressions for non-ready invocation and invocation waiting behind an in-flight connect operation.
+
+## Follow-Up Verification
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo test --workspace`: passed, 90 tests.
+- `cargo test -p colui-adapters --features docker-tests --test docker -- --nocapture`: passed; two Docker tests explicitly skipped because local daemon unavailable.
+- `bash scripts/check-boundaries.sh`: passed.
+- `git diff --check`: passed.
