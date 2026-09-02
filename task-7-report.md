@@ -92,6 +92,19 @@ No frontend/Tauri IPC, `InventoryCoordinator`, definition cache, Discovery, life
 - `git diff --check`: passed.
 - Docker Desktop/Colima live matrix unavailable locally; no live-Docker evidence claimed.
 
+## Resource Query Follow-Up
+
+- `--all` now applies only to `docker container ls`; network and volume queries retain standard `ls` behavior while using exact Compose project labels.
+- Query failure diagnostics are capped at 4096 bytes before assertion formatting, preventing oversized stderr from overwhelming failure output.
+
+## Resource Query Verification
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo test -p colui-adapters --features docker-tests --test docker -- --nocapture`: passed with two explicit daemon skips.
+- `cargo test --workspace`: passed.
+- `bash scripts/check-boundaries.sh`: passed, `Dependency boundaries OK`.
+- `git diff --check`: passed.
+
 ## Container Query Follow-Up
 
 - Added `--all` to every shell resource-list query, so stopped containers remain visible to leak checks.

@@ -204,15 +204,16 @@ impl TempComposeFixture {
             std::env::var("DOCKER_HOST").unwrap_or_else(|_| "unix:///var/run/docker.sock".into());
         let environment =
             colui_adapters::runtime::build_cli_environment(&endpoint, std::env::vars().collect());
+        let mut args = vec![kind.to_owned(), "ls".into(), "-q".into()];
+        if kind == "container" {
+            args.push("--all".into());
+        }
+        args.extend([
+            "--filter".into(),
+            format!("label=com.docker.compose.project={}", self.project_name),
+        ]);
         let output = tokio::process::Command::new("docker")
-            .args([
-                kind,
-                "ls",
-                "-q",
-                "--all",
-                "--filter",
-                &format!("label=com.docker.compose.project={}", self.project_name),
-            ])
+            .args(args)
             .env_clear()
             .envs(environment)
             .output()
@@ -221,7 +222,7 @@ impl TempComposeFixture {
         assert!(
             output.status.success(),
             "docker {kind} ls failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            bounded_diagnostic(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
@@ -247,6 +248,17 @@ impl TempComposeFixture {
             deadline: Instant::now() + Duration::from_secs(120),
         }
     }
+}
+
+fn bounded_diagnostic(bytes: &[u8]) -> String {
+    const MAX_DIAGNOSTIC_BYTES: usize = 4096;
+    if bytes.len() <= MAX_DIAGNOSTIC_BYTES {
+        return String::from_utf8_lossy(bytes).trim().to_owned();
+    }
+    format!(
+        "...{}",
+        String::from_utf8_lossy(&bytes[bytes.len() - MAX_DIAGNOSTIC_BYTES..]).trim()
+    )
 }
 
 struct CleanupGuard<'a> {
