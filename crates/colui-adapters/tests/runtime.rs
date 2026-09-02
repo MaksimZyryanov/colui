@@ -2,9 +2,16 @@ use colui_adapters::runtime::{
     bollard_fingerprint, build_cli_environment, parse_cli_fingerprint, resolve_endpoint,
     EndpointPreference,
 };
+use colui_adapters::runtime::{ComposeOperation, RuntimeGateway};
 use colui_adapters::runtime::{ComposeProcessRunner, TerminationConfig};
-use colui_app::{ComposeInvocation, ComposeRunner};
+use colui_app::{
+    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, RuntimeConnector,
+};
 use colui_domain::AppErrorCode;
+use colui_domain::{
+    AppError, ContainerDetails, ContainerId, ContainerInstance, DaemonFingerprint, ProfileDraft,
+    ProjectProfile, RegistrationOrigin,
+};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -291,4 +298,176 @@ async fn runner_reports_unsupported_process_groups_without_indefinite_wait() {
         .unwrap_err();
     assert_eq!(error.code, AppErrorCode::ComposeFailed);
     assert!(error.message.contains("process groups unsupported"));
+}
+
+#[test]
+fn compose_argv_comes_only_from_profile_and_operation() {
+    let profile = ProjectProfile::from_draft(
+        colui_domain::ProfileId::new(uuid::Uuid::from_u128(1)),
+        ProfileDraft {
+            display_name: "Demo".try_into().unwrap(),
+            compose_project_name: "demo".try_into().unwrap(),
+            working_directory: PathBuf::from("/workspace"),
+            compose_files: vec![PathBuf::from("a.yml"), PathBuf::from("b.yml")],
+            environment_files: vec![PathBuf::from("one.env"), PathBuf::from("two.env")],
+            registration_origin: RegistrationOrigin::Manual,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        colui_adapters::runtime::compose_args(&profile, ComposeOperation::Up),
+        vec![
+            "compose",
+            "-f",
+            "a.yml",
+            "-f",
+            "b.yml",
+            "--project-name",
+            "demo",
+            "--env-file",
+            "one.env",
+            "--env-file",
+            "two.env",
+            "up",
+            "-d"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn gateway_missing_session_blocks_api_and_compose() {
+    let gateway = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(FakeRunner::new("same")),
+    );
+    assert_eq!(
+        gateway.list_containers().await.unwrap_err().code,
+        AppErrorCode::RuntimeUnavailable
+    );
+    assert_eq!(
+        gateway.invoke(fake_invocation()).await.unwrap_err().code,
+        AppErrorCode::RuntimeUnavailable
+    );
+}
+
+#[tokio::test]
+async fn gateway_matching_fingerprints_reuses_one_client_and_allows_reads() {
+    let gateway = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(FakeRunner::new("same")),
+    );
+    assert!(matches!(
+        gateway.connect_runtime(None).await.unwrap(),
+        colui_domain::RuntimeSessionState::Ready(_)
+    ));
+    assert_eq!(gateway.created_client_count(), 1);
+    assert!(gateway.list_containers().await.is_ok());
+}
+
+#[tokio::test]
+async fn gateway_mismatch_allows_api_reads_but_blocks_compose() {
+    let gateway = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("mismatch")),
+        Box::new(FakeRunner::new("same")),
+    );
+    assert!(matches!(
+        gateway.connect_runtime(None).await.unwrap(),
+        colui_domain::RuntimeSessionState::ContextMismatch(_)
+    ));
+    assert!(gateway.list_containers().await.is_ok());
+    assert_eq!(
+        gateway.invoke(fake_invocation()).await.unwrap_err().code,
+        AppErrorCode::RuntimeContextMismatch
+    );
+}
+
+#[tokio::test]
+async fn gateway_reconnect_replaces_mismatch_without_restart() {
+    let gateway = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(FakeRunner::new("mismatch")),
+    );
+    assert!(matches!(
+        gateway.connect_runtime(None).await.unwrap(),
+        colui_domain::RuntimeSessionState::ContextMismatch(_)
+    ));
+    gateway.replace_runner_for_tests(Box::new(FakeRunner::new("same")));
+    assert!(matches!(
+        gateway.connect_runtime(None).await.unwrap(),
+        colui_domain::RuntimeSessionState::Ready(_)
+    ));
+}
+
+#[derive(Clone)]
+struct FakeDocker {
+    fingerprint: String,
+}
+impl FakeDocker {
+    fn new(fingerprint: &str) -> Self {
+        Self {
+            fingerprint: fingerprint.into(),
+        }
+    }
+}
+impl colui_adapters::runtime::DockerControl for FakeDocker {
+    fn info(&self) -> colui_app::RuntimeFuture<'_, DaemonFingerprint> {
+        let fp = self.fingerprint.clone();
+        Box::pin(async move { Ok(fp_for(&fp)) })
+    }
+    fn list(&self) -> colui_app::RuntimeFuture<'_, Vec<ContainerInstance>> {
+        Box::pin(async { Ok(vec![]) })
+    }
+    fn inspect(&self, _: &ContainerId) -> colui_app::RuntimeFuture<'_, ContainerDetails> {
+        Box::pin(async {
+            Err(AppError::new(
+                AppErrorCode::RuntimeUnavailable,
+                "inspect",
+                None,
+                "missing",
+            ))
+        })
+    }
+}
+
+struct FakeRunner {
+    fingerprint: String,
+}
+impl FakeRunner {
+    fn new(fingerprint: &str) -> Self {
+        Self {
+            fingerprint: fingerprint.into(),
+        }
+    }
+}
+impl colui_app::ComposeRunner for FakeRunner {
+    fn invoke(
+        &self,
+        invocation: ComposeInvocation,
+    ) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
+        Box::pin(async move {
+            if invocation.args == vec!["info"] {
+                let fp = self.fingerprint.clone();
+                Ok(ComposeProcessResult::completed(
+                    0,
+                    format!("ID: {fp}\nServer Version: 1\nOSType: linux\nArchitecture: x86_64\n"),
+                    "",
+                    Duration::ZERO,
+                ))
+            } else {
+                Ok(ComposeProcessResult::completed(0, "", "", Duration::ZERO))
+            }
+        })
+    }
+}
+fn fp_for(value: &str) -> DaemonFingerprint {
+    DaemonFingerprint::new(value, "1", "linux", "x86_64")
+}
+fn fake_invocation() -> ComposeInvocation {
+    ComposeInvocation {
+        executable: PathBuf::from("docker"),
+        args: vec![],
+        working_directory: PathBuf::from("/tmp"),
+        environment: BTreeMap::new(),
+        deadline: Instant::now() + Duration::from_secs(1),
+    }
 }
