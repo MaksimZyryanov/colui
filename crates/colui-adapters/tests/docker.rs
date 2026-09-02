@@ -272,15 +272,27 @@ impl Drop for CleanupGuard<'_> {
             std::env::var("DOCKER_HOST").unwrap_or_else(|_| "unix:///var/run/docker.sock".into());
         let environment =
             colui_adapters::runtime::build_cli_environment(&endpoint, std::env::vars().collect());
-        let mut child = match std::process::Command::new("docker")
+        let mut command = std::process::Command::new("docker");
+        command
             .args(args)
             .current_dir(&self.profile.working_directory)
             .env_clear()
             .envs(environment)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .stderr(std::process::Stdio::null());
+        #[cfg(unix)]
         {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setpgid(0, 0) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
                 eprintln!("CLEANUP FAILED: could not spawn docker compose down: {error}");
@@ -292,23 +304,14 @@ impl Drop for CleanupGuard<'_> {
             match child.try_wait() {
                 Ok(Some(status)) if status.success() => return,
                 Ok(Some(status)) => {
-                    let stderr = child
-                        .stderr
-                        .take()
-                        .and_then(|mut stream| {
-                            use std::io::Read;
-                            let mut text = String::new();
-                            stream.read_to_string(&mut text).ok().map(|_| text)
-                        })
-                        .unwrap_or_default();
-                    eprintln!("CLEANUP FAILED: docker compose down exited {status}: {stderr}");
+                    eprintln!("CLEANUP FAILED: docker compose down exited {status}");
                     return;
                 }
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(50))
                 }
                 Ok(None) => {
-                    let _ = child.kill();
+                    terminate_cleanup_group(&mut child);
                     let reap_deadline = Instant::now() + Duration::from_secs(2);
                     while Instant::now() < reap_deadline {
                         match child.try_wait() {
@@ -327,17 +330,39 @@ impl Drop for CleanupGuard<'_> {
                             }
                         }
                     }
+                    let fallback = child.wait();
                     eprintln!(
-                        "CLEANUP FAILED: docker compose down exceeded 30s; kill reap timed out"
+                        "CLEANUP FAILED: docker compose down exceeded 30s; kill and bounded reap exhausted; blocking reap fallback: {fallback:?}"
                     );
                     return;
                 }
                 Err(error) => {
-                    let _ = child.kill();
-                    eprintln!("CLEANUP FAILED: could not poll docker compose down: {error}");
+                    terminate_cleanup_group(&mut child);
+                    let fallback = child.wait();
+                    eprintln!(
+                        "CLEANUP FAILED: could not poll docker compose down: {error}; blocking reap fallback: {fallback:?}"
+                    );
                     return;
                 }
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn terminate_cleanup_group(child: &mut std::process::Child) {
+    let pid = child.id();
+    let result = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+    if result != 0 {
+        eprintln!(
+            "CLEANUP FAILED: could not kill docker compose process group: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_cleanup_group(child: &mut std::process::Child) {
+    eprintln!("CLEANUP WARNING: process groups unsupported; killing direct cleanup child");
+    let _ = child.kill();
 }

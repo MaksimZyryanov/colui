@@ -76,3 +76,18 @@ No frontend/Tauri IPC, `InventoryCoordinator`, definition cache, Discovery, life
 - `bash scripts/check-boundaries.sh`: passed, `Dependency boundaries OK`.
 - `git diff --check`: passed.
 - Docker Desktop/Colima live matrix remains unavailable locally; current endpoint is `/Users/max/.colima/default/docker.sock` and no live lifecycle result is claimed.
+
+## Scoped Cleanup Follow-Up
+
+- Exact project resource queries now include stopped containers with `docker container ls -a`.
+- Cleanup stderr is discarded, preventing an undrained pipe from blocking process completion.
+- Cleanup launches Docker in its own Unix process group and kills the group on timeout, then performs bounded reap polling and reports blocking fallback results without masking the original panic.
+
+## Scoped Cleanup Verification
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo test --workspace`: passed.
+- `cargo test -p colui-adapters --features docker-tests --test docker -- --nocapture`: passed with two explicit skips because local Docker daemon is unavailable.
+- `bash scripts/check-boundaries.sh`: passed, `Dependency boundaries OK`.
+- `git diff --check`: passed.
+- Docker Desktop/Colima live matrix unavailable locally; no live-Docker evidence claimed.
