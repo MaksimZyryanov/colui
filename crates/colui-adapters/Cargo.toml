@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bollard = "0.18"
 colui-app = { path = "../colui-app" }
 colui-domain = { path = "../colui-domain" }
 fs2 = "0.4"
