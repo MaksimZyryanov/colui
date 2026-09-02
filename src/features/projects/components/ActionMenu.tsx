@@ -1,5 +1,5 @@
 import * as RadixAlertDialog from '@radix-ui/react-alert-dialog';
-import { useState } from 'react';
+import { useRef, useState, type RefObject } from 'react';
 import type { ProjectStatus } from '../../../ipc/types';
 import { AppErrorException } from '../../../ipc/errors';
 import { Button } from '../../../ui/components/Button';
@@ -8,51 +8,21 @@ import { useLifecycleActions } from '../hooks/useLifecycleActions';
 import { useProfileMutations } from '../hooks/useProfileMutations';
 
 type Props = { profileId: string; revision: number; status: ProjectStatus; runtimeReady: boolean };
-type Confirmation = 'tear-down' | 'remove' | null;
+type Confirmation = 'tear-down' | 'remove';
 
 export function ActionMenu({ profileId, revision, status, runtimeReady }: Props) {
   const lifecycle = useLifecycleActions();
   const profile = useProfileMutations();
-  const [confirmation, setConfirmation] = useState<Confirmation>(null);
+  const [tearDownOpen, setTearDownOpen] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
   const [error, setError] = useState<AppErrorException | Error | null>(null);
+  const moreActionsRef = useRef<HTMLButtonElement>(null);
+  const tearDownCancelRef = useRef<HTMLButtonElement>(null);
+  const removeCancelRef = useRef<HTMLButtonElement>(null);
   const pending = lifecycle.apply.isPending || lifecycle.stop.isPending || lifecycle.restart.isPending || lifecycle.tearDown.isPending || profile.remove.isPending;
-  const runtimeAvailable = runtimeReady && status.runtime.presence === 'present';
-  const semanticAvailable = status.definition.state !== 'unchecked' && status.definition.state !== 'invalid';
-  const operationActive = Boolean(status.operation && !['succeeded', 'failed'].includes(status.operation.phase));
-  const disabled = !runtimeAvailable || !semanticAvailable || operationActive || pending;
-  const lifecycleDisabled = !runtimeAvailable || !semanticAvailable || operationActive;
-  const run = async (action: 'apply' | 'stop' | 'restart') => {
-    setError(null);
-    try { await lifecycle[action].mutateAsync(profileId); } catch (caught) { setError(caught instanceof Error ? caught : new Error('Unable to perform project action')); }
-  };
-  const confirm = async () => {
-    if (!confirmation) return;
-    setError(null);
-    try {
-      if (confirmation === 'remove') await profile.remove.mutateAsync({ profileId, expectedRevision: revision });
-      else await lifecycle.tearDown.mutateAsync(profileId);
-      setConfirmation(null);
-    } catch (caught) { setError(caught instanceof Error ? caught : new Error('Unable to perform project action')); }
-  };
-  const title = confirmation === 'remove' ? 'Remove profile' : 'Tear down project';
-  const confirmLabel = confirmation === 'remove' ? 'Remove profile' : 'Tear down';
-  const description = confirmation === 'remove' ? 'Remove this profile. Docker is untouched.' : 'Tear down this project. Containers and networks are removed, but profile remains.';
-  return <>
-    <div className="ui-dialog-actions">
-      <Button disabled={lifecycleDisabled || lifecycle.stop.isPending} onClick={() => void run('stop')}>Stop</Button>
-      <Button disabled={lifecycleDisabled || lifecycle.restart.isPending} onClick={() => void run('restart')}>Restart</Button>
-      <DropdownMenu trigger={<Button aria-label="More actions">More</Button>} items={[
-        { label: 'Apply', onSelect: () => void run('apply'), destructive: false, disabled: lifecycleDisabled || lifecycle.apply.isPending },
-        { label: 'Tear down', onSelect: () => setConfirmation('tear-down'), destructive: true, disabled: lifecycleDisabled || lifecycle.tearDown.isPending },
-        { label: 'Remove profile', onSelect: () => setConfirmation('remove'), destructive: true, disabled: lifecycleDisabled || profile.remove.isPending },
-      ]} />
-    </div>
-    {confirmation ? <RadixAlertDialog.Root open onOpenChange={open => { if (!open && !pending) { setConfirmation(null); setError(null); } }}>
-      <RadixAlertDialog.Portal><RadixAlertDialog.Overlay className="ui-overlay" /><RadixAlertDialog.Content className="ui-dialog">
-        <RadixAlertDialog.Title>{title}</RadixAlertDialog.Title><RadixAlertDialog.Description>{description}</RadixAlertDialog.Description>
-        {error ? <div role="alert">{error.message}{error instanceof AppErrorException && error.details ? `: ${error.details}` : ''}</div> : null}
-        <div className="ui-dialog-actions"><RadixAlertDialog.Cancel asChild><Button disabled={pending}>Cancel</Button></RadixAlertDialog.Cancel><RadixAlertDialog.Action asChild><Button destructive disabled={pending} onClick={event => { event.preventDefault(); void confirm(); }}>{confirmLabel}</Button></RadixAlertDialog.Action></div>
-      </RadixAlertDialog.Content></RadixAlertDialog.Portal>
-    </RadixAlertDialog.Root> : null}
-  </>;
+  const lifecycleDisabled = !runtimeReady || status.runtime.presence !== 'present' || status.definition.state === 'unchecked' || status.definition.state === 'invalid' || Boolean(status.operation && !['succeeded', 'failed'].includes(status.operation.phase)) || pending;
+  const run = async (action: 'apply' | 'stop' | 'restart') => { setError(null); try { await lifecycle[action].mutateAsync(profileId); } catch (caught) { setError(caught instanceof Error ? caught : new Error('Unable to perform project action')); } };
+  const confirm = async (kind: Confirmation) => { setError(null); try { if (kind === 'remove') { await profile.remove.mutateAsync({ profileId, expectedRevision: revision }); setRemoveOpen(false); } else { await lifecycle.tearDown.mutateAsync(profileId); setTearDownOpen(false); } } catch (caught) { setError(caught instanceof Error ? caught : new Error('Unable to perform project action')); } };
+  const dialog = (kind: Confirmation, open: boolean, setOpen: (value: boolean) => void, cancelRef: RefObject<HTMLButtonElement>) => { const remove = kind === 'remove'; return <RadixAlertDialog.Root open={open} onOpenChange={value => { if (!value && !pending) { setOpen(false); setError(null); } }}><RadixAlertDialog.Portal><RadixAlertDialog.Overlay className="ui-overlay" /><RadixAlertDialog.Content className="ui-dialog" onOpenAutoFocus={event => { event.preventDefault(); cancelRef.current?.focus(); }} onCloseAutoFocus={event => { event.preventDefault(); moreActionsRef.current?.focus(); }}><RadixAlertDialog.Title>{remove ? 'Remove profile' : 'Tear down project'}</RadixAlertDialog.Title><RadixAlertDialog.Description>{remove ? 'Remove this profile. Docker is untouched.' : 'Tear down this project. Containers and networks are removed, but profile remains.'}</RadixAlertDialog.Description>{error ? <div role="alert">{error.message}{error instanceof AppErrorException && error.details ? `: ${error.details}` : ''}</div> : null}<div className="ui-dialog-actions"><RadixAlertDialog.Cancel asChild><Button ref={cancelRef} disabled={pending}>Cancel</Button></RadixAlertDialog.Cancel><RadixAlertDialog.Action asChild><Button destructive disabled={pending} onClick={event => { event.preventDefault(); void confirm(kind); }}>{remove ? 'Remove profile' : 'Tear down'}</Button></RadixAlertDialog.Action></div></RadixAlertDialog.Content></RadixAlertDialog.Portal></RadixAlertDialog.Root>; };
+  return <><div className="ui-dialog-actions"><Button disabled={lifecycleDisabled} onClick={() => void run('stop')}>Stop</Button><Button disabled={lifecycleDisabled} onClick={() => void run('restart')}>Restart</Button><DropdownMenu trigger={<Button ref={moreActionsRef} aria-label="More actions">More</Button>} items={[{ label: 'Apply', onSelect: () => void run('apply'), disabled: lifecycleDisabled }, { label: 'Tear down', onSelect: () => { setError(null); setTearDownOpen(true); }, destructive: true, disabled: lifecycleDisabled }, { label: 'Remove profile', onSelect: () => { setError(null); setRemoveOpen(true); }, destructive: true, disabled: pending }]} /></div>{dialog('tear-down', tearDownOpen, setTearDownOpen, tearDownCancelRef)}{dialog('remove', removeOpen, setRemoveOpen, removeCancelRef)}</>;
 }
