@@ -17,6 +17,10 @@ pub struct SessionContextDto {
     pub session_id: String,
     pub endpoint: String,
     pub daemon_fingerprint: DaemonFingerprintDto,
+    #[serde(
+        serialize_with = "super::serialize_rfc3339",
+        deserialize_with = "super::deserialize_rfc3339"
+    )]
     pub connected_at: String,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

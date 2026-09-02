@@ -16,7 +16,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 colui-app = { path = "../crates/colui-app" }
+colui-adapters = { path = "../crates/colui-adapters" }
 colui-domain = { path = "../crates/colui-domain" }
+chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "0.8"

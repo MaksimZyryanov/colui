@@ -1,6 +1,6 @@
 use colui_app::{
-    CreateProfile, GetProfile, IdGenerator, ListProfiles, ProfileMutation, ProfileReader,
-    ProfileStore, RegistrySnapshot, RemoveProfile, UpdateProfile,
+    CreateProfile, GetProfile, IdGenerator, InspectProfileDraft, ListProfiles, ProfileMutation,
+    ProfileReader, ProfileStore, RegistrySnapshot, RemoveProfile, UpdateProfile,
 };
 use colui_domain::{
     AppError, AppErrorCode, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin, Revision,
@@ -82,6 +82,20 @@ fn draft() -> ProfileDraft {
         environment_files: vec![],
         registration_origin: RegistrationOrigin::Manual,
     }
+}
+
+#[test]
+fn inspect_profile_draft_reports_domain_validation_issue() {
+    let mut invalid = draft();
+    invalid.compose_files.clear();
+
+    let result = InspectProfileDraft::execute(invalid);
+
+    assert!(!result.valid);
+    assert_eq!(
+        result.issues[0].message,
+        "profile requires at least one Compose file"
+    );
 }
 
 fn profile_id() -> ProfileId {

@@ -25,7 +25,7 @@ macro_rules! command {
                 .execute(id(request.profile_id, stringify!($name))?)
                 .await
                 .map_err(AppErrorDto::from)?;
-            Ok(LifecycleResultDto::success(result.profile_id.to_string()))
+            Ok(result.into())
         }
     };
 }

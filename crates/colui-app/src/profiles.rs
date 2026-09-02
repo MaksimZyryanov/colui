@@ -1,6 +1,6 @@
 use colui_domain::{
-    AppError, AppErrorCode, ComposeProjectName, DisplayName, ProfileDraft, ProfileId,
-    ProjectProfile, Revision,
+    validate_draft, AppError, AppErrorCode, ComposeProjectName, DisplayName, Issue, ProfileDraft,
+    ProfileId, ProjectProfile, Revision,
 };
 use std::future::Future;
 use std::path::PathBuf;
@@ -26,6 +26,31 @@ pub trait ProfileStore: ProfileReader {
 
 pub trait IdGenerator: Send + Sync {
     fn generate(&self) -> ProfileId;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileValidation {
+    pub valid: bool,
+    pub issues: Vec<Issue>,
+}
+
+pub struct InspectProfileDraft;
+
+impl InspectProfileDraft {
+    pub fn execute(draft: ProfileDraft) -> ProfileValidation {
+        match validate_draft(&draft) {
+            Ok(()) => ProfileValidation {
+                valid: true,
+                issues: vec![],
+            },
+            Err(error) => ProfileValidation {
+                valid: false,
+                issues: vec![Issue {
+                    message: error.message,
+                }],
+            },
+        }
+    }
 }
 
 pub struct CreateProfile<'a, S: ?Sized, G: ?Sized> {

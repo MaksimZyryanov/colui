@@ -1,5 +1,7 @@
 use crate::{dto::*, AppState};
-use colui_app::{CreateProfile, GetProfile, ListProfiles, RemoveProfile, UpdateProfile};
+use colui_app::{
+    CreateProfile, GetProfile, InspectProfileDraft, ListProfiles, RemoveProfile, UpdateProfile,
+};
 use colui_domain::{AppError, AppErrorCode, ProfileId};
 use tauri::State;
 
@@ -14,16 +16,6 @@ fn id(value: String, operation: &str) -> Result<ProfileId, AppErrorDto> {
         .into()
     })
 }
-fn unsupported(operation: &str) -> AppErrorDto {
-    AppError::new(
-        AppErrorCode::ProtocolMismatch,
-        operation,
-        None,
-        "status inspection unavailable",
-    )
-    .into()
-}
-
 #[tauri::command]
 pub async fn list_profiles(
     state: State<'_, AppState>,
@@ -49,10 +41,31 @@ pub async fn get_profile(
 }
 #[tauri::command]
 pub async fn inspect_profile_draft(
-    _: ProfileDraftDto,
+    draft: ProfileDraftDto,
     _: State<'_, AppState>,
 ) -> Result<ProfileValidationDto, AppErrorDto> {
-    Err(unsupported("inspect_profile_draft"))
+    let draft = match draft.into_domain() {
+        Ok(draft) => draft,
+        Err(error) => {
+            return Ok(ProfileValidationDto {
+                valid: false,
+                issues: vec![IssueDto {
+                    message: error.message,
+                }],
+            })
+        }
+    };
+    let validation = InspectProfileDraft::execute(draft);
+    Ok(ProfileValidationDto {
+        valid: validation.valid,
+        issues: validation
+            .issues
+            .into_iter()
+            .map(|issue| IssueDto {
+                message: issue.message,
+            })
+            .collect(),
+    })
 }
 #[tauri::command]
 pub async fn create_profile(

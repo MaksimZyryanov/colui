@@ -3,19 +3,19 @@ use super::{build_cli_environment, resolve_endpoint, DockerControl};
 use bollard::Docker;
 use colui_app::{
     ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleFuture,
-    LifecycleOperation, LifecycleResult, LifecycleRuntime, RuntimeConnector, RuntimeFuture,
-    RuntimeStateReader,
+    LifecycleOperation, LifecycleResult, LifecycleRuntime, ProjectStatus, ProjectStatusFuture,
+    ProjectStatusReader, RuntimeConnector, RuntimeFuture, RuntimeProjection, RuntimeStateReader,
 };
 use colui_domain::{
-    AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerInstance, DaemonFingerprint,
-    DockerEndpoint, MismatchDetails, RuntimeSessionId, RuntimeSessionState, SessionContext,
-    Timestamp,
+    AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerInstance, ContainerState,
+    DaemonFingerprint, DefinitionState, DockerEndpoint, MismatchDetails, RuntimeActivity,
+    RuntimePresence, RuntimeSessionId, RuntimeSessionState, SessionContext, Timestamp,
 };
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore};
 
 pub trait DockerFactory: Send + Sync {
@@ -218,13 +218,7 @@ fn error(code: AppErrorCode, operation: &str, message: &str) -> AppError {
     AppError::new(code, operation, None, message)
 }
 fn timestamp() -> Timestamp {
-    Timestamp(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .to_string(),
-    )
+    Timestamp(chrono::Utc::now().to_rfc3339())
 }
 
 impl RuntimeConnector for RuntimeGateway {
@@ -454,6 +448,71 @@ impl DockerApi for RuntimeGateway {
                 ));
             }
             Ok(result)
+        })
+    }
+}
+
+impl ProjectStatusReader for RuntimeGateway {
+    fn project_status(&self, profile: colui_domain::ProjectProfile) -> ProjectStatusFuture<'_> {
+        Box::pin(async move {
+            if !matches!(self.session_state().await?, RuntimeSessionState::Ready(_)) {
+                return Ok(ProjectStatus {
+                    profile_id: profile.id,
+                    runtime: RuntimeProjection {
+                        presence: RuntimePresence::Unavailable,
+                        activity: None,
+                        container_count: 0,
+                        running_container_count: 0,
+                        observed_at: None,
+                    },
+                    definition_state: DefinitionState::Unchecked,
+                    issues: vec![],
+                });
+            }
+            let containers = self.list_containers().await?;
+            let mut matching = Vec::new();
+            for container in containers {
+                let details = self.inspect_container(&container.id).await?;
+                if details
+                    .labels
+                    .get("com.docker.compose.project")
+                    .map(String::as_str)
+                    == Some(profile.compose_project_name.as_ref())
+                {
+                    matching.push(details.instance);
+                }
+            }
+            let container_count = matching.len() as u32;
+            let running_container_count = matching
+                .iter()
+                .filter(|container| container.state == ContainerState::Running)
+                .count() as u32;
+            let presence = if matching.is_empty() {
+                RuntimePresence::Absent
+            } else {
+                RuntimePresence::Present
+            };
+            let activity = if matching.is_empty() {
+                None
+            } else if running_container_count == container_count {
+                Some(RuntimeActivity::AllRunning)
+            } else if running_container_count == 0 {
+                Some(RuntimeActivity::NoneRunning)
+            } else {
+                Some(RuntimeActivity::Mixed)
+            };
+            Ok(ProjectStatus {
+                profile_id: profile.id,
+                runtime: RuntimeProjection {
+                    presence,
+                    activity,
+                    container_count,
+                    running_container_count,
+                    observed_at: Some(timestamp()),
+                },
+                definition_state: DefinitionState::Unchecked,
+                issues: vec![],
+            })
         })
     }
 }
