@@ -6,7 +6,7 @@
 
 ## 1. Scope and decisions
 
-Increment 2 adds the runtime boundary for one local Docker context. It covers `RuntimeSession`, concrete `RuntimeGateway`, endpoint resolution, Bollard API access, Docker Compose CLI invocation, process ownership, bounded output, reconnect, and hermetic plus feature-gated real-Docker tests.
+Increment 2 adds the runtime boundary for one local Docker context. It covers `RuntimeSession`, concrete `RuntimeGateway`, endpoint resolution, Bollard API access, Docker Compose CLI invocation, process ownership, bounded output, reconnect, and hermetic and feature-gated real-Docker tests.
 
 It excludes frontend, Tauri IPC, `InventoryCoordinator`, definition cache, Discovery, lifecycle UI, Docker Events, container logs, remote or multi-context support, and implementation of later-increment use cases.
 
@@ -96,13 +96,15 @@ One resolved endpoint configures both control planes. The gateway connects Bolla
 
 `connect_runtime()` always reruns resolution and both fingerprint checks. It replaces old adapter state only after the new connection attempt has reached a terminal result. A successful reconnect can transition `ContextMismatch` or `Failed` to `Ready` without restarting the application.
 
-CLI environment construction begins with inherited `std::env::vars()`. Ordinary environment such as `PATH`, `HOME`, locale, user variables, and credential-helper variables remains available. Context-affecting Docker variables are explicitly controlled: `DOCKER_HOST` is set to the resolved endpoint; `DOCKER_CONTEXT` is cleared; TLS and certificate variables are cleared or set from the resolved session rather than inherited ambiguously. The full environment is never included in diagnostic details.
+Fingerprint comparison uses canonical trimmed strings returned by the two control planes; no semver comparison or suffix stripping is performed. Thus `20.10.17` and `20.10.17-ce` do not match. The CLI adapter requests the server version from the daemon rather than comparing client versions, so equivalent API and CLI observations from one daemon must produce the same canonical value.
+
+CLI environment construction begins with inherited `std::env::vars()`. Ordinary environment such as `PATH`, `HOME`, locale, user variables, and credential-helper variables remains available. The context-control allowlist is explicit: `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH`, `DOCKER_API_VERSION`, `DOCKER_CLI_EXPERIMENTAL`, `DOCKER_CONFIG`, `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, `COMPOSE_PROFILES`, `COMPOSE_PROJECT_DIRECTORY`, `COMPOSE_PATH_SEPARATOR`, `COMPOSE_ENV_FILES`, `COMPOSE_DISABLE_ENV_FILE`, `COMPOSE_PARALLEL_LIMIT`, and `COMPOSE_MENU`. `DOCKER_HOST` is set to the resolved endpoint; `DOCKER_CONTEXT` is cleared; TLS, certificate, API-version, and experimental settings are cleared or set by the session; Compose file, project, profile, directory, env-file, parallelism, and menu settings are cleared from the inherited environment and supplied only by backend invocation policy. `DOCKER_CONFIG` is preserved as the inherited Docker config path so credential helpers continue to work; it cannot select an endpoint because `DOCKER_CONTEXT` is cleared and `DOCKER_HOST` is explicit. `DOCKER_BUILDKIT` is explicitly preserved as a build-behavior setting and is not treated as endpoint identity. Variables outside this allowlist are ordinary inherited environment and are not interpreted as runtime context. The full environment is never included in diagnostic details.
 
 Connection failures map to `runtime_unavailable` for unavailable local runtime and `runtime_connection_failed` for connection, API fingerprint, CLI execution, or CLI parsing failures. A fingerprint mismatch is not collapsed into either error: it enters `ContextMismatch` and retains both fingerprints for Diagnostics.
 
 ## 4. Application ports
 
-`colui-app` defines async ports using domain/application types only:
+`colui-app` defines async ports using domain/application types only. Ports use `&self`; no runtime port requires a mutable borrow across an await, and callers cannot hold a blocking lock through a port call:
 
 ```rust
 #[async_trait]
@@ -123,7 +125,7 @@ pub trait ComposeRunner: Send + Sync {
 }
 ```
 
-`ComposeInvocation` contains executable, separate argv, backend-resolved working directory, explicit environment, and deadline. It is a data contract, not a shell command string. `ComposeProcessResult` contains exit status, decoded stdout/stderr tails, per-stream truncation flags, timeout state, and duration.
+`ComposeInvocation` contains executable, separate argv, backend-resolved working directory, explicit environment, and an absolute monotonic `deadline: Instant` measured by the runner's clock. It is a data contract, not a shell command string. `ComposeProcessResult` contains exit status, decoded stdout/stderr tails, per-stream truncation flags, timeout state, and duration.
 
 The gateway implements these ports in `colui-adapters`. Application use cases receive port references and do not construct Bollard clients, child processes, shell commands, endpoint environment, or profile paths from IPC input. Future lifecycle use cases perform profile lookup before constructing backend-resolved invocations.
 
@@ -142,7 +144,7 @@ pub struct RuntimeGateway {
 
 `client` is present only for a verified usable session. `compose_runner` owns process execution configuration. `compose_gate` starts with one permit and serializes all Compose CLI calls globally. The gateway alone decides readiness and enforces gates through `require_ready_client()` and `require_ready_context()`.
 
-API operations use the verified client. Read-only API inventory can continue in `ContextMismatch` when that client is still usable; Compose operations return `runtime_context_mismatch` before spawn. Disconnected and failed sessions return the corresponding runtime error. State synchronization must not hold a blocking lock or an exclusive mutable borrow across long network/process awaits.
+API operations use the API-verified client captured during the current connection attempt. Read-only API inventory can continue in `ContextMismatch` only when that client has completed the API fingerprint call successfully and remains bound to the mismatch's endpoint and API fingerprint; each read is tagged with the current session ID and API fingerprint, and a reconnect/disconnect invalidates that client before publication. No CLI-derived data is used to authorize these reads. Compose operations return `runtime_context_mismatch` before spawn. Disconnected and failed sessions return the corresponding runtime error. State synchronization uses async coordination and short state transitions; it must not hold a blocking lock or an exclusive mutable borrow across long network/process awaits.
 
 ## 6. ComposeProcessRunner
 
@@ -166,10 +168,10 @@ Execution sequence:
 4. On deadline, send SIGTERM to the process group.
 5. Wait configured grace period.
 6. Send SIGKILL to the process group if it has not exited.
-7. Always wait and reap the direct child before returning.
+7. Wait and reap the direct child before returning. After SIGKILL, reap first uses nonblocking `try_wait()` polling with a bounded five-second confirmation deadline. If confirmation does not complete, the runner records a termination diagnostic and performs a blocking OS wait as the mandatory reap fallback; it never returns a successful result while the direct child remains unreaped. An OS wait error returns a typed timeout/termination diagnostic after the reap attempt.
 8. Join output drains, retain newest bytes, decode UTF-8 with replacement characters, and return typed result.
 
-Each ring discards oldest bytes once full and sets its own `truncated` flag. Buffering is byte-based, so UTF-8 boundaries are not assumed during collection. Spawn errors and termination failures become typed Compose/runtime diagnostics; non-zero exit becomes `compose_failed`; deadline expiration returns `operation_timeout` with `timed_out = true` after reap. A process-group signal failure must not skip the mandatory wait/reap attempt.
+Each ring discards oldest bytes once full and sets its own `truncated` flag. The two buffers are independent and have a combined maximum retained payload of 128 KiB, excluding small fixed bookkeeping and decoder allocation. Buffering is byte-based, so UTF-8 boundaries are not assumed during collection. Spawn errors and termination failures become typed Compose/runtime diagnostics; non-zero exit becomes `compose_failed`; deadline expiration returns `operation_timeout` with `timed_out = true` after reap. A process-group signal failure must not skip the bounded wait/reap attempt or its blocking fallback. If OS reap itself fails, diagnostics identify that termination could not be confirmed; the implementation must still make the SIGKILL attempt and never silently report successful cleanup.
 
 ## 7. Test design
 
@@ -188,6 +190,8 @@ Hermetic adapter tests use a compiled Rust fake executable. Its protocol is cont
 The fixture records argv, cwd, and selected environment, emits deterministic bytes, can delay beyond deadline, can create a child process, and can ignore SIGTERM to force SIGKILL escalation. Tests must verify endpoint priority; inherited and controlled environment; matching and mismatching fingerprints; reconnect; profile availability offline; API mapping; readiness gates; exact argv/cwd; shell metacharacter literalness; independent 64 KiB newest-byte retention; UTF-8 replacement decoding; exit mapping; process-group termination; mandatory reap; and semaphore serialization.
 
 Real-Docker tests are behind the `docker-tests` feature and run separately with `cargo test -p colui-adapters --features docker-tests`. The disposable fixture creates a temporary Compose project, connects, verifies fingerprints, applies, observes containers through the API, stops, reapplies, tears down, and removes temporary resources. Matrix validation targets Docker Desktop and Colima on macOS. Tests must skip clearly when no Docker daemon is available rather than make hermetic workspace tests depend on Docker.
+
+`bash scripts/check-boundaries.sh` is the repository dependency-boundary gate: it rejects forbidden Bollard/Tauri/Tokio/filesystem/process dependencies in `colui-domain`, Bollard/Tauri in `colui-app`, and Tauri in `colui-adapters`. It inspects Cargo manifest dependency keys, including aliased and dotted dependency tables, and is not a substitute for compilation.
 
 Required verification commands:
 
