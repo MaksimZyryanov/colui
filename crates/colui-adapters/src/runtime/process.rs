@@ -38,6 +38,14 @@ impl ComposeProcessRunner {
         &self,
         invocation: ComposeInvocation,
     ) -> Result<ComposeProcessResult, AppError> {
+        #[cfg(not(unix))]
+        return Err(AppError::new(
+            AppErrorCode::ComposeFailed,
+            "compose_spawn",
+            None,
+            "process groups unsupported on this target",
+        ));
+
         let started = Instant::now();
         let mut command = Command::new(&invocation.executable);
         command
@@ -72,21 +80,24 @@ impl ComposeProcessRunner {
         let mut timed_out = false;
         let status = tokio::time::sleep_until(tokio::time::Instant::from_std(invocation.deadline));
         tokio::pin!(status);
-        tokio::select! {
-            result = child.wait() => { result.map_err(|e| wait_error(e, false))?; }
+        let lifecycle: Result<(), AppError> = tokio::select! {
+            result = child.wait() => { result.map(|_| ()).map_err(|e| wait_error(e, false)) }
             _ = &mut status => {
                 timed_out = true;
-                terminate_group(&mut child, self.termination.grace_period).await?;
+                terminate_group(&mut child, self.termination.grace_period).await
             }
-        }
+        };
         let output = out_task
             .await
-            .map_err(|e| drain_error(e.to_string()))?
-            .map_err(|e| drain_error(e.to_string()))?;
+            .map_err(|e| drain_error(e.to_string()))
+            .and_then(|result| result.map_err(|e| drain_error(e.to_string())));
         let error = err_task
             .await
-            .map_err(|e| drain_error(e.to_string()))?
-            .map_err(|e| drain_error(e.to_string()))?;
+            .map_err(|e| drain_error(e.to_string()))
+            .and_then(|result| result.map_err(|e| drain_error(e.to_string())));
+        lifecycle?;
+        let output = output?;
+        let error = error?;
         let duration = started.elapsed();
         if timed_out {
             Ok(ComposeProcessResult::from_timeout(
@@ -187,36 +198,76 @@ async fn drain<R: AsyncRead + Unpin>(mut reader: R) -> io::Result<(Vec<u8>, bool
     Ok((ring, truncated))
 }
 
+#[cfg(unix)]
 async fn terminate_group(child: &mut Child, grace: Duration) -> Result<(), AppError> {
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(child.id().unwrap_or_default() as i32), libc::SIGTERM);
+    let mut diagnostic = None;
+    if let Err(error) = signal_group(child, libc::SIGTERM) {
+        diagnostic = Some(error);
     }
     let grace_result = tokio::time::timeout(grace, child.wait()).await;
-    if grace_result.is_err() {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-(child.id().unwrap_or_default() as i32), libc::SIGKILL);
-        }
-        let reap_deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if Instant::now() < reap_deadline => {
-                    tokio::time::sleep(Duration::from_millis(10)).await
+    if let Ok(Err(error)) = grace_result {
+        diagnostic = Some(wait_error(error, true));
+    }
+    if let Err(error) = signal_group(child, libc::SIGKILL) {
+        diagnostic.get_or_insert(error);
+    }
+    let reap_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < reap_deadline => {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+            Ok(None) => {
+                child
+                    .wait()
+                    .await
+                    .map_err(|error| wait_error(error, true))?;
+                break;
+            }
+            Err(_error) => {
+                let diagnostic_error = wait_error(_error, true);
+                let fallback = child.wait().await.map_err(|error| wait_error(error, true));
+                diagnostic.get_or_insert(diagnostic_error);
+                if let Err(error) = fallback {
+                    diagnostic.get_or_insert(error);
                 }
-                Ok(None) => {
-                    child.wait().await.map_err(|e| wait_error(e, true))?;
-                    break;
-                }
-                Err(e) => {
-                    let _ = child.wait().await;
-                    return Err(wait_error(e, true));
-                }
+                break;
             }
         }
-    } else if let Ok(Err(e)) = grace_result {
-        return Err(wait_error(e, true));
     }
-    Ok(())
+    diagnostic.map_or(Ok(()), Err)
+}
+
+#[cfg(not(unix))]
+async fn terminate_group(_child: &mut Child, _grace: Duration) -> Result<(), AppError> {
+    Err(AppError::new(
+        AppErrorCode::ComposeFailed,
+        "compose_terminate",
+        None,
+        "process groups unsupported on this target",
+    ))
+}
+
+#[cfg(unix)]
+fn signal_group(child: &Child, signal: i32) -> Result<(), AppError> {
+    let Some(pid) = child.id() else {
+        return Ok(());
+    };
+    let pid = pid as i32;
+    let result = unsafe { libc::kill(-pid, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(AppError::new(
+        AppErrorCode::OperationTimeout,
+        "compose_terminate",
+        None,
+        "failed to signal compose process group",
+    )
+    .with_details(error.to_string()))
 }

@@ -107,7 +107,15 @@ fn fixture() -> &'static Path {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("fake-compose");
         let status = std::process::Command::new("rustc")
-            .args(["--edition", "2021", "tests/fixtures/fake_compose.rs", "-o"])
+            .args([
+                "--edition",
+                "2021",
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/fake_compose.rs"
+                ),
+                "-o",
+            ])
             .arg(&output)
             .status()
             .unwrap();
@@ -252,6 +260,34 @@ async fn runner_terminates_process_group_and_reaps_after_timeout() {
     panic!("child process remains");
 }
 
+#[cfg(unix)]
 fn process_exists(pid: i32) -> bool {
-    unsafe { libc::kill(pid, 0) == 0 }
+    unsafe {
+        if libc::kill(pid, 0) == 0 {
+            true
+        } else {
+            errno() != libc::ESRCH
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn errno() -> i32 {
+    *libc::__error()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe fn errno() -> i32 {
+    *libc::__errno_location()
+}
+
+#[cfg(not(unix))]
+#[tokio::test]
+async fn runner_reports_unsupported_process_groups_without_indefinite_wait() {
+    let error = runner(Duration::from_millis(1))
+        .run(invocation("sleep", BTreeMap::new(), Instant::now()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::ComposeFailed);
+    assert!(error.message.contains("process groups unsupported"));
 }
