@@ -6,18 +6,21 @@ let nextId = 1;
 const id = () => `00000000-0000-0000-0000-${String(nextId++).padStart(12, '0')}`;
 const now = () => new Date().toISOString();
 const error = (code: AppErrorException['code'], operation: string, message: string, subjectId: string | null = null): never => { throw new AppErrorException({ code, operation, subjectId, message, details: null, retryable: false }); };
-const validateDraft = (draft: ProfileDraft, operation: string) => { if (!draft.displayName.trim() || !draft.composeProjectName.trim() || !draft.workingDirectory.trim() || draft.composeFiles.length === 0 || new Set([...draft.composeFiles, ...draft.environmentFiles]).size !== draft.composeFiles.length + draft.environmentFiles.length) error('profile_invalid', operation, 'Invalid profile draft'); };
+const validateDraft = (draft: ProfileDraft, operation: string) => { if (!draft.displayName || !/^[a-z0-9][a-z0-9_-]*$/.test(draft.composeProjectName) || draft.composeFiles.length === 0 || new Set([...draft.composeFiles, ...draft.environmentFiles]).size !== draft.composeFiles.length + draft.environmentFiles.length) error('profile_invalid', operation, 'Invalid profile draft'); };
 let profiles: ProfileSummary[] = [];
 let drafts = new Map<string, ProfileDraft>();
 let runtime: unknown = { state: 'disconnected' };
 let statuses = new Map<string, unknown>();
 const overrides = new Map<string, unknown>();
+let invocations: Array<{ command: string; args?: unknown }> = [];
 const baseStatus = (profileId: string) => ({ profileId, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null }, definition: { state: 'unchecked', revision: null, serviceCount: null }, operation: null, issues: [] });
 function validateId(args: unknown, operation: string) { const result = profileIdRequestSchema.safeParse(args); if (!result.success) error('profile_invalid', operation, 'profileId must be a UUID'); return result.data!.profileId; }
 export const mockBackend = {
-  reset() { profiles = []; drafts = new Map(); runtime = { state: 'disconnected' }; statuses = new Map(); overrides.clear(); nextId = 1; },
+  reset() { profiles = []; drafts = new Map(); runtime = { state: 'disconnected' }; statuses = new Map(); overrides.clear(); invocations = []; nextId = 1; },
+  getInvocations() { return [...invocations]; },
   setResponseOverride(command: string, value: unknown) { overrides.set(command, value); },
   async invoke(command: string, args?: unknown): Promise<unknown> {
+    invocations.push({ command, args });
     if (overrides.has(command)) return overrides.get(command);
     switch (command) {
       case 'list_profiles': if (args !== undefined) error('profile_invalid', command, 'unexpected arguments'); return profiles;

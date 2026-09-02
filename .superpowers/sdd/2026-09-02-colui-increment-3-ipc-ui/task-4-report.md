@@ -114,4 +114,33 @@ exit 0
 
 $ pnpm --version
 zsh: command not found: pnpm
+
+## Scoped Re-review Verification
+
+```text
+$ npm test -- src/ipc/__tests__
+Test Files  3 passed (3)
+Tests  23 passed (23)
+
+$ npm run test:contracts
+Test Files  3 passed (3)
+Tests  23 passed (23)
+
+$ npm run typecheck
+tsc --noEmit
+exit 0
+
+$ npm run build
+vite v5.4.21 building for production...
+dist/index.html  0.06 kB | gzip: 0.07 kB
+exit 0
+
+$ bash scripts/check-boundaries.sh --self-test
+Boundary parser self-test OK
+Dependency boundaries OK
+
+$ git diff --check
+exit 0
 ```
+
+Scoped fixes: lifecycle wrappers validate `profileIdRequestSchema`; mock validates Rust display/project-name semantics; DTO tests cover committed positive/negative fixtures, invalid timestamp/status combination, context shape, requests, and lifecycle result; command tests cover exact wrapper command names, argument shapes, and unit response convention.

@@ -14,7 +14,7 @@ describe('browser mock backend', () => {
     expect(created.revision).toBe(1);
     const updated = await updateProfile({ profileId: created.id, expectedRevision: 1, patch: { ...draft, displayName: 'Updated' } });
     expect(updated.revision).toBe(2);
-    await removeProfile({ profileId: created.id, expectedRevision: 2 });
+    await expect(removeProfile({ profileId: created.id, expectedRevision: 2 })).resolves.toBeUndefined();
     expect(await listProfiles()).toEqual([]);
   });
 
@@ -27,6 +27,8 @@ describe('browser mock backend', () => {
   it('applies domain draft validation and rejects duplicate names on create/update', async () => {
     mockBackend.reset();
     await expect(createProfile({ ...draft, displayName: '' })).rejects.toMatchObject({ code: 'profile_invalid' });
+    await expect(createProfile({ ...draft, composeProjectName: 'Demo' })).rejects.toMatchObject({ code: 'profile_invalid' });
+    await expect(createProfile({ ...draft, composeProjectName: ' demo' })).rejects.toMatchObject({ code: 'profile_invalid' });
     const created = await createProfile(draft);
     await expect(createProfile({ ...draft, displayName: 'Other' })).rejects.toMatchObject({ code: 'profile_already_registered' });
     await expect(updateProfile({ profileId: created.id, expectedRevision: 1, patch: { ...draft, displayName: 'Changed', composeProjectName: 'demo' } })).resolves.toMatchObject({ revision: 2 });

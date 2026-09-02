@@ -14,7 +14,7 @@ export const removeProfile = (request: t.RemoveProfileRequest) => call('remove_p
 export const getRuntimeState = () => call('get_runtime_state', s.runtimeStateSchema, undefined, z.undefined());
 export const connectRuntime = () => call('connect_runtime', s.runtimeStateSchema, undefined, z.undefined());
 export const getProjectStatus = (profileId: string) => call('get_project_status', s.projectStatusSchema, { profileId }, s.profileIdRequestSchema);
-const lifecycle = (command: string, profileId: string) => { if (typeof profileId !== 'string') throw new TypeError('profileId required'); return call(command, s.lifecycleResultSchema, { profileId }); };
+const lifecycle = (command: string, profileId: string) => call(command, s.lifecycleResultSchema, { profileId }, s.profileIdRequestSchema);
 export const applyProject = (profileId: string) => lifecycle('apply_project', profileId);
 export const stopProject = (profileId: string) => lifecycle('stop_project', profileId);
 export const tearDownProject = (profileId: string) => lifecycle('tear_down_project', profileId);
