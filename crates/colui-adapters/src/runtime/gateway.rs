@@ -272,14 +272,14 @@ impl RuntimeConnector for RuntimeGateway {
 }
 
 impl RuntimeGateway {
-    async fn current_client(&self) -> Result<Arc<dyn DockerControl>, AppError> {
+    async fn current_client(&self) -> Result<(Arc<dyn DockerControl>, u64), AppError> {
         let snapshot = self.snapshot.lock().await;
         snapshot
             .client
             .as_ref()
             .map(|client| {
                 let _ = (&client.session_id, &client.endpoint, &client.fingerprint);
-                client.client.clone()
+                (client.client.clone(), snapshot.generation)
             })
             .ok_or_else(|| {
                 error(
@@ -313,11 +313,33 @@ impl RuntimeStateReader for RuntimeGateway {
 }
 impl DockerApi for RuntimeGateway {
     fn list_containers(&self) -> RuntimeFuture<'_, Vec<ContainerInstance>> {
-        Box::pin(async { self.current_client().await?.list().await })
+        Box::pin(async {
+            let (client, generation) = self.current_client().await?;
+            let result = client.list().await?;
+            if self.snapshot.lock().await.generation != generation {
+                return Err(error(
+                    AppErrorCode::RuntimeUnavailable,
+                    "runtime_read",
+                    "runtime session changed",
+                ));
+            }
+            Ok(result)
+        })
     }
     fn inspect_container(&self, id: &ContainerId) -> RuntimeFuture<'_, ContainerDetails> {
         let id = id.clone();
-        Box::pin(async move { self.current_client().await?.inspect(&id).await })
+        Box::pin(async move {
+            let (client, generation) = self.current_client().await?;
+            let result = client.inspect(&id).await?;
+            if self.snapshot.lock().await.generation != generation {
+                return Err(error(
+                    AppErrorCode::RuntimeUnavailable,
+                    "runtime_read",
+                    "runtime session changed",
+                ));
+            }
+            Ok(result)
+        })
     }
 }
 impl ComposeRunner for RuntimeGateway {
@@ -333,6 +355,9 @@ impl ComposeRunner for RuntimeGateway {
                     "compose gate closed",
                 )
             })?;
+            if let Some(error) = self.compose_error().await {
+                return Err(error);
+            }
             let runner = self.runner.lock().await.clone();
             runner.invoke(invocation).await
         })

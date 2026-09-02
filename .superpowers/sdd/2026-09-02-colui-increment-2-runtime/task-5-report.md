@@ -41,6 +41,12 @@ test result: ok. 4 passed; 0 failed
 - `bash scripts/check-boundaries.sh`: passed, `Dependency boundaries OK`.
 - `git diff --check`: passed.
 
+## Final Session Invalidation Fix
+
+- API reads now capture generation-bound handles and reject results if reconnect or disconnect changed generation during the network await.
+- Compose rechecks readiness after semaphore acquisition, preventing queued operations from spawning after reconnect invalidates the session.
+- Follow-up verification passed focused gateway tests, workspace tests, feature-gated tests with clear daemon skip, formatting, boundaries, and diff checks.
+
 ## Concerns
 
 - Feature-gated Docker test currently provides daemon availability/skip coverage; disposable Compose lifecycle fixture remains future integration work.
