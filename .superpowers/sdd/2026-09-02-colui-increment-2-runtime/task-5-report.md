@@ -41,6 +41,22 @@ test result: ok. 4 passed; 0 failed
 - `bash scripts/check-boundaries.sh`: passed, `Dependency boundaries OK`.
 - `git diff --check`: passed.
 
+## Scoped Review Fix: Compose/Disconnect Race
+
+- Root cause: readiness was checked before and after semaphore acquisition, but `disconnect_runtime()` did not use same operation gate. Disconnect could invalidate session after final readiness check and before runner invocation.
+- Fix: `disconnect_runtime()` now acquires one-permit operation gate. Compose retains permit through readiness validation and full runner invocation, so disconnect cannot publish invalidation until active operation completes. No mutex remains held across long awaits.
+- Regression test: `gateway_disconnect_waits_for_active_compose_operation` uses deterministic `Notify` fakes and verifies disconnect remains pending until active Compose releases.
+
+## Scoped Review Verification
+
+- `cargo test -p colui-adapters --test runtime gateway_`: passed.
+- `cargo test -p colui-adapters --test runtime`: passed.
+- `cargo test --workspace`: passed.
+- `cargo test -p colui-adapters --features docker-tests`: passed with daemon-unavailable skip.
+- `cargo fmt --all -- --check`: passed.
+- `bash scripts/check-boundaries.sh`: passed.
+- `git diff --check`: passed.
+
 ## Final Session Invalidation Fix
 
 - API reads now capture generation-bound handles and reject results if reconnect or disconnect changed generation during the network await.

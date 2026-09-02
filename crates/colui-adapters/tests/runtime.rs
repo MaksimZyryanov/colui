@@ -14,7 +14,10 @@ use colui_domain::{
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, OnceLock,
+};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -420,6 +423,40 @@ async fn gateway_rejects_unsuccessful_or_timed_out_cli_info() {
     }
 }
 
+#[tokio::test]
+async fn gateway_disconnect_waits_for_active_compose_operation() {
+    let runner = Arc::new(BlockingRunner::default());
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(BlockingRunner {
+            started: runner.started.clone(),
+            release: runner.release.clone(),
+            calls: runner.calls.clone(),
+        }),
+    ));
+    assert!(matches!(
+        gateway.connect_runtime(None).await.unwrap(),
+        colui_domain::RuntimeSessionState::Ready(_)
+    ));
+
+    let invoke = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.invoke(fake_invocation()).await }
+    });
+    runner.started.notified().await;
+
+    let disconnect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.disconnect_runtime().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!disconnect.is_finished());
+
+    runner.release.notify_one();
+    assert!(invoke.await.unwrap().is_ok());
+    assert!(disconnect.await.unwrap().is_ok());
+}
+
 #[derive(Clone)]
 struct FakeDocker {
     fingerprint: String,
@@ -457,6 +494,42 @@ struct FakeRunner {
 
 struct StatusRunner {
     result: ComposeProcessResult,
+}
+
+#[derive(Clone)]
+struct BlockingRunner {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    calls: Arc<AtomicUsize>,
+}
+impl Default for BlockingRunner {
+    fn default() -> Self {
+        Self {
+            started: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+impl colui_app::ComposeRunner for BlockingRunner {
+    fn invoke(&self, _: ComposeInvocation) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
+        let started = self.started.clone();
+        let release = self.release.clone();
+        let calls = self.calls.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async move {
+            if calls == 0 {
+                return Ok(ComposeProcessResult::completed(
+                    0,
+                    "ID: same\nServer Version: 1\nOSType: linux\nArchitecture: x86_64\n",
+                    "",
+                    Duration::ZERO,
+                ));
+            }
+            started.notify_one();
+            release.notified().await;
+            Ok(ComposeProcessResult::completed(0, "", "", Duration::ZERO))
+        })
+    }
 }
 impl colui_app::ComposeRunner for StatusRunner {
     fn invoke(&self, _: ComposeInvocation) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {

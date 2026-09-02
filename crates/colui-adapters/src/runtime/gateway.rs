@@ -262,6 +262,13 @@ impl RuntimeConnector for RuntimeGateway {
     }
     fn disconnect_runtime(&self) -> RuntimeFuture<'_, ()> {
         Box::pin(async {
+            let _permit = self.gate.acquire().await.map_err(|_| {
+                error(
+                    AppErrorCode::RuntimeUnavailable,
+                    "disconnect_runtime",
+                    "runtime operation gate closed",
+                )
+            })?;
             let mut snapshot = self.snapshot.lock().await;
             snapshot.generation += 1;
             snapshot.client = None;
