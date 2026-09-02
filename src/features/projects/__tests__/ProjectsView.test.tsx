@@ -2,9 +2,10 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ProjectsView } from '../ProjectsView';
+import { StatusDetails } from '../components/StatusDetails';
 import { mockBackend } from '../../../ipc/mock-backend';
 
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -59,5 +60,44 @@ describe('ProjectsView', () => {
     mockBackend.setResponseOverride('get_project_status', new Promise(() => {}));
     renderProjects();
     expect(await screen.findByRole('status', { name: /loading project status/i })).toBeVisible();
+  });
+
+  it('keeps user edits while fresh profile details replace stale hydration', async () => {
+    const profileId = '00000000-0000-0000-0000-000000000001';
+    mockBackend.setResponseOverride('list_profiles', [{ id: profileId, revision: 2, displayName: 'Cached', composeProjectName: 'cached', workingDirectory: '/cached', registrationOrigin: 'manual' }]);
+    mockBackend.setResponseOverride('get_profile', { profile: { id: profileId, revision: 3, displayName: 'Fresh', composeProjectName: 'fresh', workingDirectory: '/fresh', registrationOrigin: 'manual' }, composeFiles: ['fresh.yml'], environmentFiles: [] });
+    client.setQueryData(['projects', 'detail', profileId], { profile: { id: profileId, revision: 2, displayName: 'Cached', composeProjectName: 'cached', workingDirectory: '/cached', registrationOrigin: 'manual' }, composeFiles: ['cached.yml'], environmentFiles: [] });
+    const user = userEvent.setup();
+    renderProjects();
+    await user.click(await screen.findByRole('button', { name: /edit cached/i }));
+    const displayName = await screen.findByDisplayValue('Fresh');
+    await user.clear(displayName);
+    await user.type(displayName, 'User edit');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByDisplayValue('fresh.yml')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByDisplayValue('User edit')).toBeVisible();
+  });
+
+  it('renders unknown backend issue fields in accessible form-level summary', async () => {
+    const profileId = '00000000-0000-0000-0000-000000000001';
+    mockBackend.setResponseOverride('list_profiles', [{ id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
+    mockBackend.setResponseOverride('get_profile', { profile: { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: [] });
+    mockBackend.setResponseOverride('inspect_profile_draft', { valid: false, issues: [{ field: 'futureField', message: 'Future field is invalid' }, { field: 'futureField', message: 'Future field is invalid' }] });
+    const user = userEvent.setup();
+    renderProjects();
+    await user.click(await screen.findByRole('button', { name: /edit demo/i }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByText('Save', { selector: 'button' }));
+    expect(await screen.findByRole('list', { name: 'Profile form errors' })).toHaveTextContent('Future field is invalid');
+    expect(screen.getAllByText('Future field is invalid')).toHaveLength(2);
+  });
+
+  it('renders duplicate status issues without duplicate React keys', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    render(<StatusDetails status={{ profileId: '00000000-0000-0000-0000-000000000001', runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null }, definition: { state: 'unchecked', revision: null, serviceCount: null }, operation: null, issues: [{ message: 'Same issue' }, { message: 'Same issue' }] }} />);
+    expect(screen.getAllByText('Same issue')).toHaveLength(2);
+    expect(error).not.toHaveBeenCalledWith(expect.stringContaining('Each child in a list should have a unique'));
+    error.mockRestore();
   });
 });
