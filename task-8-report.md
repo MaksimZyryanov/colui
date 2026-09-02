@@ -61,7 +61,7 @@ Exact commands and outputs:
 ```text
 $ npm test -- src/features/projects/components/__tests__/ActionMenu.test.tsx
 Test Files  1 passed (1)
-Tests  9 passed (9)
+Tests  10 passed (10)
 
 $ npm test -- src/features/projects
 Test Files  3 passed (3)

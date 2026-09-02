@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ProfileCard } from '../ProfileCard';
+import { ActionMenu } from '../ActionMenu';
 import { mockBackend } from '../../../../ipc/mock-backend';
 
 const profileId = '00000000-0000-0000-0000-000000000001';
@@ -58,6 +59,23 @@ describe('ActionMenu', () => {
     expect(screen.getByRole('menuitem', { name: 'Apply' })).toHaveAttribute('data-disabled');
     expect(screen.getByRole('menuitem', { name: 'Tear down' })).toHaveAttribute('data-disabled');
     expect(screen.getByRole('menuitem', { name: 'Remove profile' })).not.toHaveAttribute('data-disabled');
+  });
+
+  it('isolates pending state between mounted profile cards', async () => {
+    const secondProfileId = '00000000-0000-0000-0000-000000000002';
+    let resolveApply!: (value: unknown) => void;
+    mockBackend.setResponseOverride('apply_project', new Promise(resolve => { resolveApply = resolve; }));
+    mockBackend.setResponseOverride('restart_project', { profileId: secondProfileId, success: true });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><ActionMenu profileId={profileId} revision={2} status={status} runtimeReady /><ActionMenu profileId={secondProfileId} revision={1} status={{ ...status, profileId: secondProfileId }} runtimeReady /></QueryClientProvider>);
+    const applyMenu = screen.getAllByRole('button', { name: /more actions/i })[0];
+    await user.click(applyMenu);
+    await user.click(screen.getByRole('menuitem', { name: 'Apply' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Restart' })[0]).toBeDisabled());
+    expect(screen.getAllByRole('button', { name: 'Restart' })[1]).toBeEnabled();
+    await user.click(screen.getAllByRole('button', { name: 'Restart' })[1]);
+    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'restart_project')?.args).toEqual({ profileId: secondProfileId }));
+    resolveApply({ profileId, success: true });
   });
 
   it('requires explicit confirmation and retains profile after tear down', async () => {
