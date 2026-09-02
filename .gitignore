@@ -1,1 +1,34 @@
 .DS_Store
+
+# macOS metadata
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Rust / Cargo build output
+/target/
+**/target/
+
+# Frontend dependencies and build output
+node_modules/
+dist/
+build/
+.vite/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Test and tool output
+coverage/
+*.log
