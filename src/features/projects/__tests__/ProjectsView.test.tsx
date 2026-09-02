@@ -100,6 +100,9 @@ describe('ProjectsView', () => {
       expect(screen.getByDisplayValue('fresh')).toBeVisible();
       expect(screen.getByDisplayValue('/fresh')).toBeVisible();
     });
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByDisplayValue('fresh.yml')).toBeVisible();
+    expect(screen.getByDisplayValue('fresh.env')).toBeVisible();
   });
 
   it('renders unknown backend issue fields in accessible form-level summary', async () => {

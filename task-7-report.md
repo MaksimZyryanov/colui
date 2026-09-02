@@ -185,3 +185,31 @@ tsc --noEmit: passed
 - `pnpm` remains unavailable; equivalent `npm` commands used.
 - Full frontend test output emits expected jsdom stderr from intentional error-boundary and unnamed icon-button tests; all tests pass.
 - Production files unchanged; round 3 scope adds test coverage and evidence only.
+
+## Task 7 Round 4 Verification Output
+
+Added deferred hydration assertions for refreshed Compose and environment file list values while preserving edited display name.
+
+Exact command and output:
+
+```text
+$ npm test -- src/features/projects/__tests__/ProjectsView.test.tsx
+
+> test
+> vitest run src/features/projects/__tests__/ProjectsView.test.tsx
+
+
+ RUN  v2.1.9 /Users/max/Documents/colui2
+
+ ✓ src/features/projects/__tests__/ProjectsView.test.tsx (9 tests) 326ms
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  00:25:20
+   Duration  911ms (transform 68ms, setup 0ms, collect 165ms, tests 326ms, environment 133ms, prepare 31ms)
+```
+
+## Task 7 Round 4 Concerns
+
+- `pnpm` remains unavailable; focused verification used equivalent `npm` command.
+- No production changes; round 4 scope adds test assertions and evidence only.
