@@ -44,12 +44,35 @@ impl<'de> Deserialize<'de> for DockerEndpoint {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct DaemonFingerprint {
     pub daemon_id: String,
     pub server_version: String,
     pub os_type: String,
     pub architecture: String,
+}
+
+impl<'de> Deserialize<'de> for DaemonFingerprint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct FingerprintFields {
+            daemon_id: String,
+            server_version: String,
+            os_type: String,
+            architecture: String,
+        }
+
+        let fields = FingerprintFields::deserialize(deserializer)?;
+        Ok(Self::new(
+            fields.daemon_id,
+            fields.server_version,
+            fields.os_type,
+            fields.architecture,
+        ))
+    }
 }
 
 impl DaemonFingerprint {
