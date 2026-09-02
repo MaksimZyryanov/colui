@@ -192,3 +192,75 @@ exit 0
 
 - `pnpm` remains unavailable; verification used committed npm lockfile and npm scripts.
 - Existing generated JSON schemas express `format: uuid`, but JSON Schema format alone does not encode lowercase/hyphenated canonicality. Runtime Rust/TS validation now enforces it.
+
+## Task 4 Round 4 Fixes
+
+- Added canonical UUID deserialization to `SessionContextDto.session_id`, `ProjectStatusDto.profile_id`, and `LifecycleResultDto.profile_id` using existing `deserialize_canonical_uuid` validator.
+- Preserved existing `schemars(schema_with = "super::uuid_schema")` annotations and TypeScript schemas.
+- Added DTO boundary tests covering valid canonical UUIDs and rejection of compact and uppercase UUIDs for all three fields.
+
+## Round 4 Verification
+
+### RED
+
+Command:
+
+```bash
+cargo test -p colui-tauri --test dto_contracts
+```
+
+Output before DTO fix:
+
+```text
+running 14 tests
+test result: FAILED. 11 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out
+failures:
+    lifecycle_result_deserializes_only_canonical_profile_ids
+    project_status_deserializes_only_canonical_profile_ids
+    session_context_deserializes_only_canonical_session_ids
+```
+
+### GREEN
+
+Command:
+
+```bash
+cargo fmt --all && cargo test -p colui-tauri --test dto_contracts
+```
+
+Output:
+
+```text
+running 14 tests
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+### Schema Stability
+
+Command:
+
+```bash
+bash scripts/generate-schemas.sh && git diff --exit-code schemas/
+```
+
+Output: none; exit 0. No generated schema changes required.
+
+### Workspace Verification
+
+Command:
+
+```bash
+cargo test --workspace
+```
+
+Output: all workspace test suites passed; 0 failed.
+
+### Final Checks
+
+Command:
+
+```bash
+cargo fmt --all -- --check && git diff --check
+```
+
+Output: none; exit 0.

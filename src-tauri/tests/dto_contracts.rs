@@ -2,8 +2,8 @@ use colui_app::LifecycleResult;
 use colui_domain::{AppError, AppErrorCode, ProfileId};
 use colui_tauri_lib::dto::{
     AppErrorDto, DefinitionStateDto, LifecycleResultDto, OperationKindDto, OperationPhaseDto,
-    RegistrationOriginDto, RuntimeActivityDto, RuntimePresenceDto, RuntimeStateDto,
-    UpdateProfileRequestDto,
+    ProjectStatusDto, RegistrationOriginDto, RuntimeActivityDto, RuntimePresenceDto,
+    RuntimeStateDto, SessionContextDto, UpdateProfileRequestDto,
 };
 use colui_tauri_lib::schema_generation::{generate_all_schemas, write_schemas};
 use std::fs;
@@ -186,6 +186,75 @@ fn dto_boundary_rejects_noncanonical_profile_ids() {
         "profileId": "00000000000000000000000000000001"
     });
     assert!(serde_json::from_value::<colui_tauri_lib::dto::ProfileIdRequestDto>(request).is_err());
+}
+
+#[test]
+fn session_context_deserializes_only_canonical_session_ids() {
+    let base = serde_json::json!({
+        "endpoint": "unix:///var/run/docker.sock",
+        "daemonFingerprint": {
+            "daemonId": "daemon",
+            "serverVersion": "1",
+            "osType": "linux",
+            "architecture": "amd64"
+        },
+        "connectedAt": "2026-09-02T12:00:00Z"
+    });
+    let valid = serde_json::json!({
+        "sessionId": "00000000-0000-0000-0000-000000000001",
+        "endpoint": base["endpoint"],
+        "daemonFingerprint": base["daemonFingerprint"],
+        "connectedAt": base["connectedAt"]
+    });
+    assert!(serde_json::from_value::<SessionContextDto>(valid).is_ok());
+    for session_id in [
+        "00000000000000000000000000000001",
+        "00000000-0000-0000-0000-00000000000A",
+    ] {
+        let mut value = base.clone();
+        value["sessionId"] = serde_json::json!(session_id);
+        assert!(serde_json::from_value::<SessionContextDto>(value).is_err());
+    }
+}
+
+#[test]
+fn project_status_deserializes_only_canonical_profile_ids() {
+    for (profile_id, valid) in [
+        ("00000000-0000-0000-0000-000000000001", true),
+        ("00000000000000000000000000000001", false),
+        ("00000000-0000-0000-0000-00000000000A", false),
+    ] {
+        let value = serde_json::json!({
+            "profileId": profile_id,
+            "runtime": {
+                "presence": "unavailable",
+                "activity": null,
+                "containerCount": 0,
+                "runningContainerCount": 0,
+                "observedAt": null
+            },
+            "definition": {"state": "unchecked"},
+            "operation": null,
+            "issues": []
+        });
+        let result = serde_json::from_value::<ProjectStatusDto>(value);
+        assert_eq!(result.is_ok(), valid);
+    }
+}
+
+#[test]
+fn lifecycle_result_deserializes_only_canonical_profile_ids() {
+    for (profile_id, valid) in [
+        ("00000000-0000-0000-0000-000000000001", true),
+        ("00000000000000000000000000000001", false),
+        ("00000000-0000-0000-0000-00000000000A", false),
+    ] {
+        let value = serde_json::json!({"profileId": profile_id, "success": true});
+        assert_eq!(
+            serde_json::from_value::<LifecycleResultDto>(value).is_ok(),
+            valid
+        );
+    }
 }
 
 #[test]

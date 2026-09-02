@@ -50,6 +50,7 @@ pub struct DefinitionProjectionDto {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectStatusDto {
     #[schemars(schema_with = "super::uuid_schema")]
+    #[serde(deserialize_with = "super::deserialize_canonical_uuid")]
     pub profile_id: String,
     pub runtime: RuntimeProjectionDto,
     pub definition: DefinitionProjectionDto,
@@ -94,6 +95,7 @@ pub struct ProfileValidationDto {
 #[serde(rename_all = "camelCase")]
 pub struct LifecycleResultDto {
     #[schemars(schema_with = "super::uuid_schema")]
+    #[serde(deserialize_with = "super::deserialize_canonical_uuid")]
     pub profile_id: String,
     pub success: bool,
 }

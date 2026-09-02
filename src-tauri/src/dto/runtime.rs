@@ -15,6 +15,7 @@ pub struct DaemonFingerprintDto {
 #[serde(rename_all = "camelCase")]
 pub struct SessionContextDto {
     #[schemars(schema_with = "super::uuid_schema")]
+    #[serde(deserialize_with = "super::deserialize_canonical_uuid")]
     pub session_id: String,
     pub endpoint: String,
     pub daemon_fingerprint: DaemonFingerprintDto,
