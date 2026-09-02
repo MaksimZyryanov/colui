@@ -144,3 +144,51 @@ exit 0
 ```
 
 Scoped fixes: lifecycle wrappers validate `profileIdRequestSchema`; mock validates Rust display/project-name semantics; DTO tests cover committed positive/negative fixtures, invalid timestamp/status combination, context shape, requests, and lifecycle result; command tests cover exact wrapper command names, argument shapes, and unit response convention.
+
+## Re-review Fixes
+
+- Removed mock duplicate `composeProjectName` rejection from create/update. Rust application registry permits duplicate compose names; mock now matches that behavior.
+- Canonicalized profile ID contract to lowercase hyphenated UUIDs. Rust `ProfileId::parse` rejects compact and uppercase forms; Rust profile/request DTO deserializers enforce same rule at IPC boundary; TS Zod wire schemas enforce same rule while retaining `uuid` format validation.
+- Added Rust domain and DTO boundary tests plus TS contract coverage for canonical, compact, and uppercase UUID forms.
+
+## Re-review Verification
+
+```text
+$ npm test -- src/ipc/__tests__
+Test Files  3 passed (3)
+Tests  23 passed (23)
+
+$ npm run typecheck
+tsc --noEmit
+
+$ npm run build
+vite v5.4.21 building for production...
+dist/index.html  0.06 kB | gzip: 0.07 kB
+exit 0
+
+$ npm run test:contracts
+Test Files  3 passed (3)
+Tests  23 passed (23)
+
+$ bash scripts/check-boundaries.sh --self-test
+Boundary parser self-test OK
+Dependency boundaries OK
+
+$ cargo test --workspace
+test result: ok. 27 passed; 0 failed
+test result: ok. 4 passed; 0 failed
+test result: ok. 17 passed; 0 failed
+test result: ok. 7 passed; 0 failed
+test result: ok. 1 passed; 0 failed
+test result: ok. 15 passed; 0 failed
+test result: ok. 7 passed; 0 failed
+test result: ok. 11 passed; 0 failed
+
+$ git diff --check
+exit 0
+```
+
+## Re-review Concerns
+
+- `pnpm` remains unavailable; verification used committed npm lockfile and npm scripts.
+- Existing generated JSON schemas express `format: uuid`, but JSON Schema format alone does not encode lowercase/hyphenated canonicality. Runtime Rust/TS validation now enforces it.
