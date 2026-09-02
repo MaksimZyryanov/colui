@@ -49,6 +49,8 @@ pub fn generate_all_schemas() -> BTreeMap<String, Value> {
 pub fn write_schemas(root: impl AsRef<Path>) -> io::Result<()> {
     let root = root.as_ref();
     fs::create_dir_all(root.join("fixtures"))?;
+    remove_json_files(root)?;
+    remove_json_files(&root.join("fixtures"))?;
     for (name, schema) in generate_all_schemas() {
         let bytes = serde_json::to_vec_pretty(&schema).unwrap();
         fs::write(
@@ -62,6 +64,19 @@ pub fn write_schemas(root: impl AsRef<Path>) -> io::Result<()> {
             root.join("fixtures").join(name),
             [bytes.as_slice(), b"\n"].concat(),
         )?;
+    }
+    Ok(())
+}
+
+fn remove_json_files(directory: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            fs::remove_file(path)?;
+        }
     }
     Ok(())
 }

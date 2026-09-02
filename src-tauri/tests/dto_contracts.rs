@@ -5,7 +5,8 @@ use colui_tauri_lib::dto::{
     RegistrationOriginDto, RuntimeActivityDto, RuntimePresenceDto, RuntimeStateDto,
     UpdateProfileRequestDto,
 };
-use colui_tauri_lib::schema_generation::generate_all_schemas;
+use colui_tauri_lib::schema_generation::{generate_all_schemas, write_schemas};
+use std::fs;
 
 #[test]
 fn update_request_serializes_only_camel_case_metadata_and_patch() {
@@ -196,4 +197,16 @@ fn generated_schema_files_are_deterministic() {
         "string"
     );
     assert_eq!(generated, generate_all_schemas());
+}
+
+#[test]
+fn schema_writer_removes_obsolete_generated_files() {
+    let output = std::env::temp_dir().join(format!("colui-schemas-{}", std::process::id()));
+    fs::create_dir_all(&output).unwrap();
+    fs::write(output.join("ObsoleteDto.json"), "{}\n").unwrap();
+
+    write_schemas(&output).unwrap();
+
+    assert!(!output.join("ObsoleteDto.json").exists());
+    fs::remove_dir_all(output).unwrap();
 }
