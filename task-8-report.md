@@ -69,7 +69,7 @@ Tests  23 passed (23)
 
 $ npm test
 Test Files  8 passed (8)
-Tests  58 passed (58)
+Tests  59 passed (59)
 
 $ npm run typecheck
 tsc --noEmit: passed
