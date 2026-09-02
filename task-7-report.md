@@ -91,3 +91,17 @@ No frontend/Tauri IPC, `InventoryCoordinator`, definition cache, Discovery, life
 - `bash scripts/check-boundaries.sh`: passed, `Dependency boundaries OK`.
 - `git diff --check`: passed.
 - Docker Desktop/Colima live matrix unavailable locally; no live-Docker evidence claimed.
+
+## Container Query Follow-Up
+
+- Added `--all` to every shell resource-list query, so stopped containers remain visible to leak checks.
+- Query failures now include bounded command stderr diagnostics.
+- Cleanup process stderr remains null, avoiding undrained cleanup pipes.
+
+## Container Query Verification
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo test -p colui-adapters --features docker-tests --test docker -- --nocapture`: passed with two explicit skips because local Docker daemon is unavailable.
+- `cargo test --workspace`: passed.
+- `bash scripts/check-boundaries.sh`: passed, `Dependency boundaries OK`.
+- `git diff --check`: passed.

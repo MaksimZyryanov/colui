@@ -209,6 +209,7 @@ impl TempComposeFixture {
                 kind,
                 "ls",
                 "-q",
+                "--all",
                 "--filter",
                 &format!("label=com.docker.compose.project={}", self.project_name),
             ])
@@ -217,7 +218,11 @@ impl TempComposeFixture {
             .output()
             .await
             .unwrap();
-        assert!(output.status.success(), "docker {kind} ls failed");
+        assert!(
+            output.status.success(),
+            "docker {kind} ls failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
