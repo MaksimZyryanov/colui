@@ -32,3 +32,6 @@ build/
 # Test and tool output
 coverage/
 *.log
+
+# Local git worktrees
+.worktrees/
