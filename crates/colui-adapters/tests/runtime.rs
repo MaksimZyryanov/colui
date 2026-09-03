@@ -12,7 +12,7 @@ use colui_app::{
 };
 use colui_domain::AppErrorCode;
 use colui_domain::{
-    AppError, ContainerDetails, ContainerId, ContainerInstance, DaemonFingerprint, ProfileDraft,
+    AppError, ContainerDetails, ContainerId, ContainerObservation, DaemonFingerprint, ProfileDraft,
     ProfileId, ProjectProfile, RegistrationOrigin,
 };
 use std::collections::BTreeMap;
@@ -714,7 +714,7 @@ impl colui_adapters::runtime::DockerControl for FakeDocker {
         let fp = self.fingerprint.clone();
         Box::pin(async move { Ok(fp_for(&fp)) })
     }
-    fn list(&self) -> colui_app::RuntimeFuture<'_, Vec<ContainerInstance>> {
+    fn list(&self) -> colui_app::RuntimeFuture<'_, Vec<ContainerObservation>> {
         Box::pin(async { Ok(vec![]) })
     }
     fn inspect(&self, _: &ContainerId) -> colui_app::RuntimeFuture<'_, ContainerDetails> {
@@ -733,7 +733,7 @@ impl colui_adapters::runtime::DockerControl for StaleDocker {
     fn info(&self) -> colui_app::RuntimeFuture<'_, DaemonFingerprint> {
         Box::pin(async { Ok(fp_for("same")) })
     }
-    fn list(&self) -> colui_app::RuntimeFuture<'_, Vec<ContainerInstance>> {
+    fn list(&self) -> colui_app::RuntimeFuture<'_, Vec<ContainerObservation>> {
         let started = self.started.clone();
         let release = self.release.clone();
         let first = self.lists.fetch_add(1, Ordering::AcqRel) == 0;

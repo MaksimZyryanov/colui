@@ -7,9 +7,10 @@ use colui_app::{
     ProjectStatusReader, RuntimeConnector, RuntimeFuture, RuntimeProjection, RuntimeStateReader,
 };
 use colui_domain::{
-    AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerInstance, ContainerState,
+    AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerObservation, ContainerState,
     DaemonFingerprint, DefinitionState, DockerEndpoint, MismatchDetails, RuntimeActivity,
-    RuntimePresence, RuntimeSessionId, RuntimeSessionState, SessionContext, Timestamp,
+    RuntimeInventory, RuntimePresence, RuntimeSessionId, RuntimeSessionState, SessionContext,
+    Timestamp,
 };
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -209,6 +210,8 @@ impl LifecycleRuntime for RuntimeGateway {
             Ok(LifecycleResult {
                 profile_id,
                 success: true,
+                // Task 7 wires refresh-on-success through the inventory coordinator.
+                inventory: RuntimeInventory::unavailable(),
             })
         })
     }
@@ -421,7 +424,7 @@ impl RuntimeStateReader for RuntimeGateway {
     }
 }
 impl DockerApi for RuntimeGateway {
-    fn list_containers(&self) -> RuntimeFuture<'_, Vec<ContainerInstance>> {
+    fn list_containers(&self) -> RuntimeFuture<'_, Vec<ContainerObservation>> {
         Box::pin(async {
             let (client, generation) = self.current_client().await?;
             let result = client.list().await?;
@@ -471,8 +474,8 @@ impl ProjectStatusReader for RuntimeGateway {
             }
             let containers = self.list_containers().await?;
             let mut matching = Vec::new();
-            for container in containers {
-                let details = self.inspect_container(&container.id).await?;
+            for observation in containers {
+                let details = self.inspect_container(&observation.instance.id).await?;
                 if details
                     .labels
                     .get("com.docker.compose.project")

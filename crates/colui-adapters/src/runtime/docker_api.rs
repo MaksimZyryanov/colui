@@ -4,14 +4,14 @@ use bollard::models::{ContainerInspectResponse, ContainerSummary};
 use bollard::Docker;
 use colui_app::RuntimeFuture;
 use colui_domain::{
-    AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerInstance, ContainerState,
-    DaemonFingerprint, PortBinding,
+    AppError, AppErrorCode, ComposeContainerMetadata, ContainerDetails, ContainerId,
+    ContainerInstance, ContainerObservation, ContainerState, DaemonFingerprint, PortBinding,
 };
 use std::collections::BTreeMap;
 
 pub trait DockerControl: Send + Sync {
     fn info(&self) -> RuntimeFuture<'_, DaemonFingerprint>;
-    fn list(&self) -> RuntimeFuture<'_, Vec<ContainerInstance>>;
+    fn list(&self) -> RuntimeFuture<'_, Vec<ContainerObservation>>;
     fn inspect(&self, id: &ContainerId) -> RuntimeFuture<'_, ContainerDetails>;
 }
 
@@ -38,7 +38,7 @@ impl DockerControl for DockerApiAdapter {
                 .and_then(|i| bollard_fingerprint(&i))
         })
     }
-    fn list(&self) -> RuntimeFuture<'_, Vec<ContainerInstance>> {
+    fn list(&self) -> RuntimeFuture<'_, Vec<ContainerObservation>> {
         Box::pin(async move {
             self.docker
                 .list_containers(Some(ListContainersOptions::<String> {
@@ -47,7 +47,7 @@ impl DockerControl for DockerApiAdapter {
                 }))
                 .await
                 .map_err(api_error)
-                .map(|items| items.into_iter().map(summary).collect())
+                .map(|items| items.into_iter().map(normalize_container_summary).collect())
         })
     }
     fn inspect(&self, id: &ContainerId) -> RuntimeFuture<'_, ContainerDetails> {
@@ -78,6 +78,51 @@ fn state(value: Option<&str>) -> ContainerState {
         _ => ContainerState::Unknown,
     }
 }
+
+const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
+const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
+const COMPOSE_WORKING_DIR_LABEL: &str = "com.docker.compose.working_dir";
+const COMPOSE_CONFIG_FILES_LABEL: &str = "com.docker.compose.config-files";
+
+/// Maps one Docker list entry into a runtime-free observation.
+///
+/// Only the four official Compose labels are retained; the container instance
+/// itself stays label-free so grouping stays a coordinator concern.
+pub fn normalize_container_summary(value: ContainerSummary) -> ContainerObservation {
+    let compose = compose_metadata(value.labels.as_ref());
+    ContainerObservation::new(summary(value), compose)
+}
+
+fn compose_metadata(
+    labels: Option<&std::collections::HashMap<String, String>>,
+) -> Option<ComposeContainerMetadata> {
+    let labels = labels?;
+    // Only a non-blank project label marks a container as Compose-managed.
+    let project = labels
+        .get(COMPOSE_PROJECT_LABEL)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())?;
+    Some(ComposeContainerMetadata {
+        project: project.to_owned(),
+        service: labels.get(COMPOSE_SERVICE_LABEL).cloned(),
+        working_directory: labels.get(COMPOSE_WORKING_DIR_LABEL).cloned(),
+        config_files: labels
+            .get(COMPOSE_CONFIG_FILES_LABEL)
+            .map(|value| config_files(value))
+            .unwrap_or_default(),
+    })
+}
+
+/// Splits the Compose `config-files` label, preserving Docker-provided order.
+fn config_files(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 fn summary(value: ContainerSummary) -> ContainerInstance {
     ContainerInstance {
         id: ContainerId(value.id.unwrap_or_default()),
@@ -93,7 +138,7 @@ fn summary(value: ContainerSummary) -> ContainerInstance {
         service_name: value
             .labels
             .as_ref()
-            .and_then(|v| v.get("com.docker.compose.service").cloned()),
+            .and_then(|v| v.get(COMPOSE_SERVICE_LABEL).cloned()),
         published_ports: value
             .ports
             .unwrap_or_default()
@@ -134,7 +179,7 @@ fn inspected(value: ContainerInspectResponse) -> ContainerDetails {
             service_name: config
                 .labels
                 .as_ref()
-                .and_then(|v| v.get("com.docker.compose.service").cloned()),
+                .and_then(|v| v.get(COMPOSE_SERVICE_LABEL).cloned()),
             published_ports: inspect_ports(value.network_settings.as_ref()),
         },
         labels: config
@@ -177,7 +222,90 @@ fn inspect_ports(settings: Option<&bollard::models::NetworkSettings>) -> Vec<Por
 
 #[cfg(test)]
 mod tests {
-    use super::inspect_ports;
+    use super::{config_files, inspect_ports, normalize_container_summary};
+    use bollard::models::ContainerSummary;
+
+    fn summary_json(labels: &str) -> ContainerSummary {
+        serde_json::from_str(&format!(
+            r#"{{"Id":"abc123","Names":["/checkout-web-1"],"Image":"checkout:latest","State":"running","Status":"Up 2 hours","Labels":{labels},"Ports":[]}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn normalization_extracts_only_the_four_official_compose_labels() {
+        let observation = normalize_container_summary(summary_json(
+            r#"{"com.docker.compose.project":"checkout","com.docker.compose.service":"web","com.docker.compose.working_dir":"/workspace","com.docker.compose.config-files":"/workspace/compose.yml,/workspace/compose.override.yml","com.docker.compose.oneoff":"False","custom.label":"ignored"}"#,
+        ));
+        let compose = observation.compose.unwrap();
+        assert_eq!(compose.project, "checkout");
+        assert_eq!(compose.service.as_deref(), Some("web"));
+        assert_eq!(compose.working_directory.as_deref(), Some("/workspace"));
+        assert_eq!(
+            compose.config_files,
+            vec![
+                "/workspace/compose.yml".to_owned(),
+                "/workspace/compose.override.yml".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn normalization_keeps_instance_free_of_labels_and_maps_core_fields() {
+        let observation = normalize_container_summary(summary_json(
+            r#"{"com.docker.compose.project":"checkout","com.docker.compose.service":"web"}"#,
+        ));
+        assert_eq!(observation.instance.id.0, "abc123");
+        assert_eq!(observation.instance.name, "checkout-web-1");
+        assert_eq!(observation.instance.image, "checkout:latest");
+        assert_eq!(observation.instance.status_text, "Up 2 hours");
+        assert_eq!(
+            observation.instance.state,
+            colui_domain::ContainerState::Running
+        );
+        assert_eq!(observation.instance.service_name.as_deref(), Some("web"));
+    }
+
+    #[test]
+    fn project_label_without_optional_labels_yields_empty_metadata_fields() {
+        let compose = normalize_container_summary(summary_json(
+            r#"{"com.docker.compose.project":"checkout"}"#,
+        ))
+        .compose
+        .unwrap();
+        assert_eq!(compose.project, "checkout");
+        assert!(compose.service.is_none());
+        assert!(compose.working_directory.is_none());
+        assert!(compose.config_files.is_empty());
+    }
+
+    #[test]
+    fn absent_or_empty_labels_produce_standalone_observation() {
+        assert!(normalize_container_summary(summary_json("{}"))
+            .compose
+            .is_none());
+        assert!(normalize_container_summary(summary_json("null"))
+            .compose
+            .is_none());
+    }
+
+    #[test]
+    fn blank_project_label_is_not_a_valid_compose_association() {
+        assert!(normalize_container_summary(summary_json(
+            r#"{"com.docker.compose.project":"  ","com.docker.compose.service":"web"}"#
+        ))
+        .compose
+        .is_none());
+    }
+
+    #[test]
+    fn config_files_preserve_docker_order_and_drop_blank_entries() {
+        assert_eq!(
+            config_files("/b/second.yml, /a/first.yml ,,"),
+            vec!["/b/second.yml".to_owned(), "/a/first.yml".to_owned()]
+        );
+        assert!(config_files("").is_empty());
+    }
 
     #[test]
     fn inspect_ports_maps_multiple_hosts_and_protocols() {
