@@ -12,7 +12,11 @@ const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }
 const renderProjects = () => render(<QueryClientProvider client={client}><ProjectsView /></QueryClientProvider>);
 
 describe('ProjectsView', () => {
-  beforeEach(() => { mockBackend.reset(); client.clear(); });
+  beforeEach(() => {
+    mockBackend.reset(); client.clear();
+    const values = new Map<string, string>();
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) } });
+  });
   afterEach(cleanup);
 
   it('renders explicit empty state and opens Add Project form', async () => {
@@ -53,6 +57,42 @@ describe('ProjectsView', () => {
     expect(await screen.findByRole('dialog', { name: /edit project/i })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Next' }));
     expect(screen.getByDisplayValue('.env')).toBeVisible();
+  });
+
+  it('saves valid create drafts offline through accessible action', async () => {
+    const user = userEvent.setup();
+    renderProjects();
+    await user.click(await screen.findByRole('button', { name: /add project/i }));
+    await user.type(screen.getByLabelText('Display name'), 'Offline Project');
+    await user.type(screen.getByLabelText('Compose name'), 'offline');
+    await user.type(screen.getByLabelText('Working directory'), '/tmp/offline');
+    await user.click(screen.getByRole('button', { name: /save offline/i }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem('project-draft:new')!)).toMatchObject({ displayName: 'Offline Project', composeProjectName: 'offline' });
+  });
+
+  it('saves valid edit drafts offline under profile id', async () => {
+    const profileId = '00000000-0000-0000-0000-000000000001';
+    mockBackend.setResponseOverride('list_profiles', [{ id: profileId, revision: 2, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
+    mockBackend.setResponseOverride('get_profile', { profile: { id: profileId, revision: 2, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: [] });
+    const user = userEvent.setup();
+    renderProjects();
+    await user.click(await screen.findByRole('button', { name: /edit demo/i }));
+    await user.click(screen.getByRole('button', { name: /save offline/i }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(`project-draft:${profileId}`)!)).toMatchObject({ displayName: 'Demo', composeProjectName: 'demo' });
+  });
+
+  it('keeps offline form open and renders validation errors', async () => {
+    const user = userEvent.setup();
+    renderProjects();
+    await user.click(await screen.findByRole('button', { name: /add project/i }));
+    await user.click(screen.getByRole('button', { name: /save offline/i }));
+
+    expect(screen.getByRole('dialog')).toBeVisible();
+    expect(screen.getByText('Display name is required')).toBeVisible();
   });
 
   it('renders accessible status and profile loading skeletons', async () => {

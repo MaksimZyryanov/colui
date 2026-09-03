@@ -55,4 +55,32 @@ describe('RuntimeInitializer', () => {
     await waitFor(() => expect(queryClient.getQueryState(runtimeKeys.state())?.status).toBe('success'));
     expect(queryClient.getQueryData(runtimeKeys.state())).toMatchObject({ state: 'ready' });
   });
+
+  it('renders terminal failed runtime state returned as a successful query', async () => {
+    mockBackend.setResponseOverride('connect_runtime', {
+      state: 'failed',
+      error: { code: 'runtime_unavailable', operation: 'get_runtime_state', subjectId: null, message: 'Runtime failed', details: null, retryable: false },
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Runtime failed');
+    expect(screen.getByRole('main')).toBeVisible();
+  });
+
+  it('renders terminal context mismatch returned as a successful query', async () => {
+    mockBackend.setResponseOverride('connect_runtime', {
+      state: 'contextMismatch',
+      details: {
+        endpoint: 'mock://runtime',
+        apiFingerprint: { daemonId: 'api', serverVersion: '1', osType: 'test', architecture: 'test' },
+        cliFingerprint: { daemonId: 'cli', serverVersion: '2', osType: 'test', architecture: 'test' },
+      },
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/context mismatch/i);
+    expect(screen.getByRole('main')).toBeVisible();
+  });
 });

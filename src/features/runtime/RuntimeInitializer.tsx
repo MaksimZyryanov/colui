@@ -3,6 +3,16 @@ import { useConnectRuntime, useRuntimeState } from './hooks/useRuntimeSession';
 import { AppErrorException } from '../../ipc/errors';
 import { Alert } from '../../ui/components/Alert';
 import { Button } from '../../ui/components/Button';
+import type { RuntimeState } from '../../ipc/types';
+
+function terminalStateError(state: RuntimeState | undefined): AppErrorException | null {
+  if (state?.state === 'failed') return new AppErrorException(state.error);
+  if (state?.state === 'contextMismatch') return new AppErrorException({
+    code: 'runtime_context_mismatch', operation: 'get_runtime_state', subjectId: null,
+    message: 'Runtime context mismatch', details: `Runtime endpoint: ${state.details.endpoint}`, retryable: false,
+  });
+  return null;
+}
 
 export function RuntimeInitializer({ children }: { children: ReactNode }) {
   const attempted = useRef(false);
@@ -18,7 +28,7 @@ export function RuntimeInitializer({ children }: { children: ReactNode }) {
 
   const error = state.error instanceof AppErrorException ? state.error : null;
   const connectError = connect.error instanceof AppErrorException ? connect.error : null;
-  const failure = error ?? connectError;
+  const failure = error ?? connectError ?? terminalStateError(state.data);
   return <>{children}
     {failure ? <Alert variant="destructive"><p>{failure.code === 'protocol_mismatch' ? `Response format mismatch: ${failure.message}` : failure.message}</p><Button onClick={() => { void connect.mutate(); }}>Retry</Button></Alert> : null}
   </>;
