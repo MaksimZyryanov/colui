@@ -5,8 +5,10 @@ mod profile;
 mod runtime;
 
 pub use definition::{
-    ContainerId, ContainerInstance, ContainerState, DefinitionRevision, DefinitionState, Issue,
-    PortBinding, ProjectDefinition, RuntimeActivity, RuntimePresence, ServiceDefinition, Timestamp,
+    ComposeContainerMetadata, ContainerId, ContainerInstance, ContainerObservation,
+    ContainerState, DefinitionRevision, DefinitionState, InventoryFreshness, Issue, PortBinding,
+    ProjectDefinition, ProjectRuntimeSnapshot, RuntimeActivity, RuntimeInventory, RuntimePresence,
+    ServiceDefinition, Timestamp,
 };
 pub use error::{AppError, AppErrorCode};
 pub use identity::{ComposeProjectName, DisplayName, ProfileId, Revision};
