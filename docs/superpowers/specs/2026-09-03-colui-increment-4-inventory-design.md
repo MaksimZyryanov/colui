@@ -64,7 +64,7 @@ Replace:
 - lifecycle execution wiring so successful lifecycle operations call the shared coordinator exactly once before returning.
 - `LifecycleResultDto` and its Zod schema to include `inventoryGeneration`.
 - frontend per-profile status polling/queries with one inventory query, while retaining profile list/detail queries.
-- lifecycle status invalidation with generation-aware inventory acceptance and one inventory refetch.
+- lifecycle status invalidation replaced by generation-aware inventory acceptance with direct guarded cache publication and no follow-up inventory refetch.
 
 Do not add a second refresh API, generation counter, definition cache, or lifecycle lock owner. The existing runtime session counter remains private to `RuntimeGateway` and is not exposed as inventory freshness.
 
@@ -96,9 +96,9 @@ and Compose execution. It does not depend on InventoryCoordinator or DefinitionC
 
 ### 3.3 OperationLockManager
 
-`OperationLockManager` is the sole owner of lifecycle operation locks. It is application policy, not Docker transport. Lifecycle use cases acquire it before invoking `RuntimeGateway`; `DefinitionCache` reads the same owner to yield background definition loads. `RuntimeGateway` continues to own the global Compose semaphore, but does not own per-profile operation locks.
+`OperationLockManager` is the sole owner of lifecycle operation locks and definition-load leases. It is application policy, not Docker transport. Lifecycle use cases acquire a lifecycle guard before invoking `RuntimeGateway`; `DefinitionCache` acquires a definition guard from the same owner before starting a background definition load. `RuntimeGateway` continues to own the global Compose semaphore, but does not own per-profile operation locks.
 
-The acquire operation is atomic. A separate `contains` followed by `insert` is forbidden because it permits duplicate operations under a race.
+Both acquire operations are atomic. A separate `contains` followed by `insert` is forbidden because it permits duplicate operations under a race. A pending or active lifecycle acquisition prevents a new definition guard. A definition guard acquired first may finish, but lifecycle acquisition records its pending priority and waits for that guard; another definition load cannot overtake it.
 
 ### 3.4 Lifecycle orchestration
 
@@ -108,7 +108,7 @@ The lifecycle use case performs this sequence:
 2. Acquire the shared per-profile operation lock.
 3. Invoke `RuntimeGateway` through the existing `LifecycleRuntime` port.
 4. If Compose succeeds, call `InventoryCoordinator.refresh()` exactly once while the operation lock remains held. The refresh returns either a fresh published snapshot or a retained snapshot carrying the prior generation plus stale/unavailable state.
-5. Return `LifecycleResult { profile_id, success, inventory_generation }`.
+5. Return `LifecycleResult { profile_id, success, inventory }`, where `inventory.generation` is the already-produced or retained generation.
 6. Release the operation guard on every success or error path.
 
 `RuntimeGateway` does not call the coordinator. A failed Compose operation does not trigger an inventory refresh. If the successful operation's inventory refresh fails, the lifecycle result still reports the successful Compose operation and carries the last published generation, while the inventory projection exposes stale/unavailable state and the refresh error. It must not invent a generation or hide that observation failed. A coalesced refresh still counts as the one refresh call for each successful lifecycle invocation, while only one Docker listing is in flight.
@@ -122,9 +122,10 @@ Add or export these runtime-free domain values in `crates/colui-domain/src/defin
 ```rust
 pub struct RuntimeInventory {
     pub generation: u64,
-    pub observed_at: Timestamp,
-    pub runtime_session_id: RuntimeSessionId,
-    pub daemon_fingerprint: DaemonFingerprint,
+    pub has_snapshot: bool,
+    pub observed_at: Option<Timestamp>,
+    pub runtime_session_id: Option<RuntimeSessionId>,
+    pub daemon_fingerprint: Option<DaemonFingerprint>,
     pub freshness: InventoryFreshness,
     pub last_successful_observed_at: Option<Timestamp>,
     pub containers: Vec<ContainerInstance>,
@@ -143,7 +144,7 @@ pub struct ProjectRuntimeSnapshot {
 }
 ```
 
-`RuntimeInventory` is immutable after construction. Every collection is owned by the snapshot; callers receive clones or read-only views and cannot mutate coordinator state. `containers` is the normalized result of the one list call. `project_snapshots` and `standalone_containers` are derived from it. `error` is a bounded typed error describing current unavailability; it does not erase successful data.
+`RuntimeInventory` is immutable after construction. Every collection is owned by the snapshot; callers receive clones or read-only views and cannot mutate coordinator state. `containers` is the normalized result of the one list call. `project_snapshots` and `standalone_containers` are derived from it. Failure state is represented by a new immutable retained projection with the previous generation/data, updated freshness, and the current error; the previously published immutable snapshot is never mutated in place.
 
 Compose association uses official labels from the Docker list response:
 
@@ -154,7 +155,25 @@ Compose association uses official labels from the Docker list response:
 
 A container with a valid Compose project label belongs to that project snapshot. A container without that label belongs to `standalone_containers`. Missing optional labels do not cause an inspect call or profile mutation. Association is by Compose namespace for projection only; it never merges profiles or changes registry data.
 
-The existing `ContainerInstance` must be extended internally with the labels needed during normalization, or the Docker adapter must return a separate raw observation that the coordinator converts into `ContainerInstance`. Labels must not be discarded before association. The public normalized `ContainerInstance` remains free of an unapproved generic metadata bag unless an exact later consumer requires it.
+The canonical adapter path is a separate application contract:
+
+```rust
+pub struct ContainerObservation {
+    pub instance: ContainerInstance,
+    pub compose: Option<ComposeContainerMetadata>,
+}
+
+pub struct ComposeContainerMetadata {
+    pub project: String,
+    pub service: Option<String>,
+    pub working_directory: Option<String>,
+    pub config_files: Vec<String>,
+}
+```
+
+`DockerApiAdapter` owns conversion from Bollard `ContainerSummary` into `ContainerObservation`: it normalizes container fields into `ContainerInstance` and extracts only the four approved Compose labels into `ComposeContainerMetadata`. `InventoryCoordinator` owns grouping observations into project and standalone projections. Labels are never discarded before association, no generic label map is added to public `ContainerInstance`, and fast refresh performs no inspect calls.
+
+The application `DockerApi` port is updated from `Vec<ContainerInstance>` to `Vec<ContainerObservation>` for `list_containers`. `inspect_container` remains available for later on-demand container details and is not called by inventory refresh. All existing fake Docker implementations and adapter tests migrate to this single observation contract.
 
 ### 4.2 Application ports
 
@@ -183,17 +202,24 @@ pub trait OperationLockReader: Send + Sync {
 }
 
 pub trait OperationLockManager: OperationLockReader {
-    fn try_acquire(
+    fn acquire_lifecycle(
         &self,
         profile_id: ProfileId,
         kind: OperationKind,
-    ) -> Result<OperationGuard, AppError>;
+        ) -> OperationFuture<'_, LifecycleOperationGuard>;
+
+    fn acquire_definition(
+        &self,
+        profile_id: ProfileId,
+    ) -> Result<DefinitionLoadGuard, DefinitionBusy>;
 }
 ```
 
-Exact future aliases follow existing `RuntimeFuture`/`LifecycleFuture` style and remain free of Bollard, Tauri, filesystem, and process types. `OperationGuard` is the RAII release handle; it must be `Send` when required by the async lifecycle future and release exactly once.
+`OperationKind` is the existing application-level lifecycle enum (`Apply`, `Stop`, `TearDown`, `Restart`), re-exported from `crates/colui-app/src/operations.rs`; it is not a new adapter or transport enum.
 
-`InventoryReader::current_inventory` returns a retained snapshot when one exists. Before the first successful observation, it returns an unavailable `RuntimeInventory` projection with empty data; it never fabricates containers.
+Exact future aliases follow existing `RuntimeFuture`/`LifecycleFuture` style and remain free of Bollard, Tauri, filesystem, and process types. `LifecycleOperationGuard` and `DefinitionLoadGuard` are concrete RAII handles implementing `Send + Sync`; each releases exactly once from `Drop`. A second pending or active lifecycle for the same profile returns `operation_conflict`. A lifecycle waiting for an already-running definition load counts as pending and blocks new definition guards.
+
+`InventoryReader::current_inventory` returns a retained snapshot when one exists. Before the first successful observation, it returns an unavailable `RuntimeInventory` projection with `has_snapshot: false`, empty data, and absent timestamp/session/fingerprint; it never fabricates containers.
 
 ### 4.3 Definition cache contract
 
@@ -208,7 +234,7 @@ pub struct CachedDefinition {
 }
 ```
 
-Cache key is `ProfileId`; `profile_revision` is part of validity. `definition_revision` is a deterministic SHA-256 digest of normalized successful `docker compose config` output, not a profile identity or runtime generation. Invalid definitions are cached with `DefinitionState::Invalid` and issues. A failed refresh retains the previous definition as `Stale` with its previous services and issues, while the load error remains a definition error in the returned projection.
+Cache key is `(ProfileId, Revision)`. At most one revision entry per profile is retained; inserting a newer revision removes the older entry. `definition_revision` is a deterministic SHA-256 digest of canonical effective configuration, not a profile identity or runtime generation. Definition loading invokes `docker compose config --format json`, parses stdout as JSON, recursively sorts every object key, preserves array order and scalar values, serializes compact UTF-8 JSON without insignificant whitespace or a trailing newline, and hashes those exact bytes. Compose interpolation, resolved paths, active Compose version behavior, and platform-dependent values are intentionally part of the effective definition, so changing them may change the revision even when source files are unchanged. Invalid definitions are cached with `DefinitionState::Invalid` and issues. A failed refresh retains the previous definition as `Stale` with its previous services and issues, while the load error remains a definition error in the returned projection.
 
 ## 5. Inventory refresh state machine
 
@@ -241,9 +267,9 @@ The shared result contains either the published immutable snapshot or the same t
 
 ### 5.3 Generation and publication
 
-Inventory generation is a coordinator-owned monotonic `u64` that starts at zero and advances for each accepted successful observation. It must not reset on reconnect or disconnect. A successful refresh allocates the next generation only after the observation is associated with a valid current runtime session. Publication accepts only a generation greater than the current published generation; lower generations are discarded without replacing data or notifying subscribers. Equal generations are idempotent no-ops.
+Inventory generation is a coordinator-owned monotonic `u64`. Generation `0` is reserved for the pre-observation state and is never published with a successful snapshot. Before the first success, the coordinator has `current_snapshot: None` and the transport uses `hasSnapshot: false`; an unavailable projection may expose numeric `generation: 0` only with that explicit absence marker. The first successful observation publishes generation `1`, and every later accepted success uses a strictly larger value. It must not reset on reconnect or disconnect. A successful refresh allocates the next generation only after the observation is associated with a valid current runtime session. Publication accepts only a generation greater than the current published generation; lower generations are discarded without replacing data or notifying subscribers. Equal generations are idempotent no-ops. Frontend guards compare generations only after checking `hasSnapshot`, so an absent pre-observation value cannot suppress the first successful generation.
 
-Each list request captures `runtime_session_id` and daemon fingerprint before awaiting Docker. If session identity changes while the request is in flight, the response is obsolete and is not published as current. The last successful snapshot remains available and is marked stale/unavailable through the derived failure state. A reconnect does not clear the inventory counter or durable profiles.
+Each list request captures `runtime_session_id` and daemon fingerprint before awaiting Docker. If session identity changes while the request is in flight, the response is obsolete and is not published as current. The last successful immutable snapshot remains query data after a failed automatic refresh; the failed refresh is returned as typed query error/backoff state rather than as an equal-generation replacement. Backend projections that need explicit freshness use a new retained projection carrying previous generation/data plus stale/unavailable state. A reconnect does not clear the inventory counter or durable profiles.
 
 The coordinator and frontend both enforce ordering:
 
@@ -257,7 +283,7 @@ The frontend guard must preserve the existing cache object/reference for equal g
 
 ### 5.4 Backoff and failure retention
 
-Automatic failures use bounded exponential delays: 1 second, 2 seconds, 4 seconds, 8 seconds, then 10 seconds maximum. A successful refresh resets the failure count and delay. Backoff state is in-memory and session-scoped; it is never persisted. Runtime errors are classified as `runtime_unavailable` or the existing typed runtime code. The previous `containers`, project snapshots, observed timestamp, and generation remain visible after failure; freshness becomes `stale` and the current failure is exposed separately. Without a prior successful snapshot, freshness is `unavailable` and no runtime data is invented.
+Automatic failures use bounded exponential delays: 1 second, 2 seconds, 4 seconds, 8 seconds, then 10 seconds maximum. A successful refresh resets the failure count and delay. Backoff state is in-memory and session-scoped; it is never persisted. Runtime errors are classified as `runtime_unavailable` or the existing typed runtime code. The previous `containers`, project snapshots, observed timestamp, and generation remain visible after failure; query state exposes failure/backoff while backend retained projections expose `freshness: stale`. Without a prior successful snapshot, freshness is `unavailable` and no runtime data is invented.
 
 ## 6. Definitions path
 
@@ -287,13 +313,13 @@ Profile updates do not call `compose config` synchronously inside registry mutat
 
 ### 6.3 Lifecycle priority
 
-Before starting background `compose config`, the cache checks `OperationLockManager::is_busy`. If busy, it yields without spawning Compose. It returns the retained cached definition marked stale when available, or `Unchecked` when no entry exists. A lifecycle operation acquires its lock before Compose execution and holds it through the successful inventory refresh, preventing a definition load from overtaking either step.
+Before starting background `compose config`, the cache atomically acquires a `DefinitionLoadGuard` from `OperationLockManager`. If acquisition reports lifecycle busy or pending, it yields without spawning Compose. It returns the retained cached definition marked stale when available, or `Unchecked` when no entry exists. A lifecycle operation acquires its guard before Compose execution and holds it through the successful inventory refresh, preventing a definition load from starting in the interval between a non-atomic busy check and lifecycle execution.
 
 Definition errors and runtime errors remain separate. An invalid profile remains in profile lists and can have an invalid definition while its last runtime snapshot remains present.
 
 ## 7. Lifecycle locks and refresh integration
 
-`OperationLockManager` stores at most one active operation per `ProfileId`, including operation kind and start timestamp for projection. The atomic `try_acquire` returns `operation_conflict` for a duplicate and does not call Docker, Compose, or the inventory coordinator. Different profiles may hold different operation locks while waiting on the existing global Compose semaphore of one.
+`OperationLockManager` stores at most one active lifecycle operation or definition load per `ProfileId`, including kind and start timestamp for projection. `acquire_lifecycle` atomically marks lifecycle work pending: it returns `operation_conflict` immediately when another lifecycle is pending or active, otherwise it waits for an existing definition load to release and then returns the lifecycle guard. `acquire_definition` atomically returns `DefinitionBusy` when lifecycle work is pending or active and never starts Compose; once it returns a definition guard, the cache owns that execution slot until the guard drops. Different profiles may hold different operation locks while waiting on the existing global Compose semaphore of one.
 
 The lock guard releases on Compose failure, timeout, inventory refresh failure, cancellation, and success. No code path manually releases a lock in addition to the guard. The lock owner is shared by lifecycle operations and `DefinitionCache`; no second busy map may be introduced in `RuntimeGateway`, the coordinator, or React.
 
@@ -302,14 +328,14 @@ Successful lifecycle flow:
 ```text
 profileId
   -> ProfileReader current profile
-  -> OperationLockManager.try_acquire
+  -> OperationLockManager.acquire_lifecycle
   -> RuntimeGateway.run_profile
   -> InventoryCoordinator.refresh exactly once
   -> LifecycleResult(profileId, success, inventoryGeneration)
   -> guard release
 ```
 
-`LifecycleResult` changes in `crates/colui-app/src/lifecycle.rs` to include `inventory_generation: u64`. `src-tauri/src/dto/status.rs` maps it to `inventoryGeneration`. Existing command inputs remain `{ profileId }` only. Stop, Tear down, Apply, and Restart semantics do not change.
+`LifecycleResult` changes in `crates/colui-app/src/lifecycle.rs` to include the already-produced `inventory: RuntimeInventory`; its `inventory_generation` is a convenience accessor equal to `inventory.generation`. `src-tauri` maps both `inventory` and `inventoryGeneration` to the response DTO. Existing command inputs remain `{ profileId }` only. Stop, Tear down, Apply, and Restart semantics do not change.
 
 ## 8. IPC DTO and command surface
 
@@ -323,6 +349,8 @@ Add commands through existing `src-tauri/src/commands` and `AppState` wiring:
 
 Retain existing `get_project_status` during this increment so Increment 3 clients remain decodable, but change its implementation to read the shared inventory and definition owners. It must not perform its own Docker listing or inspect loop. New frontend code uses the coordinator-backed inventory command; the compatibility command is removed only after all current callers migrate, without introducing another refresh implementation.
 
+When no inventory snapshot has been published yet, `get_project_status` returns a valid compatibility `ProjectStatusDto`: `runtime.presence = unavailable`, `activity = null`, `containerCount = 0`, `runningContainerCount = 0`, `observedAt = null`, `definition.state = unchecked`, null definition revision/service count, null operation, and an empty issues array. This is an unavailable observation, not an empty successful Docker result and not a protocol error. Once a snapshot exists, the command derives the profile projection from that snapshot and the shared definition cache; retained stale data keeps its counts and timestamp while the runtime error remains represented in the inventory freshness/error fields.
+
 ### 8.1 Runtime inventory DTO
 
 `src-tauri/src/dto/inventory.rs` defines explicit `Serialize`, `Deserialize`, and `JsonSchema` DTOs using camelCase:
@@ -330,18 +358,20 @@ Retain existing `get_project_status` during this increment so Increment 3 client
 ```rust
 pub struct RuntimeInventoryDto {
     pub generation: u64,
-    pub observed_at: String,
-    pub runtime_session_id: String,
-    pub daemon_fingerprint: DaemonFingerprintDto,
+    pub has_snapshot: bool,
+    pub observed_at: Option<String>,
+    pub runtime_session_id: Option<String>,
+    pub daemon_fingerprint: Option<DaemonFingerprintDto>,
     pub freshness: InventoryFreshnessDto,
     pub last_successful_observed_at: Option<String>,
+    pub containers: Vec<ContainerInstanceDto>,
     pub projects: Vec<ProjectRuntimeSnapshotDto>,
     pub standalone_containers: Vec<ContainerInstanceDto>,
     pub error: Option<AppErrorDto>,
 }
 ```
 
-`RuntimeInventoryDto` includes `containers` as the normalized full list from the single Docker listing. It is not a second independently fetched dataset. Project snapshots use `composeProjectName`, optional `workingDirectory`, ordered `configFiles`, and normalized `containers`.
+`RuntimeInventoryDto` includes `containers` as the normalized full list from the single Docker listing. It is not a second independently fetched dataset. `hasSnapshot` is false only before the first successful observation; such a DTO has generation `0`, empty collections, freshness `unavailable`, and no fabricated timestamp/fingerprint. After first success, `hasSnapshot` is true for both fresh and retained stale snapshots, and generation is at least `1`. Project snapshots use `composeProjectName`, optional `workingDirectory`, ordered `configFiles`, and normalized `containers`.
 
 All timestamp fields are RFC 3339 strings. Runtime freshness is `fresh`, `stale`, or `unavailable`. Runtime inventory errors do not become definition errors and do not turn a retained snapshot into an empty successful response.
 
@@ -354,6 +384,7 @@ pub struct LifecycleResultDto {
     pub profile_id: String,
     pub success: bool,
     pub inventory_generation: u64,
+    pub inventory: RuntimeInventoryDto,
 }
 
 pub struct ProjectDefinitionDto {
@@ -366,7 +397,7 @@ pub struct ProjectDefinitionDto {
 }
 ```
 
-A failed lifecycle command returns `AppErrorDto`, not a fake generation. A successful lifecycle always carries the generation returned by its one coordinator refresh, including the last published generation when the post-operation observation is stale/unavailable. Request DTOs remain profile-ID based; frontend never supplies paths, Compose names, or environment files for lifecycle or definition commands.
+A failed lifecycle command returns `AppErrorDto`, not a fake generation or inventory. A successful lifecycle always carries the complete inventory returned by its one coordinator refresh, including the last published generation when the post-operation observation is stale/unavailable. `inventoryGeneration` duplicates `inventory.generation` as a small explicit field for mutation handlers and contract compatibility; DTO mapping must assert equality. Request DTOs remain profile-ID based; frontend never supplies paths, Compose names, or environment files for lifecycle or definition commands.
 
 ## 9. TanStack Query integration
 
@@ -381,9 +412,9 @@ Add `inventoryKeys.snapshot()` and `projectKeys.definition(profileId)` using imm
 - previous successful inventory data remains visible during errors;
 - no per-profile runtime polling remains.
 
-The query function passes responses through `acceptInventory(next)`. The guard reads the current `inventoryKeys.snapshot()` cache and returns the current value for lower or equal generations. Equal generations must not call `setQueryData`; lower generations must not call it either. Only strictly newer generations replace data and notify subscribers.
+The query function uses a dedicated `structuralSharing` function in the `useInventory` query options. This function receives `(oldData, newData)` before TanStack Query writes or notifies observers. If `oldData.hasSnapshot` is true and `newData.generation <= oldData.generation`, it returns `oldData` by reference. If `oldData.hasSnapshot` is false, it accepts the first `newData.hasSnapshot` response even though the old numeric generation is zero. Otherwise it returns `newData`. No `setQueryData` call occurs inside `queryFn`, and no post-write cache interceptor is used. This is the exact location of the guard required for equal-generation no-notification semantics.
 
-Lifecycle mutation success receives `inventoryGeneration`, accepts the response through the same generation guard, and invalidates/refetches the single inventory query once. It must not call a second explicit refresh after the backend already performed its required refresh. The implementation may use `invalidateQueries` to schedule the query refetch, but the generation guard remains authoritative when transport responses reorder. Profile update invalidates definition cache/query for that ID; removal evicts definition and inventory-derived project projections without writing runtime state.
+Lifecycle mutation success receives the already-produced `inventory` snapshot, including `inventoryGeneration` for compatibility, and writes it through the same `structuralSharing` function using `queryClient.setQueryData`. It does not call `invalidateQueries`, `refetchQueries`, or `refreshInventory`: the backend has already performed the required single coordinator refresh, and another query refetch would cause an unnecessary Docker listing. The guarded `setQueryData` returns the existing reference for lower/equal generations. Profile update invalidates definition cache/query for that ID; removal evicts definition and inventory-derived project projections without writing runtime state.
 
 Foreground details use `getProjectDetails` or the existing profile detail plus definition command, with the definition cache policy enforced by backend. React is never authority for runtime or definition state and never performs optimistic projection mutation.
 
@@ -395,10 +426,10 @@ The following behavior is normative:
 |---|---|
 | Two simultaneous `refresh_inventory` calls | One Docker list call; both callers await the shared result and receive the same published generation. |
 | Lifecycle success during background refresh | Lifecycle calls the coordinator once and joins the current refresh if one is in flight; no second concurrent list call. Returned generation is the shared published generation. |
-| Lifecycle action during definition refresh | Lifecycle acquires the operation lock; background definition refresh observes busy and yields without spawning Compose. |
+| Lifecycle action during definition refresh | Lifecycle records pending priority; definition guard completes or yields, then lifecycle acquires the lock; no second definition load starts and lifecycle cannot be overtaken. |
 | Reconnect/disconnect during inventory request | Session identity check rejects obsolete response; prior snapshot remains visible with stale/unavailable state. |
 | Old response after newer published generation | Backend and frontend discard lower generation without replacement or notification. |
-| Equal generation response | Idempotent no-op; cache reference and subscriber notification remain unchanged. |
+| Equal generation successful response | Idempotent no-op; cache reference and subscriber notification remain unchanged. Failure freshness is delivered through typed query error/backoff state or a lifecycle response, never by replacing query data with an equal-generation snapshot. |
 | Profile revision change during definition load | Result is discarded when revision no longer matches; no stale entry is written. |
 | Runtime outage after successful snapshot | Profiles and last successful containers remain visible; freshness/error/timestamp expose outage. |
 | Duplicate lifecycle action for one profile | Atomic lock returns `operation_conflict`; no Compose or inventory call. |
@@ -469,7 +500,7 @@ The fake `ComposeRunner` records executable, argv, working directory, selected e
 
 ### 11.5 Real Docker scope
 
-No new fixture is required for core Increment 4 acceptance because Increment 2's gated real-Docker contract already verifies the shared RuntimeGateway, daemon fingerprints, Compose CLI, and lifecycle semantics. The existing feature-gated smoke is extended, using its existing fixture, to verify one list call per explicit refresh, official label normalization, and definition revision change after profile update. Hermetic tests remain mandatory and are sufficient for coalescing, generations, failure retention/backoff, cache TTL, revision invalidation, and operation conflicts.
+No new fixture is required for core Increment 4 acceptance because Increment 2's gated real-Docker contract already verifies the shared RuntimeGateway, daemon fingerprints, Compose CLI, and lifecycle semantics. The existing feature-gated smoke is extended, using its existing fixture, to verify that real Docker list output contains official Compose labels and that the adapter maps those labels into `ContainerObservation` and the coordinator's project snapshot, plus definition revision change after profile update. It does not assert list-call counts, which remain hermetic adapter/coordinator guarantees. Hermetic tests remain mandatory and are sufficient for coalescing, generations, failure retention/backoff, cache TTL, revision invalidation, and operation conflicts.
 
 ## 12. Verification commands
 
