@@ -1,5 +1,5 @@
 use crate::ProfileReader;
-use colui_domain::{AppError, AppErrorCode, ProfileId, ProjectProfile};
+use colui_domain::{AppError, AppErrorCode, ProfileId, ProjectProfile, RuntimeInventory};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -17,6 +17,7 @@ pub enum LifecycleOperation {
 pub struct LifecycleResult {
     pub profile_id: ProfileId,
     pub success: bool,
+    pub inventory: RuntimeInventory,
 }
 
 pub trait LifecycleRuntime: Send + Sync {

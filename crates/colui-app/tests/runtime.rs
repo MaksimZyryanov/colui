@@ -3,8 +3,8 @@ use colui_app::{
     RuntimeStateReader,
 };
 use colui_domain::{
-    AppError, ContainerDetails, ContainerId, ContainerInstance, ContainerState, DockerEndpoint,
-    RuntimeSessionState,
+    AppError, ComposeContainerMetadata, ContainerDetails, ContainerId, ContainerInstance,
+    ContainerObservation, ContainerState, DockerEndpoint, RuntimeSessionState,
 };
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -24,16 +24,24 @@ impl FakeRuntime {
 impl DockerApi for FakeRuntime {
     fn list_containers(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ContainerInstance>, AppError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ContainerObservation>, AppError>> + Send + '_>> {
         Box::pin(async {
-            Ok(vec![ContainerInstance {
-                id: ContainerId("container-1".into()),
-                name: "demo".into(),
-                image: "demo:latest".into(),
-                state: ContainerState::Running,
-                status_text: "Up".into(),
-                service_name: Some("web".into()),
-                published_ports: vec![],
+            Ok(vec![ContainerObservation {
+                instance: ContainerInstance {
+                    id: ContainerId("container-1".into()),
+                    name: "demo".into(),
+                    image: "demo:latest".into(),
+                    state: ContainerState::Running,
+                    status_text: "Up".into(),
+                    service_name: Some("web".into()),
+                    published_ports: vec![],
+                },
+                compose: Some(ComposeContainerMetadata {
+                    project: "demo".into(),
+                    service: Some("web".into()),
+                    working_directory: None,
+                    config_files: vec![],
+                }),
             }])
         })
     }

@@ -4,7 +4,7 @@ use colui_app::{
 };
 use colui_domain::{
     AppError, AppErrorCode, ComposeProjectName, DisplayName, ProfileDraft, ProfileId,
-    ProjectProfile, RegistrationOrigin,
+    ProjectProfile, RegistrationOrigin, RuntimeInventory,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -90,6 +90,7 @@ impl LifecycleRuntime for FakeRuntime {
             Ok(LifecycleResult {
                 profile_id: profile.id,
                 success: true,
+                inventory: RuntimeInventory::unavailable(),
             })
         })
     }

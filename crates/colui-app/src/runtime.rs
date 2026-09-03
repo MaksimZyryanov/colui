@@ -1,5 +1,6 @@
 use colui_domain::{
-    AppError, ContainerDetails, ContainerId, ContainerInstance, DockerEndpoint, RuntimeSessionState,
+    AppError, ContainerDetails, ContainerId, ContainerObservation, DockerEndpoint,
+    RuntimeSessionState,
 };
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -95,7 +96,7 @@ impl ComposeProcessResult {
 }
 
 pub trait DockerApi: Send + Sync {
-    fn list_containers(&self) -> RuntimeFuture<'_, Vec<ContainerInstance>>;
+    fn list_containers(&self) -> RuntimeFuture<'_, Vec<ContainerObservation>>;
     fn inspect_container(&self, container_id: &ContainerId) -> RuntimeFuture<'_, ContainerDetails>;
 }
 
