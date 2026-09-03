@@ -158,3 +158,26 @@ $ git diff --check
 ```
 
 Remediation coverage: explicit 26-entry DTO manifest; typed 16-entry fixture manifest including request, error, runtime, and lifecycle negatives; unknown-field strip/strict behavior; TypeScript AST boundary checks with multiline import, alias, spread, and JSX-key adversarial self-tests; served Firefox Vite smoke with edit persistence, connection-failure visibility, and exact lifecycle payloads; verifier root normalization; pnpm lockfile consistency.
+
+## Task 9 Round-2 Review Fixes
+
+- Served smoke seeds `Existing Project` before navigating to `?runtimeFailure`, proving existing profiles remain visible while runtime connection fails.
+- Served smoke uses isolated browser contexts for runtime-failure and lifecycle flows, so runtime-failure seed cannot contaminate lifecycle empty-state.
+- Served smoke covers Tear down confirmation, lifecycle actions, Remove cancel, Remove confirm, and final `No projects yet` state.
+- Served smoke checks exact payload `{ profileId }` for Apply, Stop, Tear down, and Restart, `{ profileId, expectedRevision: 2 }` for Remove, and no `remove_profile` invocation after cancellation.
+- DTO comparison canonicalizes only omitted object `additionalProperties` to `false`; explicit `false` and `true` remain in normalized output. This normalization runs inside all 26 DTO comparisons, not only its unit coverage.
+
+Exact post-fix command output:
+
+```text
+$ npx --yes pnpm@9.15.5 test:contracts
+Test Files  3 passed (3)
+Tests  28 passed (28)
+[exit 0]
+
+$ COLUI_SMOKE_PORT=4174 bash scripts/browser-smoke.sh
+Test Files  1 passed (1)
+Tests  2 passed (2)
+Browser mock smoke OK
+[exit 0]
+```

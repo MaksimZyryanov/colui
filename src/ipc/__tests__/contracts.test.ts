@@ -41,9 +41,10 @@ const normalizeSchema = (value: unknown, root = value): unknown => {
     if (target) return normalizeSchema(target, root);
   }
   const normalized = Object.fromEntries(Object.entries(object)
-    .filter(([key]) => !['$schema', 'title', 'description', 'additionalProperties'].includes(key))
+    .filter(([key]) => !['$schema', 'title', 'description'].includes(key))
     .filter(([key]) => key !== 'definitions')
     .map(([key, child]) => [key, normalizeSchema(child, root)]));
+  if (normalized.type === 'object' && normalized.additionalProperties === undefined) normalized.additionalProperties = false;
   if (normalized.const !== undefined) {
     normalized.enum = [normalized.const];
     delete normalized.const;
@@ -168,6 +169,12 @@ describe('IPC contracts', () => {
       expect(normalizeSchema(generated), name).toEqual(normalizeSchema(rust));
     }
     expect(dtoManifest).toHaveLength(26);
+  });
+
+  it('does not discard additionalProperties contract metadata', () => {
+    expect(normalizeSchema({ type: 'object', additionalProperties: false })).toEqual({ type: 'object', additionalProperties: false });
+    expect(normalizeSchema({ type: 'object' })).toEqual({ type: 'object', additionalProperties: false });
+    expect(normalizeSchema({ type: 'object', additionalProperties: true })).toEqual({ type: 'object', additionalProperties: true });
   });
 
   it('exercises every committed fixture exactly once', () => {
