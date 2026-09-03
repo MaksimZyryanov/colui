@@ -99,12 +99,6 @@ $ cargo fmt --all -- --check
 
 $ cargo test --workspace
 test result: ok. 1 passed; 0 failed
-test result: ok. 27 passed; 0 failed
-test result: ok. 4 passed; 0 failed
-test result: ok. 17 passed; 0 failed
-test result: ok. 7 passed; 0 failed
-test result: ok. 15 passed; 0 failed
-test result: ok. 7 passed; 0 failed
 [exit 0]
 
 $ cargo test -p colui-tauri --test dto_contracts
@@ -181,3 +175,43 @@ Tests  2 passed (2)
 Browser mock smoke OK
 [exit 0]
 ```
+
+## Task 9 Round-3 Review Fixes
+
+- Mock generated profile IDs now initialize above highest persisted generated UUID suffix after `localStorage` reload.
+- `mockBackend.reset()` still resets counter to `1`, preserving deterministic tests.
+- Added reload/create regression proving first ID ends in `...001`, reloaded create ends in `...002`, and IDs differ.
+
+TDD and verification evidence:
+
+```text
+$ npm test -- src/ipc/__tests__/mock-backend.test.ts [before production fix]
+Test Files  1 failed (1)
+Tests  4 passed (5)
+Expected: "00000000-0000-0000-0000-000000000002"
+Received: "00000000-0000-0000-0000-000000000001"
+
+$ npm test -- src/ipc/__tests__/mock-backend.test.ts [after fix]
+Test Files  1 passed (1)
+Tests  5 passed (5)
+
+$ npm run typecheck
+tsc --noEmit: passed
+
+$ npm test -- src/ipc/__tests__
+Test Files  3 passed (3)
+Tests  28 passed (28)
+
+$ npm test
+Test Files  9 passed (9)
+Tests  66 passed (66)
+
+$ git diff --check
+passed
+```
+
+## Round-3 Concerns
+
+- `pnpm` unavailable; equivalent `npm` commands used.
+- Node emits expected localStorage experimental warning in mock tests.
+- Full suite emits expected jsdom stderr from intentional error-boundary and accessibility rejection tests; all tests pass.

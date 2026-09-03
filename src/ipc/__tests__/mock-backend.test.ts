@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createProfile, listProfiles, removeProfile, updateProfile } from '../commands';
 import { mockBackend } from '../mock-backend';
 
@@ -41,5 +41,28 @@ describe('browser mock backend', () => {
     await import('../commands').then(({ applyProject }) => applyProject(created.id));
     const status = await import('../commands').then(({ getProjectStatus }) => getProjectStatus(created.id));
     expect(status.operation).toMatchObject({ kind: 'apply', phase: 'succeeded' });
+  });
+
+  it('starts generated IDs above persisted profiles after reload', async () => {
+    const values = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+        removeItem: (key: string) => values.delete(key),
+      },
+    });
+
+    mockBackend.reset();
+    const first = await mockBackend.invoke('create_profile', draft) as { id: string };
+
+    vi.resetModules();
+    const { mockBackend: reloadedBackend } = await import('../mock-backend');
+    const second = await reloadedBackend.invoke('create_profile', draft) as { id: string };
+
+    expect(first.id).toBe('00000000-0000-0000-0000-000000000001');
+    expect(second.id).toBe('00000000-0000-0000-0000-000000000002');
+    expect(second.id).not.toBe(first.id);
   });
 });

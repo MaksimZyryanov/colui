@@ -4,7 +4,11 @@ import type { ProfileDraft, ProfileSummary } from './types';
 
 declare global { interface Window { __COLUI_MOCK_INVOCATIONS?: Array<{ command: string; args?: unknown }>; __COLUI_MOCK_PROFILE_ID?: string } }
 
-let nextId = 1;
+const generatedIdPattern = /^00000000-0000-0000-0000-(\d{12})$/;
+const nextPersistedId = (profiles: ProfileSummary[]) => profiles.reduce((next, profile) => {
+  const match = generatedIdPattern.exec(profile.id);
+  return match ? Math.max(next, Number(match[1]) + 1) : next;
+}, 1);
 const id = () => `00000000-0000-0000-0000-${String(nextId++).padStart(12, '0')}`;
 const now = () => new Date().toISOString();
 const error = (code: AppErrorException['code'], operation: string, message: string, subjectId: string | null = null): never => { throw new AppErrorException({ code, operation, subjectId, message, details: null, retryable: false }); };
@@ -13,6 +17,7 @@ const storageKey = 'colui.mock.profiles';
 const stored = () => { if (typeof localStorage === 'undefined') return null; try { return JSON.parse(localStorage.getItem(storageKey) ?? 'null') as { profiles: ProfileSummary[]; drafts: Array<[string, ProfileDraft]>; statuses: Array<[string, unknown]> } | null; } catch { return null; } };
 const initial = stored();
 let profiles: ProfileSummary[] = initial?.profiles ?? [];
+let nextId = nextPersistedId(profiles);
 let drafts = new Map<string, ProfileDraft>(initial?.drafts ?? []);
 let runtime: unknown = { state: 'disconnected' };
 let statuses = new Map<string, unknown>(initial?.statuses ?? []);
