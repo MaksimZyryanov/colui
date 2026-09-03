@@ -18,8 +18,5 @@ pub trait DefinitionReader: Send + Sync {
 pub trait DefinitionRefresher: Send + Sync {
     /// Parse and cache the definition for a specific profile.
     /// Returns the new definition revision.
-    fn refresh_definition(
-        &self,
-        profile_id: ProfileId,
-    ) -> DefinitionFuture<'_, ProjectDefinition>;
+    fn refresh_definition(&self, profile_id: ProfileId) -> DefinitionFuture<'_, ProjectDefinition>;
 }

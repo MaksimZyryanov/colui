@@ -1,5 +1,5 @@
 use colui_app::LifecycleResult;
-use colui_domain::{AppError, AppErrorCode, ProfileId};
+use colui_domain::{AppError, AppErrorCode, ProfileId, RuntimeInventory};
 use colui_tauri_lib::dto::{
     AppErrorDto, DefinitionStateDto, LifecycleResultDto, OperationKindDto, OperationPhaseDto,
     ProjectStatusDto, RegistrationOriginDto, RuntimeActivityDto, RuntimePresenceDto,
@@ -262,6 +262,7 @@ fn lifecycle_result_preserves_application_success() {
     let dto = LifecycleResultDto::from(LifecycleResult {
         profile_id: ProfileId::parse("00000000-0000-0000-0000-000000000001").unwrap(),
         success: false,
+        inventory: RuntimeInventory::unavailable(),
     });
     assert!(!dto.success);
 }

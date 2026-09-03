@@ -24,7 +24,8 @@ impl FakeRuntime {
 impl DockerApi for FakeRuntime {
     fn list_containers(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ContainerObservation>, AppError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ContainerObservation>, AppError>> + Send + '_>>
+    {
         Box::pin(async {
             Ok(vec![ContainerObservation {
                 instance: ContainerInstance {

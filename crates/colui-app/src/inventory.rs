@@ -11,10 +11,7 @@ pub trait InventoryReader: Send + Sync {
     fn get_inventory(&self, profile_id: ProfileId) -> InventoryFuture<'_, RuntimeInventory>;
 
     /// Get the full runtime snapshot (containers + metadata) for a profile.
-    fn get_snapshot(
-        &self,
-        profile_id: ProfileId,
-    ) -> InventoryFuture<'_, ProjectRuntimeSnapshot>;
+    fn get_snapshot(&self, profile_id: ProfileId) -> InventoryFuture<'_, ProjectRuntimeSnapshot>;
 }
 
 /// Trigger inventory refresh operations.

@@ -214,11 +214,14 @@ impl TempComposeFixture {
     async fn containers_with_exact_project(
         &self,
         gateway: &RuntimeGateway,
-        containers: &[colui_domain::ContainerInstance],
+        containers: &[colui_domain::ContainerObservation],
     ) -> Vec<colui_domain::ContainerInstance> {
         let mut matching = Vec::new();
-        for container in containers {
-            let details = gateway.inspect_container(&container.id).await.unwrap();
+        for observation in containers {
+            let details = gateway
+                .inspect_container(&observation.instance.id)
+                .await
+                .unwrap();
             if details.labels.get("com.docker.compose.project") == Some(&self.project_name) {
                 matching.push(details.instance);
             }
