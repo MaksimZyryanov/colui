@@ -7,7 +7,7 @@ const sourceRoot = join(root, 'src');
 const files = ts.sys.readDirectory(sourceRoot, ['.ts', '.tsx'], undefined, undefined);
 const failures = [];
 const lifecycleNames = new Set(['applyProject', 'stopProject', 'tearDownProject', 'restartProject', 'apply_project', 'stop_project', 'tear_down_project', 'restart_project']);
-const forbiddenFields = new Set(['compose', 'workingDirectory', 'expectedRevision', 'revision']);
+const forbiddenFields = new Set(['compose', 'composeFiles', 'composeProjectName', 'environmentFiles', 'workingDirectory', 'expectedRevision', 'revision']);
 
 for (const file of files) {
   const rel = relative(root, file).split('\\').join('/');

@@ -10,7 +10,7 @@ use colui_domain::{
 };
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::Duration;
 
@@ -68,6 +68,60 @@ async fn concurrent_refreshes_share_one_list_and_generation() {
     assert_eq!(a.generation, 1);
     assert_eq!(a.generation, b.generation);
     assert_eq!(source.calls.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn lifecycle_refresh_joins_background_refresh() {
+    let source = Arc::new(BlockingSource::new(vec![observation(
+        "checkout-web",
+        Some("checkout"),
+    )]));
+    let coordinator = Arc::new(InventoryCoordinator::new(source.clone(), test_clock()));
+    let background = tokio::spawn({
+        let coordinator = coordinator.clone();
+        async move { coordinator.refresh().await }
+    });
+    source.started.notified().await;
+    let mut joined = coordinator.subscribe_refresh_joins();
+    let lifecycle = tokio::spawn({
+        let coordinator = coordinator.clone();
+        async move { colui_app::InventoryRefresher::refresh(coordinator.as_ref()).await }
+    });
+    tokio::task::yield_now().await;
+    source.release.add_permits(2);
+
+    let background = background.await.unwrap().unwrap();
+    let lifecycle = lifecycle.await.unwrap().unwrap();
+    assert_eq!(background.generation, lifecycle.generation);
+    assert_eq!(source.calls.load(Ordering::Acquire), 1);
+    assert!(joined.try_recv().is_ok());
+}
+
+#[tokio::test]
+async fn session_change_during_list_rejects_obsolete_response_and_retains_snapshot() {
+    let source = Arc::new(MutableSessionSource::new(vec![observation("first", None)]));
+    let coordinator = Arc::new(InventoryCoordinator::new(source.clone(), test_clock()));
+    source.release.add_permits(1);
+    assert_eq!(coordinator.refresh().await.unwrap().generation, 1);
+    source.started.notified().await;
+
+    source.set_observations(vec![observation("obsolete", None)]);
+    let refresh = tokio::spawn({
+        let coordinator = coordinator.clone();
+        async move { coordinator.refresh().await }
+    });
+    source.started.notified().await;
+    source.set_session(2);
+    source.release.add_permits(1);
+
+    assert_eq!(
+        refresh.await.unwrap().unwrap_err().code,
+        AppErrorCode::RuntimeUnavailable
+    );
+    let retained = coordinator.current_inventory().await.unwrap();
+    assert_eq!(retained.generation, 1);
+    assert_eq!(retained.containers[0].name, "first");
+    assert_eq!(retained.freshness, colui_domain::InventoryFreshness::Stale);
 }
 
 #[tokio::test]
@@ -236,6 +290,54 @@ struct BlockingSource {
     started: tokio::sync::Notify,
     release: tokio::sync::Semaphore,
     context: colui_domain::SessionContext,
+}
+
+struct MutableSessionSource {
+    observations: Mutex<Vec<ContainerObservation>>,
+    context: Mutex<colui_domain::SessionContext>,
+    started: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+impl MutableSessionSource {
+    fn new(observations: Vec<ContainerObservation>) -> Self {
+        Self {
+            observations: Mutex::new(observations),
+            context: Mutex::new(session_context()),
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        }
+    }
+
+    fn set_observations(&self, observations: Vec<ContainerObservation>) {
+        *self.observations.lock().unwrap() = observations;
+    }
+
+    fn set_session(&self, value: u128) {
+        self.context.lock().unwrap().session_id =
+            colui_domain::RuntimeSessionId::new(uuid::Uuid::from_u128(value));
+    }
+}
+
+impl DockerApi for MutableSessionSource {
+    fn list_containers(&self) -> RuntimeFuture<'_, Vec<ContainerObservation>> {
+        Box::pin(async move {
+            self.started.notify_one();
+            self.release.acquire().await.unwrap().forget();
+            Ok(self.observations.lock().unwrap().clone())
+        })
+    }
+
+    fn inspect_container(&self, _: &ContainerId) -> RuntimeFuture<'_, ContainerDetails> {
+        panic!("inventory refresh must not inspect")
+    }
+}
+
+impl colui_app::RuntimeStateReader for MutableSessionSource {
+    fn session_state(&self) -> RuntimeFuture<'_, colui_domain::RuntimeSessionState> {
+        let context = self.context.lock().unwrap().clone();
+        Box::pin(async move { Ok(colui_domain::RuntimeSessionState::Ready(context)) })
+    }
 }
 
 impl BlockingSource {

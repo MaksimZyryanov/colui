@@ -67,6 +67,46 @@ check_forbidden "$root_dir/crates/colui-app/Cargo.toml" \
 check_forbidden "$root_dir/crates/colui-adapters/Cargo.toml" \
   'tauri'
 
+assert_count() {
+  local expected=$1
+  local pattern=$2
+  local description=$3
+  shift 3
+  local count
+  count=$(rg -n "$pattern" "$@" --glob '!**/tests/**' --glob '!**/__tests__/**' --glob '!**/mock-backend.ts' | wc -l | tr -d ' ')
+  if [[ "$count" != "$expected" ]]; then
+    printf 'Boundary violation: expected %s %s, found %s\n' "$expected" "$description" "$count" >&2
+    exit 1
+  fi
+}
+
+reject_pattern() {
+  local pattern=$1
+  local description=$2
+  shift 2
+  if rg -n "$pattern" "$@"; then
+    printf 'Boundary violation: %s\n' "$description" >&2
+    exit 1
+  fi
+}
+
+if [[ -f "$root_dir/crates/colui-adapters/src/inventory.rs" ]]; then
+  assert_count 1 'pub struct InventoryCoordinator' 'inventory coordinator owner' "$root_dir/crates"
+  assert_count 1 'pub struct DefinitionCache' 'definition cache owner' "$root_dir/crates"
+  assert_count 1 'pub struct OperationLockManager' 'operation lock owner' "$root_dir/crates"
+  assert_count 1 'pub async fn refresh_inventory' 'backend refresh API' "$root_dir/src-tauri"
+  assert_count 1 'export const refreshInventory' 'frontend refresh API' "$root_dir/src"
+  assert_count 2 'generation: u64,' 'inventory generation symbols (state and normalizer input)' "$root_dir/crates/colui-adapters/src/inventory.rs"
+  assert_count 1 'Mutex<HashMap<ProfileId, ProfileState>>' 'operation lock map' "$root_dir/crates/colui-adapters/src/operations.rs"
+
+  reject_pattern 'ComposeRunner|compose[ _-]?config|"config"' \
+    'fast inventory path may not invoke Compose config' \
+    "$root_dir/crates/colui-adapters/src/inventory.rs" "$root_dir/src-tauri/src/commands/inventory.rs"
+  reject_pattern 'ProfileWriter|ProfileCreator|ProfileUpdater|ProfileRemover|registry\.(create|update|remove)|mutate_registry' \
+    'inventory projection may not write profile registry' \
+    "$root_dir/crates/colui-adapters/src/inventory.rs" "$root_dir/src-tauri/src/commands/inventory.rs"
+fi
+
 if [[ -d "$root_dir/src" ]]; then
   node "$root_dir/scripts/check-boundaries-node.mjs" "$root_dir"
 fi

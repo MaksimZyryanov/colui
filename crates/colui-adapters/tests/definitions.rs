@@ -12,7 +12,7 @@ use colui_domain::{
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -224,6 +224,76 @@ async fn invalidation_discards_late_load_and_next_access_reloads() {
     runner.release.notify_one();
     reload.await.unwrap();
     assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn profile_revision_change_during_load_discards_old_result() {
+    let runner = BlockingRunner::new();
+    let cache = Arc::new(cache(
+        runner.clone(),
+        Arc::new(TestClock {
+            mono: Arc::new(0.into()),
+        }),
+    ));
+    let old_load = tokio::spawn({
+        let cache = cache.clone();
+        async move { cache.refresh_definition(profile(1)).await.unwrap() }
+    });
+    runner.started.notified().await;
+
+    let changed = cache.definition(profile(2)).await.unwrap();
+    assert_eq!(changed.state, DefinitionState::Unchecked);
+    runner.release.notify_one();
+    old_load.await.unwrap();
+
+    let new_load = tokio::spawn({
+        let cache = cache.clone();
+        async move { cache.definition(profile(2)).await.unwrap() }
+    });
+    runner.started.notified().await;
+    runner.release.notify_one();
+    assert_eq!(new_load.await.unwrap().state, DefinitionState::Valid);
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn compose_config_invocation_records_exact_boundary_inputs() {
+    let invocations = Arc::new(Mutex::new(Vec::new()));
+    let runner = Arc::new(RecordingRunner(invocations.clone()));
+    cache(
+        runner,
+        Arc::new(TestClock {
+            mono: Arc::new(0.into()),
+        }),
+    )
+    .refresh_definition(profile(1))
+    .await
+    .unwrap();
+
+    let invocation = &invocations.lock().unwrap()[0];
+    assert_eq!(invocation.executable, PathBuf::from("docker"));
+    assert_eq!(invocation.working_directory, PathBuf::from("/tmp"));
+    assert!(invocation
+        .args
+        .windows(3)
+        .any(|args| args == ["config", "--format", "json"]));
+    assert!(invocation.environment.contains_key("DOCKER_HOST"));
+}
+
+struct RecordingRunner(Arc<Mutex<Vec<ComposeInvocation>>>);
+
+impl ComposeRunner for RecordingRunner {
+    fn invoke(&self, invocation: ComposeInvocation) -> RuntimeFuture<'_, ComposeProcessResult> {
+        self.0.lock().unwrap().push(invocation);
+        Box::pin(async {
+            Ok(ComposeProcessResult::completed(
+                0,
+                r#"{"services":{}}"#,
+                "",
+                Duration::ZERO,
+            ))
+        })
+    }
 }
 
 #[tokio::test]

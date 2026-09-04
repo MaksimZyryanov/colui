@@ -3,14 +3,16 @@
 use colui_adapters::runtime::{
     compose_args, ComposeOperation, ComposeProcessRunner, RuntimeGateway,
 };
+use colui_adapters::{DefinitionCache, InventoryCoordinator, OperationLockManager};
 use colui_app::{
-    DockerApi, LifecycleOperation, LifecycleRuntime, ProfileReader, RegistrySnapshot,
-    RuntimeConnector,
+    Clock, DefinitionRefresher, DockerApi, LifecycleOperation, LifecycleRuntime, ProfileReader,
+    RegistrySnapshot, RuntimeConnector,
 };
 use colui_domain::{
     ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin, RuntimeSessionState,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -67,6 +69,77 @@ async fn disposable_compose_fixture_scales_worker_to_two_containers() {
     cleanup.disarm();
     fixture.assert_project_resources_absent().await;
     fixture.assert_profile_survives(&profile_before);
+}
+
+#[tokio::test]
+async fn fixture_labels_feed_inventory_and_profile_change_updates_definition_revision() {
+    if !docker_available().await {
+        eprintln!("SKIP: local Docker daemon unavailable");
+        return;
+    }
+
+    let fixture = TempComposeFixture::new(false);
+    let gateway = Arc::new(RuntimeGateway::new(Box::new(
+        ComposeProcessRunner::default(),
+    )));
+    gateway.connect_runtime(None).await.unwrap();
+    let mut cleanup = CleanupGuard::new(&fixture.profile);
+    fixture.apply(&gateway, false).await.unwrap();
+
+    let coordinator = InventoryCoordinator::new(gateway.clone(), Arc::new(WallClock));
+    let inventory = coordinator.refresh().await.unwrap();
+    let project = inventory
+        .project_snapshots
+        .iter()
+        .find(|project| project.compose_project_name == fixture.project_name)
+        .expect("official Compose labels produce project snapshot");
+    assert!(!project.containers.is_empty());
+    assert_eq!(
+        project.working_directory.as_deref(),
+        fixture.directory.path().to_str()
+    );
+    assert!(project
+        .config_files
+        .iter()
+        .any(|path| path.ends_with("compose.yml")));
+
+    let cache = DefinitionCache::new(
+        Arc::new(ComposeProcessRunner::default()),
+        gateway.clone(),
+        Arc::new(WallClock),
+        Arc::new(OperationLockManager::new()),
+    );
+    let before = cache
+        .refresh_definition(fixture.profile.clone())
+        .await
+        .unwrap();
+    std::fs::write(
+        &fixture.compose_path,
+        "services:\n  app:\n    image: alpine:3.20\n    command: [\"sleep\", \"301\"]\n",
+    )
+    .unwrap();
+    let changed = fixture
+        .profile
+        .clone()
+        .with_display_name("Updated Docker fixture".try_into().unwrap())
+        .unwrap();
+    let after = cache.refresh_definition(changed).await.unwrap();
+    assert_ne!(before.definition_revision, after.definition_revision);
+
+    fixture.tear_down(&gateway).await.unwrap();
+    cleanup.disarm();
+}
+
+struct WallClock;
+
+impl Clock for WallClock {
+    fn now(&self) -> colui_domain::Timestamp {
+        colui_domain::Timestamp(chrono::Utc::now().to_rfc3339())
+    }
+
+    fn monotonic(&self) -> Duration {
+        Instant::now().elapsed()
+    }
 }
 
 async fn docker_available() -> bool {
