@@ -1,7 +1,7 @@
 use crate::runtime::{build_cli_environment, ComposeExecutionGate};
 use colui_app::{
-    Clock, ComposeInvocation, ComposeRunner, DefinitionBusy, DefinitionFuture, DefinitionReader,
-    DefinitionRefresher, RuntimeStateReader,
+    Clock, ComposeInvocation, ComposeRunner, DefinitionBusy, DefinitionFuture,
+    DefinitionProjection, DefinitionReader, DefinitionRefresher, RuntimeStateReader,
 };
 use colui_domain::{
     AppError, AppErrorCode, DefinitionRevision, DefinitionState, Issue, ProjectDefinition,
@@ -68,7 +68,7 @@ impl DefinitionCache {
         &self,
         profile: ProjectProfile,
         force: bool,
-    ) -> Result<ProjectDefinition, AppError> {
+    ) -> Result<DefinitionProjection, AppError> {
         let id = profile.id.clone();
         let now = self.clock.monotonic();
         let cached = {
@@ -84,12 +84,16 @@ impl DefinitionCache {
                 e.profile_revision == profile.revision && now.saturating_sub(e.loaded_mono) < TTL
             })
         {
-            return Ok(to_definition(&id, cached.unwrap()));
+            return Ok(to_projection(&id, cached.unwrap()));
         }
         let guard = match self.locks.acquire_definition(id.clone()) {
             Ok(guard) => guard,
-            Err(DefinitionBusy::LifecyclePending | DefinitionBusy::DefinitionActive) => {
-                return Ok(retained(&id, cached))
+            Err(busy @ (DefinitionBusy::LifecyclePending | DefinitionBusy::DefinitionActive)) => {
+                return Ok(retained(
+                    &id,
+                    cached,
+                    Some(definition_busy_error(id.clone(), busy)),
+                ))
             }
         };
         let epoch = lock(&self.state).epoch.get(&id).copied().unwrap_or(0);
@@ -114,24 +118,24 @@ impl DefinitionCache {
                         issues,
                         load_error: None,
                     };
-                    let output = to_definition(&id, entry.clone());
+                    let output = to_projection(&id, entry.clone());
                     state.entries.insert(id, entry);
                     drop(guard);
                     Ok(output)
                 }
                 Err(error) => {
-                    let output = retained(&id, state.entries.get(&id).cloned());
                     if let Some(entry) = state.entries.get_mut(&id) {
                         entry.state = DefinitionState::Stale;
-                        entry.load_error = Some(error);
+                        entry.load_error = Some(error.clone());
                     }
+                    let output = retained(&id, state.entries.get(&id).cloned(), Some(error));
                     drop(guard);
                     Ok(output)
                 }
             }
         } else {
             drop(guard);
-            Ok(retained(&id, state.entries.get(&id).cloned()))
+            Ok(retained(&id, state.entries.get(&id).cloned(), None))
         }
     }
 
@@ -263,6 +267,19 @@ fn compose_config_error(profile_id: colui_domain::ProfileId, _stderr: &str) -> A
     )
 }
 
+fn definition_busy_error(profile_id: colui_domain::ProfileId, busy: DefinitionBusy) -> AppError {
+    let message = match busy {
+        DefinitionBusy::LifecyclePending => "lifecycle operation has priority",
+        DefinitionBusy::DefinitionActive => "definition load already active",
+    };
+    AppError::new(
+        AppErrorCode::OperationConflict,
+        "definition",
+        Some(profile_id),
+        message,
+    )
+}
+
 fn canonical(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => serde_json::Value::Object(
@@ -286,24 +303,43 @@ fn to_definition(id: &colui_domain::ProfileId, entry: CachedDefinition) -> Proje
         issues: entry.issues,
     }
 }
-fn retained(id: &colui_domain::ProfileId, entry: Option<CachedDefinition>) -> ProjectDefinition {
-    entry
-        .map(|mut entry| {
+fn to_projection(id: &colui_domain::ProfileId, entry: CachedDefinition) -> DefinitionProjection {
+    let error = entry.load_error.clone();
+    DefinitionProjection {
+        definition: to_definition(id, entry),
+        error,
+    }
+}
+fn retained(
+    id: &colui_domain::ProfileId,
+    entry: Option<CachedDefinition>,
+    error: Option<AppError>,
+) -> DefinitionProjection {
+    match entry {
+        None => DefinitionProjection {
+            definition: ProjectDefinition {
+                profile_id: id.clone(),
+                definition_revision: DefinitionRevision(String::new()),
+                loaded_at: Timestamp(String::new()),
+                state: DefinitionState::Unchecked,
+                services: Vec::new(),
+                issues: Vec::new(),
+            },
+            error,
+        },
+        Some(mut entry) => {
             entry.state = DefinitionState::Stale;
-            to_definition(id, entry)
-        })
-        .unwrap_or(ProjectDefinition {
-            profile_id: id.clone(),
-            definition_revision: DefinitionRevision(String::new()),
-            loaded_at: Timestamp(String::new()),
-            state: DefinitionState::Unchecked,
-            services: Vec::new(),
-            issues: Vec::new(),
-        })
+            let retained_error = error.or_else(|| entry.load_error.clone());
+            DefinitionProjection {
+                definition: to_definition(id, entry),
+                error: retained_error,
+            }
+        }
+    }
 }
 
 impl DefinitionReader for DefinitionCache {
-    fn definition(&self, profile: ProjectProfile) -> DefinitionFuture<'_, ProjectDefinition> {
+    fn definition(&self, profile: ProjectProfile) -> DefinitionFuture<'_, DefinitionProjection> {
         Box::pin(self.access(profile, false))
     }
 }
@@ -311,7 +347,7 @@ impl DefinitionRefresher for DefinitionCache {
     fn refresh_definition(
         &self,
         profile: ProjectProfile,
-    ) -> DefinitionFuture<'_, ProjectDefinition> {
+    ) -> DefinitionFuture<'_, DefinitionProjection> {
         Box::pin(self.access(profile, true))
     }
     fn invalidate(&self, profile_id: colui_domain::ProfileId) {

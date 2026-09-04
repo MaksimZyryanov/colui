@@ -87,7 +87,7 @@ impl ProjectStatusReader for RuntimeFacade {
         Box::pin(async move {
             let inventory_snapshot = inventory.current_inventory().await?;
             let definition = if inventory_snapshot.has_snapshot {
-                Some(definitions.definition(profile.clone()).await?)
+                Some(definitions.definition(profile.clone()).await?.definition)
             } else {
                 None
             };

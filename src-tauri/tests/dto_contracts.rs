@@ -1,9 +1,13 @@
-use colui_app::LifecycleResult;
-use colui_domain::{AppError, AppErrorCode, ProfileId, RuntimeInventory};
+use colui_app::{DefinitionProjection, LifecycleResult};
+use colui_domain::{
+    AppError, AppErrorCode, DefinitionRevision, DefinitionState, ProfileId, ProjectDefinition,
+    RuntimeInventory, Timestamp,
+};
 use colui_tauri_lib::dto::{
     AppErrorDto, DefinitionStateDto, LifecycleResultDto, OperationKindDto, OperationPhaseDto,
-    ProjectStatusDto, RegistrationOriginDto, RuntimeActivityDto, RuntimeInventoryDto,
-    RuntimePresenceDto, RuntimeStateDto, SessionContextDto, UpdateProfileRequestDto,
+    ProjectDefinitionDto, ProjectStatusDto, RegistrationOriginDto, RuntimeActivityDto,
+    RuntimeInventoryDto, RuntimePresenceDto, RuntimeStateDto, SessionContextDto,
+    UpdateProfileRequestDto,
 };
 use colui_tauri_lib::schema_generation::{generate_all_schemas, write_schemas};
 use std::fs;
@@ -32,6 +36,35 @@ fn inventory_dto_contains_snapshot_marker_and_full_container_list() {
     assert!(json["containers"].is_array());
     assert!(json["projects"].is_array());
     assert!(json["standaloneContainers"].is_array());
+}
+
+#[test]
+fn definition_dto_keeps_definition_and_sanitized_error_together() {
+    let profile_id = ProfileId::parse("00000000-0000-0000-0000-000000000001").unwrap();
+    let dto = ProjectDefinitionDto::from(DefinitionProjection {
+        definition: ProjectDefinition {
+            profile_id: profile_id.clone(),
+            definition_revision: DefinitionRevision("retained".into()),
+            loaded_at: Timestamp("2026-09-03T00:00:00Z".into()),
+            state: DefinitionState::Stale,
+            services: vec![],
+            issues: vec![],
+        },
+        error: Some(AppError::new(
+            AppErrorCode::DefinitionFailed,
+            "definition",
+            Some(profile_id),
+            "compose config failed",
+        )),
+    });
+    let value = serde_json::to_value(dto).unwrap();
+    assert_eq!(value["state"], "stale");
+    assert_eq!(value["definitionRevision"], "retained");
+    assert_eq!(value["error"]["code"], "definition_failed");
+    let serialized = value.to_string();
+    assert!(!serialized.contains("/Users/"));
+    assert!(!serialized.contains("private.env"));
+    assert!(!serialized.contains("top-secret"));
 }
 
 #[test]

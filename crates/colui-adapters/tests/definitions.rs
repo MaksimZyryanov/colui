@@ -7,8 +7,9 @@ use colui_app::{
     RuntimeFuture, RuntimeStateReader,
 };
 use colui_domain::{
-    DaemonFingerprint, DefinitionState, DisplayName, DockerEndpoint, ProfileDraft, ProfileId,
-    ProjectProfile, RegistrationOrigin, RuntimeSessionId, RuntimeSessionState, Timestamp,
+    AppErrorCode, DaemonFingerprint, DefinitionState, DisplayName, DockerEndpoint, ProfileDraft,
+    ProfileId, ProjectProfile, RegistrationOrigin, RuntimeSessionId, RuntimeSessionState,
+    Timestamp,
 };
 use std::path::PathBuf;
 use std::sync::{
@@ -35,6 +36,39 @@ impl Clock for TestClock {
 struct Runner {
     output: String,
     calls: AtomicUsize,
+}
+
+struct SequenceRunner {
+    outputs: Mutex<Vec<ComposeProcessResult>>,
+    calls: AtomicUsize,
+}
+impl SequenceRunner {
+    fn new(outputs: Vec<ComposeProcessResult>) -> Arc<Self> {
+        Arc::new(Self {
+            outputs: Mutex::new(outputs.into_iter().rev().collect()),
+            calls: AtomicUsize::new(0),
+        })
+    }
+}
+impl ComposeRunner for SequenceRunner {
+    fn invoke(&self, _: ComposeInvocation) -> RuntimeFuture<'_, ComposeProcessResult> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = self.outputs.lock().unwrap().pop().unwrap();
+        Box::pin(async move { Ok(output) })
+    }
+}
+
+fn success(output: &str) -> ComposeProcessResult {
+    ComposeProcessResult::completed(0, output, "", Duration::ZERO)
+}
+
+fn failure() -> ComposeProcessResult {
+    ComposeProcessResult::completed(
+        1,
+        "",
+        "secret=/Users/max/private.env project=top-secret",
+        Duration::ZERO,
+    )
 }
 impl Runner {
     fn new(output: &str) -> Arc<Self> {
@@ -82,9 +116,85 @@ async fn changed_profile_revision_does_not_return_old_services_when_busy() {
         .unwrap();
     let newer = profile(2);
     let definition = cache.definition(newer).await.unwrap();
-    assert_eq!(definition.state, DefinitionState::Unchecked);
-    assert!(definition.services.is_empty());
+    assert_eq!(definition.definition.state, DefinitionState::Unchecked);
+    assert!(definition.definition.services.is_empty());
+    assert_eq!(
+        definition.error.unwrap().code,
+        AppErrorCode::OperationConflict
+    );
     drop(guard);
+}
+
+#[tokio::test]
+async fn first_load_failure_returns_unchecked_definition_and_typed_error() {
+    let projection = cache(
+        SequenceRunner::new(vec![failure()]),
+        Arc::new(TestClock {
+            mono: Arc::new(0.into()),
+        }),
+    )
+    .refresh_definition(profile(1))
+    .await
+    .unwrap();
+
+    assert_eq!(projection.definition.state, DefinitionState::Unchecked);
+    assert!(projection.definition.services.is_empty());
+    assert_eq!(
+        projection.error.unwrap().code,
+        AppErrorCode::DefinitionFailed
+    );
+}
+
+#[tokio::test]
+async fn failed_refresh_retains_services_as_stale_and_success_clears_error() {
+    let runner = SequenceRunner::new(vec![
+        success(r#"{"services":{"web":{"image":"nginx"}}}"#),
+        failure(),
+        success(r#"{"services":{"api":{"image":"api"}}}"#),
+    ]);
+    let cache = cache(
+        runner,
+        Arc::new(TestClock {
+            mono: Arc::new(0.into()),
+        }),
+    );
+    cache.refresh_definition(profile(1)).await.unwrap();
+
+    let failed = cache.refresh_definition(profile(1)).await.unwrap();
+    assert_eq!(failed.definition.state, DefinitionState::Stale);
+    assert_eq!(failed.definition.services[0].name, "web");
+    assert_eq!(failed.error.unwrap().code, AppErrorCode::DefinitionFailed);
+
+    let locks = Arc::new(OperationLockManager::new());
+    let busy_runner = SequenceRunner::new(vec![
+        success(r#"{"services":{"web":{"image":"nginx"}}}"#),
+        failure(),
+    ]);
+    let busy_cache = DefinitionCache::new(
+        busy_runner.clone(),
+        Arc::new(Runtime),
+        Arc::new(TestClock {
+            mono: Arc::new(0.into()),
+        }),
+        locks.clone(),
+        Arc::new(ComposeExecutionGate::new()),
+    );
+    busy_cache.refresh_definition(profile(1)).await.unwrap();
+    busy_cache.refresh_definition(profile(1)).await.unwrap();
+    let guard = locks
+        .acquire_lifecycle(profile(1).id, OperationKind::Apply)
+        .await
+        .unwrap();
+    let busy = busy_cache.refresh_definition(profile(1)).await.unwrap();
+    assert_eq!(busy.definition.state, DefinitionState::Stale);
+    assert_eq!(busy.error.unwrap().code, AppErrorCode::OperationConflict);
+    assert_eq!(busy_runner.calls.load(Ordering::SeqCst), 2);
+    drop(guard);
+
+    let recovered = cache.refresh_definition(profile(1)).await.unwrap();
+    assert_eq!(recovered.definition.state, DefinitionState::Valid);
+    assert_eq!(recovered.definition.services[0].name, "api");
+    assert!(recovered.error.is_none());
 }
 
 struct Runtime;
@@ -158,8 +268,13 @@ async fn canonical_json_key_order_has_same_revision() {
         c1.refresh_definition(p.clone())
             .await
             .unwrap()
+            .definition
             .definition_revision,
-        c2.refresh_definition(p).await.unwrap().definition_revision
+        c2.refresh_definition(p)
+            .await
+            .unwrap()
+            .definition
+            .definition_revision
     );
 }
 
@@ -171,7 +286,7 @@ async fn expired_entry_refreshes_and_invalid_definition_is_retained() {
     });
     let cache = cache(runner.clone(), clock.clone());
     let definition = cache.definition(profile(1)).await.unwrap();
-    assert_eq!(definition.state, DefinitionState::Invalid);
+    assert_eq!(definition.definition.state, DefinitionState::Invalid);
     clock.mono.store(61, Ordering::SeqCst);
     cache.definition(profile(1)).await.unwrap();
     assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
@@ -250,7 +365,8 @@ async fn profile_revision_change_during_load_discards_old_result() {
     runner.started.notified().await;
 
     let changed = cache.definition(profile(2)).await.unwrap();
-    assert_eq!(changed.state, DefinitionState::Unchecked);
+    assert_eq!(changed.definition.state, DefinitionState::Unchecked);
+    assert_eq!(changed.error.unwrap().code, AppErrorCode::OperationConflict);
     runner.release.notify_one();
     old_load.await.unwrap();
 
@@ -260,7 +376,10 @@ async fn profile_revision_change_during_load_discards_old_result() {
     });
     runner.started.notified().await;
     runner.release.notify_one();
-    assert_eq!(new_load.await.unwrap().state, DefinitionState::Valid);
+    assert_eq!(
+        new_load.await.unwrap().definition.state,
+        DefinitionState::Valid
+    );
     assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -322,7 +441,11 @@ async fn lifecycle_busy_returns_unchecked_without_running_compose() {
         Arc::new(ComposeExecutionGate::new()),
     );
     let definition = cache.definition(profile(1)).await.unwrap();
-    assert_eq!(definition.state, DefinitionState::Unchecked);
+    assert_eq!(definition.definition.state, DefinitionState::Unchecked);
+    assert_eq!(
+        definition.error.unwrap().code,
+        AppErrorCode::OperationConflict
+    );
     assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
     drop(guard);
 }

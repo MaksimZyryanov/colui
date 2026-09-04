@@ -1,6 +1,67 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "AppErrorCodeDto": {
+      "enum": [
+        "runtime_unavailable",
+        "runtime_connection_failed",
+        "runtime_context_mismatch",
+        "profile_not_found",
+        "profile_already_registered",
+        "profile_revision_conflict",
+        "profile_invalid",
+        "definition_failed",
+        "compose_failed",
+        "container_operation_failed",
+        "operation_conflict",
+        "operation_timeout",
+        "registry_corrupt",
+        "registry_locked",
+        "registry_write_failed",
+        "permission_denied",
+        "protocol_mismatch"
+      ],
+      "type": "string"
+    },
+    "AppErrorDto": {
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/AppErrorCodeDto"
+        },
+        "details": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "subjectId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UuidSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "operation",
+        "retryable"
+      ],
+      "type": "object"
+    },
     "DefinitionStateDto": {
       "enum": [
         "unchecked",
@@ -60,6 +121,10 @@
         "name"
       ],
       "type": "object"
+    },
+    "UuidSchema": {
+      "format": "uuid",
+      "type": "string"
     }
   },
   "properties": {
@@ -67,6 +132,16 @@
       "type": [
         "string",
         "null"
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AppErrorDto"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "issues": {

@@ -121,6 +121,16 @@ describe('IPC contracts', () => {
     expect(profileSummarySchema.parse({ id: '00000000-0000-0000-0000-000000000001', revision: 0, displayName: '', composeProjectName: '', workingDirectory: '', registrationOrigin: 'manual' }).revision).toBe(0);
   });
 
+  it('decodes retained definition and typed error in one projection', () => {
+    const projection = s.projectDefinitionSchema.parse({
+      profileId: '00000000-0000-0000-0000-000000000001', definitionRevision: 'retained',
+      loadedAt: '2026-09-03T00:00:00Z', state: 'stale', services: [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }], issues: [],
+      error: { code: 'definition_failed', operation: 'definition', subjectId: '00000000-0000-0000-0000-000000000001', message: 'compose config failed', details: null, retryable: false },
+    });
+    expect(projection.services[0].name).toBe('web');
+    expect(projection.error?.code).toBe('definition_failed');
+  });
+
   it('validates both inventory observation fixtures and generation marker invariants', () => {
     const valid = JSON.parse(readFileSync(resolve('schemas/fixtures/inventory_pre_observation_valid.json'), 'utf8'));
     const invalid = JSON.parse(readFileSync(resolve('schemas/fixtures/inventory_pre_observation_invalid_snapshot.json'), 'utf8'));

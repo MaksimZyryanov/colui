@@ -126,7 +126,10 @@ async fn fixture_labels_feed_inventory_and_profile_change_updates_definition_rev
         .with_display_name("Updated Docker fixture".try_into().unwrap())
         .unwrap();
     let after = cache.refresh_definition(changed).await.unwrap();
-    assert_ne!(before.definition_revision, after.definition_revision);
+    assert_ne!(
+        before.definition.definition_revision,
+        after.definition.definition_revision
+    );
 
     fixture.tear_down(&gateway).await.unwrap();
     cleanup.disarm();

@@ -1,5 +1,6 @@
 use super::{DefinitionStateDto, IssueDto, ProfileDetailsDto, RuntimeProjectionDto};
-use colui_domain::{DefinitionState, ProjectDefinition, ServiceDefinition};
+use colui_app::DefinitionProjection;
+use colui_domain::{DefinitionState, ServiceDefinition};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +29,7 @@ pub struct ProjectDefinitionDto {
     pub state: DefinitionStateDto,
     pub services: Vec<ServiceDefinitionDto>,
     pub issues: Vec<IssueDto>,
+    pub error: Option<super::AppErrorDto>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -49,8 +51,10 @@ impl From<ServiceDefinition> for ServiceDefinitionDto {
     }
 }
 
-impl From<ProjectDefinition> for ProjectDefinitionDto {
-    fn from(value: ProjectDefinition) -> Self {
+impl From<DefinitionProjection> for ProjectDefinitionDto {
+    fn from(value: DefinitionProjection) -> Self {
+        let error = value.error.map(Into::into);
+        let value = value.definition;
         let observed = value.state != DefinitionState::Unchecked;
         Self {
             profile_id: value.profile_id.to_string(),
@@ -71,6 +75,7 @@ impl From<ProjectDefinition> for ProjectDefinitionDto {
                     message: issue.message,
                 })
                 .collect(),
+            error,
         }
     }
 }
