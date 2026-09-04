@@ -64,3 +64,31 @@ None. Added tests and gates only.
 - New race tests use deterministic notifications and semaphores; clock-driven backoff remains deterministic.
 - Real-Docker smoke compiles but was not run because it is intentionally separately gated.
 - Vitest emits expected React/jsdom stderr from tests asserting thrown errors; suite exits 0 and raw backend stderr is not exposed.
+
+## Fix Round 1
+
+Review blockers from commit `1618838` were addressed without production changes:
+
+- Added distinct deterministic `disconnect_during_list_rejects_obsolete_response_and_retains_snapshot`; fake runtime transitions from ready to `Disconnected` behind list barrier and proves stale retention at unchanged generation.
+- Lifecycle payload analysis now resolves local variable initializers and accepts only one-field `profileId` objects; inline, spread, unknown, and path-bearing variable payloads fail.
+- React key analysis now traces local aliases and rejects `container.name`, `profile.name`, bare `name`, `displayName`, and `composeProjectName` origins while allowing stable ID expressions and aliases.
+- Replaced spelling-sensitive Rust counts with tokenized structural checks for owner structs, refresh function, struct generation fields, and aliased lock-map fields.
+- Added hermetic fixture matrix covering every architecture violation and harmless visibility, formatting, type-alias, stable-ID, and safe-payload variants.
+- `verify-increment-4.sh` now runs structural boundary self-tests as an ordinary Docker-independent gate.
+
+Fix-round verification:
+
+- Focused disconnect test: 1 passed, 0 failed.
+- `bash scripts/check-boundaries.sh --self-test`: pass; `Boundary structural self-tests OK`, `Boundary parser self-test OK`, `Dependency boundaries OK`.
+- `cargo fmt --all -- --check`: pass.
+- `cargo test --workspace`: pass, 148 Rust tests, 0 failed.
+- `cargo test -p colui-tauri --test dto_contracts`: pass, 18 tests, 0 failed.
+- `cargo check -p colui-adapters --features docker-tests --tests`: pass.
+- `npx pnpm@9.15.5 lint`: pass.
+- `npx pnpm@9.15.5 typecheck`: pass.
+- `npx pnpm@9.15.5 test`: pass, 85 tests, 0 failed.
+- `npx pnpm@9.15.5 test:contracts`: pass, 33 tests, 0 failed.
+- `npx pnpm@9.15.5 build`: pass, 191 modules transformed.
+- `bash scripts/check-boundaries.sh`: pass.
+- `git diff --check`: pass.
+- Real-Docker smoke: separately gated and not run.

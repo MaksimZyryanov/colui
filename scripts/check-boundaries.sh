@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root_dir=${COLUI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # Emit dependency keys, not values. This handles regular and dotted Cargo
 # dependency tables while ignoring comments and package renames.
@@ -67,19 +68,6 @@ check_forbidden "$root_dir/crates/colui-app/Cargo.toml" \
 check_forbidden "$root_dir/crates/colui-adapters/Cargo.toml" \
   'tauri'
 
-assert_count() {
-  local expected=$1
-  local pattern=$2
-  local description=$3
-  shift 3
-  local count
-  count=$(rg -n "$pattern" "$@" --glob '!**/tests/**' --glob '!**/__tests__/**' --glob '!**/mock-backend.ts' | wc -l | tr -d ' ')
-  if [[ "$count" != "$expected" ]]; then
-    printf 'Boundary violation: expected %s %s, found %s\n' "$expected" "$description" "$count" >&2
-    exit 1
-  fi
-}
-
 reject_pattern() {
   local pattern=$1
   local description=$2
@@ -91,13 +79,7 @@ reject_pattern() {
 }
 
 if [[ -f "$root_dir/crates/colui-adapters/src/inventory.rs" ]]; then
-  assert_count 1 'pub struct InventoryCoordinator' 'inventory coordinator owner' "$root_dir/crates"
-  assert_count 1 'pub struct DefinitionCache' 'definition cache owner' "$root_dir/crates"
-  assert_count 1 'pub struct OperationLockManager' 'operation lock owner' "$root_dir/crates"
-  assert_count 1 'pub async fn refresh_inventory' 'backend refresh API' "$root_dir/src-tauri"
-  assert_count 1 'export const refreshInventory' 'frontend refresh API' "$root_dir/src"
-  assert_count 2 'generation: u64,' 'inventory generation symbols (state and normalizer input)' "$root_dir/crates/colui-adapters/src/inventory.rs"
-  assert_count 1 'Mutex<HashMap<ProfileId, ProfileState>>' 'operation lock map' "$root_dir/crates/colui-adapters/src/operations.rs"
+  node "$script_dir/check-boundaries-rust.mjs" "$root_dir"
 
   reject_pattern 'ComposeRunner|compose[ _-]?config|"config"' \
     'fast inventory path may not invoke Compose config' \
@@ -108,7 +90,7 @@ if [[ -f "$root_dir/crates/colui-adapters/src/inventory.rs" ]]; then
 fi
 
 if [[ -d "$root_dir/src" ]]; then
-  node "$root_dir/scripts/check-boundaries-node.mjs" "$root_dir"
+  node "$script_dir/check-boundaries-node.mjs" "$root_dir"
 fi
 
 if rg -n 'Result<[^,>]*,\s*String\s*>' "$root_dir/src-tauri" --glob '*.rs'; then
@@ -117,6 +99,7 @@ if rg -n 'Result<[^,>]*,\s*String\s*>' "$root_dir/src-tauri" --glob '*.rs'; then
 fi
 
 if [[ ${1:-} == "--self-test" ]]; then
+  node "$script_dir/check-boundaries-self-test.mjs" "$root_dir"
   fixture=$(mktemp -d)
   trap 'rm -rf "$fixture"' EXIT
   mkdir -p "$fixture/crates/colui-domain" "$fixture/crates/colui-app" \

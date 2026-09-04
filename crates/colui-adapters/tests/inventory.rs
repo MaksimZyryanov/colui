@@ -125,6 +125,33 @@ async fn session_change_during_list_rejects_obsolete_response_and_retains_snapsh
 }
 
 #[tokio::test]
+async fn disconnect_during_list_rejects_obsolete_response_and_retains_snapshot() {
+    let source = Arc::new(MutableSessionSource::new(vec![observation("first", None)]));
+    let coordinator = Arc::new(InventoryCoordinator::new(source.clone(), test_clock()));
+    source.release.add_permits(1);
+    assert_eq!(coordinator.refresh().await.unwrap().generation, 1);
+    source.started.notified().await;
+
+    source.set_observations(vec![observation("obsolete", None)]);
+    let refresh = tokio::spawn({
+        let coordinator = coordinator.clone();
+        async move { coordinator.refresh().await }
+    });
+    source.started.notified().await;
+    source.disconnect();
+    source.release.add_permits(1);
+
+    assert_eq!(
+        refresh.await.unwrap().unwrap_err().code,
+        AppErrorCode::RuntimeUnavailable
+    );
+    let retained = coordinator.current_inventory().await.unwrap();
+    assert_eq!(retained.generation, 1);
+    assert_eq!(retained.containers[0].name, "first");
+    assert_eq!(retained.freshness, colui_domain::InventoryFreshness::Stale);
+}
+
+#[tokio::test]
 async fn cancelled_creator_does_not_leak_in_flight_refresh() {
     let source = Arc::new(BlockingSource::new(vec![]));
     let coordinator = Arc::new(InventoryCoordinator::new(source.clone(), test_clock()));
@@ -294,7 +321,7 @@ struct BlockingSource {
 
 struct MutableSessionSource {
     observations: Mutex<Vec<ContainerObservation>>,
-    context: Mutex<colui_domain::SessionContext>,
+    state: Mutex<colui_domain::RuntimeSessionState>,
     started: tokio::sync::Notify,
     release: tokio::sync::Semaphore,
 }
@@ -303,7 +330,7 @@ impl MutableSessionSource {
     fn new(observations: Vec<ContainerObservation>) -> Self {
         Self {
             observations: Mutex::new(observations),
-            context: Mutex::new(session_context()),
+            state: Mutex::new(colui_domain::RuntimeSessionState::Ready(session_context())),
             started: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0),
         }
@@ -314,8 +341,15 @@ impl MutableSessionSource {
     }
 
     fn set_session(&self, value: u128) {
-        self.context.lock().unwrap().session_id =
-            colui_domain::RuntimeSessionId::new(uuid::Uuid::from_u128(value));
+        let mut state = self.state.lock().unwrap();
+        let colui_domain::RuntimeSessionState::Ready(context) = &mut *state else {
+            panic!("test session must be ready");
+        };
+        context.session_id = colui_domain::RuntimeSessionId::new(uuid::Uuid::from_u128(value));
+    }
+
+    fn disconnect(&self) {
+        *self.state.lock().unwrap() = colui_domain::RuntimeSessionState::Disconnected;
     }
 }
 
@@ -335,8 +369,8 @@ impl DockerApi for MutableSessionSource {
 
 impl colui_app::RuntimeStateReader for MutableSessionSource {
     fn session_state(&self) -> RuntimeFuture<'_, colui_domain::RuntimeSessionState> {
-        let context = self.context.lock().unwrap().clone();
-        Box::pin(async move { Ok(colui_domain::RuntimeSessionState::Ready(context)) })
+        let state = self.state.lock().unwrap().clone();
+        Box::pin(async move { Ok(state) })
     }
 }
 

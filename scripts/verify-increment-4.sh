@@ -15,6 +15,7 @@ npx pnpm@9.15.5 test
 npx pnpm@9.15.5 test:contracts
 npx pnpm@9.15.5 build
 bash scripts/check-boundaries.sh
+bash scripts/check-boundaries.sh --self-test
 git diff --check
 
 if [[ ${COLUI_REAL_DOCKER_SMOKE:-0} == 1 ]]; then
