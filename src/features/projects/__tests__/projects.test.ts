@@ -3,6 +3,7 @@ import { projectKeys } from '../query-keys';
 import { projectStatusLabel } from '../components/StatusBadge';
 import { validateProfileDraft } from '../components/ProfileFormDialog';
 import { shouldPublishLifecycleInventory } from '../hooks/useLifecycleActions';
+import { projectStatusFromInventory } from '../hooks/useProjectStatus';
 
 describe('projects foundations', () => {
   it('keys every query by profile id', () => {
@@ -30,4 +31,11 @@ describe('projects foundations', () => {
   it('maps backend issue fields to form error associations', () => {
     expect(validateProfileDraft({ displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', composeFiles: ['compose.yml'], environmentFiles: [] })).toBeNull();
   });
+
+  it('maps published inventory without matching project to absent runtime', () => {
+    const profile = { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' as const };
+    const inventory = { generation: 1, hasSnapshot: true, observedAt: '2026-09-03T00:00:00.000Z', runtimeSessionId: null, daemonFingerprint: null, freshness: 'fresh' as const, lastSuccessfulObservedAt: null, containers: [], projects: [], standaloneContainers: [], error: null };
+    expect(projectStatusFromInventory(profile, inventory).runtime).toMatchObject({ presence: 'absent', activity: null });
+  });
+
 });

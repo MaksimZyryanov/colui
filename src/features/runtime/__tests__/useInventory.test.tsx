@@ -41,4 +41,9 @@ describe('inventory structural sharing', () => {
   it('accepts first snapshot despite pre-observation generation zero', () => {
     expect(inventoryStructuralSharing(preObservation(), publishedInventory(1))).toEqual(publishedInventory(1));
   });
+
+  it('retains published snapshot when generation-zero unavailable response arrives', () => {
+    const oldData = publishedInventory(4);
+    expect(inventoryStructuralSharing(oldData, preObservation())).toBe(oldData);
+  });
 });

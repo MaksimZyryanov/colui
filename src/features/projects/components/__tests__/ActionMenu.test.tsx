@@ -2,11 +2,12 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ProfileCard } from '../ProfileCard';
 import { ActionMenu } from '../ActionMenu';
 import { mockBackend } from '../../../../ipc/mock-backend';
+import { inventoryKeys } from '../../../runtime/query-keys';
 
 const profileId = '00000000-0000-0000-0000-000000000001';
 const profile = { id: profileId, revision: 2, displayName: 'Test Project', composeProjectName: 'test', workingDirectory: '/tmp', registrationOrigin: 'manual' as const };
@@ -31,6 +32,26 @@ describe('ActionMenu', () => {
     await user.click(screen.getByRole('button', { name: /more actions/i }));
     await user.click(screen.getByRole('menuitem', { name: 'Apply' }));
     await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'apply_project')?.args).toEqual({ profileId }));
+  });
+
+  it('publishes lifecycle inventory without refresh, invalidation, or refetch', async () => {
+    const oldInventory = { generation: 4, hasSnapshot: true, observedAt: '2026-09-03T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh' as const, lastSuccessfulObservedAt: '2026-09-03T00:00:00.000Z', containers: [], projects: [], standaloneContainers: [], error: null };
+    const newer = { ...oldInventory, generation: 5 };
+    client.setQueryData(inventoryKeys.snapshot(), oldInventory);
+    mockBackend.setResponseOverride('apply_project', { profileId, success: true, inventoryGeneration: 4, inventory: { ...oldInventory } });
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const refetch = vi.spyOn(client, 'refetchQueries');
+    const user = userEvent.setup();
+    renderRunningCard();
+    await user.click(screen.getByRole('button', { name: /more actions/i }));
+    await user.click(screen.getByRole('menuitem', { name: 'Apply' }));
+    await waitFor(() => expect(client.getQueryData(inventoryKeys.snapshot())).toBe(oldInventory));
+    mockBackend.setResponseOverride('restart_project', { profileId, success: true, inventoryGeneration: 5, inventory: newer });
+    await user.click(screen.getByRole('button', { name: 'Restart' }));
+    await waitFor(() => expect(client.getQueryData(inventoryKeys.snapshot())).toEqual(newer));
+    expect(mockBackend.getInvocations().filter(({ command }) => command === 'refresh_inventory')).toHaveLength(0);
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(refetch).not.toHaveBeenCalled();
   });
 
   it('sends exact Restart payload', async () => {

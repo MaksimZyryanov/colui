@@ -32,3 +32,13 @@
 ## Concerns
 
 - Existing `get_project_details` command supplies definition projection; no new transport contract was required.
+
+## Fix Round 1
+
+- RED: focused tests failed because generation-zero unavailable replaced generation 4, and missing Compose project mapped to `present`/`none-running` instead of `absent`/`null`.
+- Fixed structural sharing to retain any published snapshot when an equal/lower generation arrives, including pre-observation generation zero.
+- Hoisted active inventory ownership to `ProjectsView`; profile cards consume shared observer data and create only disabled cache observers. Multi-profile pages therefore have one poll and one visibility listener/refetch owner.
+- Missing inventory project now maps to absent; pre-observation remains unavailable. Definition errors remain separate while retained runtime projection stays visible.
+- Profile removal no longer evicts global inventory data. Lifecycle mutation tests exercise equal and newer inventory publication and prove no extra refresh, invalidation, or refetch.
+- GREEN evidence: focused review tests passed (20 tests); full frontend verification and exact final outputs recorded below after final gate.
+- Concern: standalone test/demo cards without shared inventory retain compatibility through a local owner unless supplied `initialStatus`; production project lists always use the hoisted owner.
