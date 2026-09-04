@@ -135,7 +135,12 @@ impl DefinitionCache {
             }
         } else {
             drop(guard);
-            Ok(retained(&id, state.entries.get(&id).cloned(), None))
+            Ok(state
+                .entries
+                .get(&id)
+                .cloned()
+                .map(|entry| to_projection(&id, entry))
+                .unwrap_or_else(|| retained(&id, None, None)))
         }
     }
 

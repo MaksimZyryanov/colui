@@ -2,8 +2,9 @@ use colui_adapters::definitions::DefinitionCache;
 use colui_adapters::runtime::ComposeExecutionGate;
 use colui_adapters::OperationLockManager;
 use colui_app::{
-    Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, DefinitionReader,
-    DefinitionRefresher, OperationKind, OperationLockManager as OperationLockManagerPort,
+    Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, DefinitionBusy,
+    DefinitionLoadGuard, DefinitionReader, DefinitionRefresher, LifecycleOperationGuard,
+    OperationFuture, OperationKind, OperationLockManager as OperationLockManagerPort,
     RuntimeFuture, RuntimeStateReader,
 };
 use colui_domain::{
@@ -14,7 +15,7 @@ use colui_domain::{
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
 };
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -322,6 +323,93 @@ impl ComposeRunner for BlockingRunner {
     }
 }
 
+struct RevisionRaceRunner {
+    old_started: Notify,
+    release_old: Notify,
+    calls: AtomicUsize,
+}
+
+struct RevisionRaceClock {
+    calls: AtomicUsize,
+    old_completed: Notify,
+    release: (Mutex<bool>, Condvar),
+}
+impl RevisionRaceClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            calls: AtomicUsize::new(0),
+            old_completed: Notify::new(),
+            release: (Mutex::new(false), Condvar::new()),
+        })
+    }
+
+    fn release_old(&self) {
+        *self.release.0.lock().unwrap() = true;
+        self.release.1.notify_one();
+    }
+}
+impl Clock for RevisionRaceClock {
+    fn now(&self) -> Timestamp {
+        Timestamp("t".into())
+    }
+
+    fn monotonic(&self) -> Duration {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            self.old_completed.notify_one();
+            let released = self.release.0.lock().unwrap();
+            drop(
+                self.release
+                    .1
+                    .wait_while(released, |value| !*value)
+                    .unwrap(),
+            );
+        }
+        Duration::ZERO
+    }
+}
+impl RevisionRaceRunner {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            old_started: Notify::new(),
+            release_old: Notify::new(),
+            calls: AtomicUsize::new(0),
+        })
+    }
+}
+impl ComposeRunner for RevisionRaceRunner {
+    fn invoke(&self, _: ComposeInvocation) -> RuntimeFuture<'_, ComposeProcessResult> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            if call == 0 {
+                self.old_started.notify_one();
+                self.release_old.notified().await;
+                return Ok(success(r#"{"services":{"old":{"image":"old"}}}"#));
+            }
+            Ok(success(r#"{"services":{"new":{"image":"new"}}}"#))
+        })
+    }
+}
+
+struct PermissiveLocks;
+impl colui_app::OperationLockReader for PermissiveLocks {
+    fn is_busy(&self, _: &ProfileId) -> bool {
+        false
+    }
+}
+impl OperationLockManagerPort for PermissiveLocks {
+    fn acquire_lifecycle(
+        &self,
+        _: ProfileId,
+        _: OperationKind,
+    ) -> OperationFuture<'_, LifecycleOperationGuard> {
+        Box::pin(async { Ok(LifecycleOperationGuard::new(|| {})) })
+    }
+
+    fn acquire_definition(&self, _: ProfileId) -> Result<DefinitionLoadGuard, DefinitionBusy> {
+        Ok(DefinitionLoadGuard::new(|| {}))
+    }
+}
+
 #[tokio::test]
 async fn invalidation_discards_late_load_and_next_access_reloads() {
     let runner = BlockingRunner::new();
@@ -349,37 +437,33 @@ async fn invalidation_discards_late_load_and_next_access_reloads() {
     assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn profile_revision_change_during_load_discards_old_result() {
-    let runner = BlockingRunner::new();
-    let cache = Arc::new(cache(
+    let runner = RevisionRaceRunner::new();
+    let clock = RevisionRaceClock::new();
+    let cache = Arc::new(DefinitionCache::new(
         runner.clone(),
-        Arc::new(TestClock {
-            mono: Arc::new(0.into()),
-        }),
+        Arc::new(Runtime),
+        clock.clone(),
+        Arc::new(PermissiveLocks),
+        Arc::new(ComposeExecutionGate::new()),
     ));
     let old_load = tokio::spawn({
         let cache = cache.clone();
         async move { cache.refresh_definition(profile(1)).await.unwrap() }
     });
-    runner.started.notified().await;
+    runner.old_started.notified().await;
 
-    let changed = cache.definition(profile(2)).await.unwrap();
-    assert_eq!(changed.definition.state, DefinitionState::Unchecked);
-    assert_eq!(changed.error.unwrap().code, AppErrorCode::OperationConflict);
-    runner.release.notify_one();
-    old_load.await.unwrap();
+    runner.release_old.notify_one();
+    clock.old_completed.notified().await;
 
-    let new_load = tokio::spawn({
-        let cache = cache.clone();
-        async move { cache.definition(profile(2)).await.unwrap() }
-    });
-    runner.started.notified().await;
-    runner.release.notify_one();
-    assert_eq!(
-        new_load.await.unwrap().definition.state,
-        DefinitionState::Valid
-    );
+    let current = cache.definition(profile(2)).await.unwrap();
+    assert_eq!(current.definition.services[0].name, "new");
+    assert!(current.error.is_none());
+
+    clock.release_old();
+    let late = old_load.await.unwrap();
+    assert_eq!(late, current);
     assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
 }
 
