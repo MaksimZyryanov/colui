@@ -58,6 +58,27 @@ impl ComposeRunner for Runner {
     }
 }
 
+#[tokio::test]
+async fn changed_profile_revision_does_not_return_old_services_when_busy() {
+    let runner = Runner::new(r#"{"services":{"old":{"image":"old"}}}"#);
+    let locks = Arc::new(OperationLockManager::new());
+    let clock = Arc::new(TestClock {
+        mono: Arc::new(0.into()),
+    });
+    let cache = DefinitionCache::new(runner.clone(), Arc::new(Runtime), clock, locks.clone());
+    let old = profile(1);
+    cache.refresh_definition(old.clone()).await.unwrap();
+    let guard = locks
+        .acquire_lifecycle(old.id.clone(), OperationKind::Apply)
+        .await
+        .unwrap();
+    let newer = profile(2);
+    let definition = cache.definition(newer).await.unwrap();
+    assert_eq!(definition.state, DefinitionState::Unchecked);
+    assert!(definition.services.is_empty());
+    drop(guard);
+}
+
 struct Runtime;
 impl RuntimeStateReader for Runtime {
     fn session_state(&self) -> RuntimeFuture<'_, RuntimeSessionState> {

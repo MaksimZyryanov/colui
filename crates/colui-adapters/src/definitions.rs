@@ -1,3 +1,4 @@
+use crate::runtime::build_cli_environment;
 use colui_app::{
     Clock, ComposeInvocation, ComposeRunner, DefinitionBusy, DefinitionFuture, DefinitionReader,
     DefinitionRefresher, RuntimeStateReader,
@@ -69,7 +70,10 @@ impl DefinitionCache {
         let now = self.clock.monotonic();
         let cached = {
             let mut state = lock(&self.state);
-            state.revisions.insert(id.clone(), profile.revision);
+            let previous_revision = state.revisions.insert(id.clone(), profile.revision);
+            if previous_revision.is_some_and(|revision| revision != profile.revision) {
+                state.entries.remove(&id);
+            }
             state.entries.get(&id).cloned()
         };
         if !force
@@ -87,6 +91,7 @@ impl DefinitionCache {
         };
         let epoch = lock(&self.state).epoch.get(&id).copied().unwrap_or(0);
         let result = self.load(&profile).await;
+        let completed_mono = self.clock.monotonic();
         let mut state = lock(&self.state);
         let current_epoch = state.epoch.get(&id).copied().unwrap_or(0);
         if current_epoch == epoch && state.revisions.get(&id).copied() == Some(profile.revision) {
@@ -96,7 +101,7 @@ impl DefinitionCache {
                         profile_revision: profile.revision,
                         definition_revision: revision,
                         loaded_at: self.clock.now(),
-                        loaded_mono: now,
+                        loaded_mono: completed_mono,
                         state: if issues.is_empty() {
                             DefinitionState::Valid
                         } else {
@@ -157,13 +162,6 @@ impl DefinitionCache {
                 },
             ]);
         }
-        args.extend([
-            "--project-name".into(),
-            profile.compose_project_name.as_ref().to_owned(),
-            "config".into(),
-            "--format".into(),
-            "json".into(),
-        ]);
         for path in &profile.environment_files {
             args.extend([
                 "--env-file".into(),
@@ -174,15 +172,20 @@ impl DefinitionCache {
                     .into_owned(),
             ]);
         }
+        args.extend([
+            "--project-name".into(),
+            profile.compose_project_name.as_ref().to_owned(),
+            "config".into(),
+            "--format".into(),
+            "json".into(),
+        ]);
         let output = self
             .runner
             .invoke(ComposeInvocation {
                 executable: "docker".into(),
                 args,
                 working_directory: profile.working_directory.clone(),
-                environment: [("DOCKER_HOST".into(), endpoint.as_str().into())]
-                    .into_iter()
-                    .collect(),
+                environment: build_cli_environment(endpoint.as_str(), std::env::vars().collect()),
                 deadline: Instant::now() + Duration::from_secs(120),
             })
             .await?;
