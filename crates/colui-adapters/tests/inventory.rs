@@ -209,20 +209,26 @@ async fn refresh_failure_retains_snapshot_and_automatic_backoff() {
     let coordinator = InventoryCoordinator::new(source.clone(), clock.clone());
     assert_eq!(coordinator.refresh().await.unwrap().generation, 1);
 
-    assert_eq!(
-        coordinator.refresh().await.unwrap_err().code,
-        AppErrorCode::RuntimeUnavailable
-    );
+    let observed_error = coordinator.refresh().await.unwrap_err();
+    assert_eq!(observed_error.code, AppErrorCode::RuntimeUnavailable);
     let retained = coordinator.current_inventory().await.unwrap();
     assert_eq!(retained.generation, 1);
     assert_eq!(retained.freshness, colui_domain::InventoryFreshness::Stale);
     assert_eq!(retained.containers[0].name, "first");
     assert!(retained.error.is_some());
 
-    let blocked = coordinator.refresh_automatic().await.unwrap();
-    assert_eq!(blocked.generation, 1);
+    let mut subscriber = coordinator.subscribe();
+    let blocked_error = coordinator.refresh_automatic().await.unwrap_err();
+    assert_eq!(blocked_error, observed_error);
     assert_eq!(source.calls.load(Ordering::Acquire), 2);
-    assert_eq!(coordinator.refresh().await.unwrap().generation, 2);
+    let still_retained = coordinator.current_inventory().await.unwrap();
+    assert_eq!(still_retained, retained);
+    assert!(subscriber.try_recv().is_err());
+
+    let refreshed = coordinator.refresh().await.unwrap();
+    assert_eq!(refreshed.generation, 2);
+    assert_eq!(refreshed.freshness, colui_domain::InventoryFreshness::Fresh);
+    assert!(refreshed.error.is_none());
 }
 
 #[tokio::test]
@@ -235,9 +241,18 @@ async fn repeated_poll_during_backoff_skips_list_while_explicit_refresh_bypasses
 
     assert!(coordinator.refresh_automatic().await.is_err());
     assert_eq!(source.calls.load(Ordering::Acquire), 1);
-    assert_eq!(coordinator.refresh_automatic().await.unwrap().generation, 0);
-    assert_eq!(coordinator.refresh_automatic().await.unwrap().generation, 0);
+    let first_error = coordinator.refresh_automatic().await.unwrap_err();
+    assert_eq!(first_error.code, AppErrorCode::RuntimeUnavailable);
+    assert_eq!(
+        coordinator.refresh_automatic().await.unwrap_err(),
+        first_error
+    );
     assert_eq!(source.calls.load(Ordering::Acquire), 1);
+
+    let unavailable = coordinator.current_inventory().await.unwrap();
+    assert!(!unavailable.has_snapshot);
+    assert_eq!(unavailable.generation, 0);
+    assert_eq!(unavailable.error.as_ref(), Some(&first_error));
 
     assert_eq!(coordinator.refresh().await.unwrap().generation, 1);
     assert_eq!(source.calls.load(Ordering::Acquire), 2);
@@ -262,14 +277,14 @@ async fn automatic_backoff_uses_injected_clock_and_caps_then_resets() {
         assert!(coordinator.refresh_automatic().await.is_err());
         let calls = attempt + 1;
         assert_eq!(source.calls.load(Ordering::Acquire), calls);
-        assert!(coordinator.refresh_automatic().await.is_ok());
+        assert!(coordinator.refresh_automatic().await.is_err());
         assert_eq!(source.calls.load(Ordering::Acquire), calls);
         clock.advance(delay);
     }
     assert_eq!(coordinator.refresh_automatic().await.unwrap().generation, 1);
     assert!(coordinator.refresh_automatic().await.is_err());
     assert_eq!(source.calls.load(Ordering::Acquire), 7);
-    assert!(coordinator.refresh_automatic().await.is_ok());
+    assert!(coordinator.refresh_automatic().await.is_err());
     assert_eq!(source.calls.load(Ordering::Acquire), 7);
     clock.advance(1);
     assert_eq!(coordinator.refresh_automatic().await.unwrap().generation, 2);

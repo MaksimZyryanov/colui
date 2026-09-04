@@ -79,7 +79,11 @@ impl InventoryCoordinator {
                     .retry_at
                     .is_some_and(|deadline| self.clock.monotonic() < deadline)
             {
-                return Ok(state.current.clone());
+                return Err(state
+                    .current
+                    .error
+                    .clone()
+                    .expect("automatic backoff follows a retained refresh error"));
             }
             if let Some(in_flight) = &state.in_flight {
                 let _ = self.joins.send(());
