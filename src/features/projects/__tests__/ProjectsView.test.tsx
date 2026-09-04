@@ -40,6 +40,18 @@ describe('ProjectsView', () => {
     expect(screen.getByText(/3\/3 running/i)).toBeVisible();
   });
 
+  it('owns one inventory poll and visibility listener for multiple profiles', async () => {
+    mockBackend.setResponseOverride('list_profiles', [
+      { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'One', composeProjectName: 'one', workingDirectory: '/tmp', registrationOrigin: 'manual' },
+      { id: '00000000-0000-0000-0000-000000000002', revision: 1, displayName: 'Two', composeProjectName: 'two', workingDirectory: '/tmp', registrationOrigin: 'manual' },
+    ]);
+    const addEventListener = vi.spyOn(document, 'addEventListener');
+    renderProjects();
+    await waitFor(() => expect(screen.getByText('One')).toBeVisible());
+    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'refresh_inventory')).toHaveLength(1);
+    expect(addEventListener.mock.calls.filter(([type]) => type === 'visibilitychange')).toHaveLength(1);
+  });
+
   it('shows query errors without collapsing project route', async () => {
     mockBackend.setErrorOverride('list_profiles', new Error('offline'));
     renderProjects();

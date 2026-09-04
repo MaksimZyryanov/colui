@@ -42,3 +42,15 @@
 - Profile removal no longer evicts global inventory data. Lifecycle mutation tests exercise equal and newer inventory publication and prove no extra refresh, invalidation, or refetch.
 - GREEN evidence: focused review tests passed (20 tests); full frontend verification and exact final outputs recorded below after final gate.
 - Concern: standalone test/demo cards without shared inventory retain compatibility through a local owner unless supplied `initialStatus`; production project lists always use the hoisted owner.
+
+## Fix Round 2
+
+- Added deterministic integration coverage using fake timers at 2999/3000 ms boundaries and explicit `visibilitychange` events.
+- Verified visible polling runs once every 3 seconds, hidden state pauses polling, visibility restoration triggers one immediate refetch, and interval polling resumes once.
+- Verified failed refresh exposes typed query error while retaining exact published cache reference.
+- Verified two-profile `ProjectsView` creates one `refresh_inventory` owner and one visibility listener.
+- Focused: 2 files, 19 tests passed.
+- All frontend: 10 files, 85 tests passed.
+- Contracts: 3 files, 33 tests passed.
+- Typecheck, lint, and build passed. Existing error-boundary tests emit expected stderr with zero failures.
+- No production, Rust, Tauri, or transport contract changes.
