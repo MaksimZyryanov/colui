@@ -1,5 +1,8 @@
 use crate::{dto::*, AppState};
-use colui_app::{DefinitionReader, DefinitionRefresher, GetProfile, GetProjectStatus};
+use colui_app::{
+    project_status_from_inventory_and_definition_projection, DefinitionReader, DefinitionRefresher,
+    GetProfile,
+};
 use colui_domain::{AppError, AppErrorCode, ProfileId};
 use tauri::State;
 
@@ -29,10 +32,13 @@ pub async fn get_project_details(
         .definition(profile.clone())
         .await
         .map_err(AppErrorDto::from)?;
-    let status = GetProjectStatus::new(state.profiles.as_ref(), state.runtime.as_ref())
-        .execute(profile.id.clone())
+    let inventory = state
+        .inventory
+        .current_inventory()
         .await
         .map_err(AppErrorDto::from)?;
+    let status =
+        project_status_from_inventory_and_definition_projection(&profile, inventory, &definition);
     Ok(ProjectDetailsResponseDto {
         profile: profile.into(),
         definition: definition.into(),

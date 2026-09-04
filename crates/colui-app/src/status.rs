@@ -59,6 +59,18 @@ pub fn project_status_from_inventory_and_definition(
     }
     status
 }
+
+pub fn project_status_from_inventory_and_definition_projection(
+    profile: &ProjectProfile,
+    inventory: colui_domain::RuntimeInventory,
+    definition: &crate::DefinitionProjection,
+) -> ProjectStatus {
+    project_status_from_inventory_and_definition(
+        profile,
+        inventory,
+        Some(definition.definition.clone()),
+    )
+}
 use std::future::Future;
 use std::pin::Pin;
 

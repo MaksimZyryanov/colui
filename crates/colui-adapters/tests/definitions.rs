@@ -2,10 +2,10 @@ use colui_adapters::definitions::DefinitionCache;
 use colui_adapters::runtime::ComposeExecutionGate;
 use colui_adapters::OperationLockManager;
 use colui_app::{
-    Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, DefinitionBusy,
-    DefinitionLoadGuard, DefinitionReader, DefinitionRefresher, LifecycleOperationGuard,
-    OperationFuture, OperationKind, OperationLockManager as OperationLockManagerPort,
-    RuntimeFuture, RuntimeStateReader,
+    project_status_from_inventory_and_definition_projection, Clock, ComposeInvocation,
+    ComposeProcessResult, ComposeRunner, DefinitionBusy, DefinitionLoadGuard, DefinitionReader,
+    DefinitionRefresher, LifecycleOperationGuard, OperationFuture, OperationKind,
+    OperationLockManager as OperationLockManagerPort, RuntimeFuture, RuntimeStateReader,
 };
 use colui_domain::{
     AppErrorCode, DaemonFingerprint, DefinitionState, DisplayName, DockerEndpoint, ProfileDraft,
@@ -144,6 +144,34 @@ async fn first_load_failure_returns_unchecked_definition_and_typed_error() {
         projection.error.unwrap().code,
         AppErrorCode::DefinitionFailed
     );
+}
+
+#[tokio::test]
+async fn failed_first_definition_load_is_reused_for_project_details_projection() {
+    let runner = SequenceRunner::new(vec![failure()]);
+    let cache = cache(
+        runner.clone(),
+        Arc::new(TestClock {
+            mono: Arc::new(0.into()),
+        }),
+    );
+    let profile = profile(1);
+
+    let definition = cache.definition(profile.clone()).await.unwrap();
+    let status = project_status_from_inventory_and_definition_projection(
+        &profile,
+        colui_domain::RuntimeInventory::unavailable(),
+        &definition,
+    );
+
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(definition.definition.state, DefinitionState::Unchecked);
+    assert_eq!(
+        definition.error.as_ref().unwrap().code,
+        AppErrorCode::DefinitionFailed
+    );
+    assert_eq!(status.definition_state, definition.definition.state);
+    assert_eq!(status.issues, definition.definition.issues);
 }
 
 #[tokio::test]

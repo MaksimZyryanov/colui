@@ -64,11 +64,11 @@ impl DockerFactory for BollardFactory {
                 ))
             }
         }
-        .map_err(|e| {
+        .map_err(|_| {
             error(
                 AppErrorCode::RuntimeConnectionFailed,
                 "connect_runtime",
-                &e.to_string(),
+                "Runtime connection failed",
             )
         })?;
         Ok(Arc::new(super::DockerApiAdapter::new(docker)))

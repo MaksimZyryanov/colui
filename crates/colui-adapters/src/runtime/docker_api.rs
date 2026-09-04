@@ -62,14 +62,13 @@ impl DockerControl for DockerApiAdapter {
     }
 }
 
-fn api_error(error: bollard::errors::Error) -> AppError {
+fn api_error(_: bollard::errors::Error) -> AppError {
     AppError::new(
         AppErrorCode::RuntimeUnavailable,
-        "docker_api",
+        "runtime_request",
         None,
-        "Docker API request failed",
+        "Runtime request failed",
     )
-    .with_details(error.to_string())
 }
 fn state(value: Option<&str>) -> ContainerState {
     match value {
@@ -222,14 +221,39 @@ fn inspect_ports(settings: Option<&bollard::models::NetworkSettings>) -> Vec<Por
 
 #[cfg(test)]
 mod tests {
-    use super::{config_files, inspect_ports, normalize_container_summary};
+    use super::{api_error, config_files, inspect_ports, normalize_container_summary};
     use bollard::models::ContainerSummary;
+    use colui_domain::AppErrorCode;
 
     fn summary_json(labels: &str) -> ContainerSummary {
         serde_json::from_str(&format!(
             r#"{{"Id":"abc123","Names":["/checkout-web-1"],"Image":"checkout:latest","State":"running","Status":"Up 2 hours","Labels":{labels},"Ports":[]}}"#
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn docker_errors_are_sanitized_at_the_adapter_boundary() {
+        let secret = "token=super-secret";
+        let socket = "/Users/max/.docker/run/docker.sock";
+        let endpoint = "tcp://admin:password@private.example:2375";
+        let daemon_text = format!("{secret} {socket} {endpoint} {}", "x".repeat(10_000));
+        let error = api_error(bollard::errors::Error::DockerResponseServerError {
+            status_code: 500,
+            message: daemon_text.clone(),
+        });
+        let projected = serde_json::to_string(&error).unwrap();
+
+        assert_eq!(error.code, AppErrorCode::RuntimeUnavailable);
+        assert!(!projected.contains(secret));
+        assert!(!projected.contains(socket));
+        assert!(!projected.contains(endpoint));
+        assert!(!projected.contains(&daemon_text));
+        assert!(error
+            .details
+            .as_ref()
+            .is_none_or(|details| details.len() <= 256));
+        assert_ne!(error.operation, "docker_api");
     }
 
     #[test]
