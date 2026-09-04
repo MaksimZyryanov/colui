@@ -2,13 +2,13 @@ use colui_app::{
     DefinitionBusy, DefinitionLoadGuard, LifecycleOperationGuard, OperationFuture, OperationKind,
     OperationLockManager as OperationLockManagerPort, OperationLockReader,
 };
-use colui_domain::{AppError, AppErrorCode, ProfileId};
+use colui_domain::{AppError, AppErrorCode, ProfileId, Timestamp};
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex, MutexGuard,
 };
-use tokio::sync::{Mutex, MutexGuard, Notify};
+use tokio::sync::Notify;
 
 pub struct OperationLockManager {
     state: Arc<LockState>,
@@ -21,14 +21,27 @@ struct LockState {
 
 struct ProfileState {
     lifecycle: Option<LifecycleLease>,
-    definition: Option<u64>,
+    definition: Option<DefinitionLease>,
     notify: Arc<Notify>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum LifecycleLease {
-    Pending { token: u64, kind: OperationKind },
-    Active { token: u64, kind: OperationKind },
+    Pending {
+        token: u64,
+        kind: OperationKind,
+    },
+    Active {
+        token: u64,
+        kind: OperationKind,
+        started_at: Timestamp,
+    },
+}
+
+#[derive(Clone)]
+struct DefinitionLease {
+    token: u64,
+    started_at: Timestamp,
 }
 
 struct LifecycleReservation {
@@ -113,18 +126,24 @@ impl OperationLockManagerPort for OperationLockManager {
         let profile = profiles
             .entry(profile_id.clone())
             .or_insert_with(ProfileState::new);
-        match profile.lifecycle {
+        match profile.lifecycle.as_ref() {
             Some(LifecycleLease::Pending { .. }) => return Err(DefinitionBusy::LifecyclePending),
-            Some(LifecycleLease::Active { kind, .. }) => {
-                let _ = kind;
+            Some(LifecycleLease::Active {
+                kind, started_at, ..
+            }) => {
+                let _ = (kind, started_at);
                 return Err(DefinitionBusy::LifecyclePending);
             }
             None => {}
         }
-        if profile.definition.is_some() {
+        if let Some(lease) = profile.definition.as_ref() {
+            let _ = &lease.started_at;
             return Err(DefinitionBusy::DefinitionActive);
         }
-        profile.definition = Some(token);
+        profile.definition = Some(DefinitionLease {
+            token,
+            started_at: now(),
+        });
         let state = Arc::clone(&self.state);
         Ok(DefinitionLoadGuard::new(move || {
             release_definition(&state, &profile_id, token);
@@ -149,12 +168,16 @@ async fn wait_for_definition(
             let profile = profiles
                 .get_mut(&reservation.profile_id)
                 .expect("lifecycle reservation must have a profile state");
-            match profile.lifecycle {
-                Some(LifecycleLease::Pending { token, kind }) if token == reservation.token => {
+            match profile.lifecycle.as_ref() {
+                Some(LifecycleLease::Pending { token, kind }) if *token == reservation.token => {
                     if profile.definition.is_some() {
                         Some(Arc::clone(&profile.notify))
                     } else {
-                        profile.lifecycle = Some(LifecycleLease::Active { token, kind });
+                        profile.lifecycle = Some(LifecycleLease::Active {
+                            token: *token,
+                            kind: *kind,
+                            started_at: now(),
+                        });
                         reservation.promoted = true;
                         None
                     }
@@ -228,7 +251,12 @@ fn release_lifecycle(state: &LockState, profile_id: &ProfileId, token: u64) {
 fn release_definition(state: &LockState, profile_id: &ProfileId, token: u64) {
     let mut profiles = lock_profiles(state);
     if let Some(profile) = profiles.get_mut(profile_id) {
-        if profile.definition == Some(token) {
+        if profile
+            .definition
+            .as_ref()
+            .map(|lease| lease.token == token)
+            .unwrap_or(false)
+        {
             profile.definition = None;
             profile.notify.notify_one();
             remove_if_idle(&mut profiles, profile_id);
@@ -247,12 +275,14 @@ fn remove_if_idle(profiles: &mut HashMap<ProfileId, ProfileState>, profile_id: &
 }
 
 fn lock_profiles<'a>(state: &'a LockState) -> MutexGuard<'a, HashMap<ProfileId, ProfileState>> {
-    loop {
-        if let Ok(profiles) = state.profiles.try_lock() {
-            return profiles;
-        }
-        std::thread::yield_now();
+    match state.profiles.lock() {
+        Ok(profiles) => profiles,
+        Err(poisoned) => poisoned.into_inner(),
     }
+}
+
+fn now() -> Timestamp {
+    Timestamp(chrono::Utc::now().to_rfc3339())
 }
 
 impl ProfileState {

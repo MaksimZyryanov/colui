@@ -5,7 +5,8 @@ use colui_app::{
 };
 use colui_domain::{AppErrorCode, ProfileId};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -55,6 +56,27 @@ async fn lifecycle_guard_release_allows_next_lifecycle() {
         .unwrap();
     drop(second);
     assert!(!locks.is_busy(&id(1)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_lifecycle_acquisition_has_one_winner() {
+    let locks = Arc::new(ConcreteOperationLockManager::new());
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first = acquire_lifecycle_at_barrier(Arc::clone(&locks), Arc::clone(&barrier));
+    let second = acquire_lifecycle_at_barrier(Arc::clone(&locks), barrier);
+
+    let (first, second) = tokio::join!(first, second);
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    drop(first);
+    drop(second);
+}
+
+async fn acquire_lifecycle_at_barrier(
+    locks: Arc<ConcreteOperationLockManager>,
+    barrier: Arc<tokio::sync::Barrier>,
+) -> Result<colui_app::LifecycleOperationGuard, colui_domain::AppError> {
+    barrier.wait().await;
+    locks.acquire_lifecycle(id(1), OperationKind::Apply).await
 }
 
 #[tokio::test]
@@ -124,6 +146,54 @@ async fn cancelled_pending_lifecycle_releases_reservation() {
     assert!(!locks.is_busy(&id(1)));
     let definition = locks.acquire_definition(id(1)).unwrap();
     drop(definition);
+}
+
+#[test]
+fn concurrent_definition_acquisition_has_one_winner() {
+    let locks = Arc::new(ConcreteOperationLockManager::new());
+    let barrier = Arc::new(Barrier::new(2));
+    let first = acquire_definition_at_barrier(Arc::clone(&locks), Arc::clone(&barrier));
+    let second = acquire_definition_at_barrier(Arc::clone(&locks), barrier);
+    let first = first.join().unwrap();
+    let second = second.join().unwrap();
+
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    drop(first);
+    drop(second);
+}
+
+fn acquire_definition_at_barrier(
+    locks: Arc<ConcreteOperationLockManager>,
+    barrier: Arc<Barrier>,
+) -> thread::JoinHandle<Result<colui_app::DefinitionLoadGuard, DefinitionBusy>> {
+    thread::spawn(move || {
+        barrier.wait();
+        locks.acquire_definition(id(1))
+    })
+}
+
+#[tokio::test]
+async fn cancelled_active_lifecycle_releases_guard() {
+    let locks = Arc::new(ConcreteOperationLockManager::new());
+    let held = Arc::clone(&locks);
+    let task = tokio::spawn(async move {
+        let _guard = held
+            .acquire_lifecycle(id(1), OperationKind::Apply)
+            .await
+            .unwrap();
+        std::future::pending::<()>().await;
+    });
+
+    tokio::task::yield_now().await;
+    assert!(locks.is_busy(&id(1)));
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    let guard = locks
+        .acquire_lifecycle(id(1), OperationKind::Stop)
+        .await
+        .unwrap();
+    drop(guard);
 }
 
 #[tokio::test]
