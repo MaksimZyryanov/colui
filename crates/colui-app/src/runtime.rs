@@ -115,3 +115,6 @@ pub trait RuntimeConnector: Send + Sync {
 pub trait RuntimeStateReader: Send + Sync {
     fn session_state(&self) -> RuntimeFuture<'_, RuntimeSessionState>;
 }
+
+pub trait RuntimeInventorySource: DockerApi + RuntimeStateReader {}
+impl<T: DockerApi + RuntimeStateReader> RuntimeInventorySource for T {}

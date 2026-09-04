@@ -1,7 +1,9 @@
+mod inventory;
 pub mod operations;
 pub mod registry;
 pub mod runtime;
 
+pub use inventory::InventoryCoordinator;
 pub use operations::OperationLockManager;
 pub use registry::{JsonProfileRegistry, RegistryConfig};
 
