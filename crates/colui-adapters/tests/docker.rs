@@ -4,7 +4,7 @@ use colui_adapters::runtime::{
     compose_args, ComposeOperation, ComposeProcessRunner, RuntimeGateway,
 };
 use colui_app::{
-    DockerApi, LifecycleExecutor, LifecycleOperation, ProfileReader, RegistrySnapshot,
+    DockerApi, LifecycleOperation, LifecycleRuntime, ProfileReader, RegistrySnapshot,
     RuntimeConnector,
 };
 use colui_domain::{
@@ -160,7 +160,7 @@ impl TempComposeFixture {
                 .map(|_| ())
         } else {
             gateway
-                .execute_profile(self.profile.clone(), LifecycleOperation::Apply)
+                .run_profile(self.profile.clone(), LifecycleOperation::Apply)
                 .await
                 .map(|_| ())
         }
@@ -168,14 +168,14 @@ impl TempComposeFixture {
 
     async fn stop(&self, gateway: &RuntimeGateway) -> Result<(), colui_domain::AppError> {
         gateway
-            .execute_profile(self.profile.clone(), LifecycleOperation::Stop)
+            .run_profile(self.profile.clone(), LifecycleOperation::Stop)
             .await
             .map(|_| ())
     }
 
     async fn tear_down(&self, gateway: &RuntimeGateway) -> Result<(), colui_domain::AppError> {
         gateway
-            .execute_profile(self.profile.clone(), LifecycleOperation::TearDown)
+            .run_profile(self.profile.clone(), LifecycleOperation::TearDown)
             .await
             .map(|_| ())
     }

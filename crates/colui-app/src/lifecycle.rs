@@ -34,18 +34,43 @@ pub trait LifecycleRuntime: Send + Sync {
     ) -> LifecycleFuture<'_, LifecycleResult>;
 }
 
-pub trait LifecycleExecutor: Send + Sync {
-    fn execute_profile(
-        &self,
-        profile: ProjectProfile,
-        operation: LifecycleOperation,
-    ) -> LifecycleFuture<'_, LifecycleExecutionResult>;
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LifecycleExecutionResult {
-    pub profile_id: ProfileId,
-    pub success: bool,
+pub async fn run_lifecycle<R, L, I>(
+    runtime: &R,
+    locks: &L,
+    inventory: &I,
+    profile: ProjectProfile,
+    operation: LifecycleOperation,
+) -> Result<LifecycleResult, AppError>
+where
+    R: LifecycleRuntime + ?Sized,
+    L: OperationLockManager + ?Sized,
+    I: InventoryRefresher + ?Sized,
+{
+    let _guard = locks
+        .acquire_lifecycle(profile.id.clone(), operation)
+        .await?;
+    let result = runtime.run_profile(profile, operation).await?;
+    let inventory = if result.success {
+        match inventory.refresh().await {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                let mut inventory = inventory.current_inventory().await?;
+                inventory.freshness = if inventory.has_snapshot {
+                    colui_domain::InventoryFreshness::Stale
+                } else {
+                    colui_domain::InventoryFreshness::Unavailable
+                };
+                inventory.error = Some(error);
+                inventory
+            }
+        }
+    } else {
+        inventory.current_inventory().await?
+    };
+    Ok(LifecycleResult {
+        inventory,
+        ..result
+    })
 }
 
 struct LifecycleUseCase<'a, R: ?Sized, T: ?Sized, L: ?Sized, I: ?Sized> {
@@ -99,37 +124,12 @@ where
                     "profile not found",
                 )
             })?;
-        let (locks, inventory) = (self.locks, self.inventory);
-        let _guard = match locks {
-            Some(locks) => Some(
-                locks
-                    .acquire_lifecycle(profile.id.clone(), self.operation)
-                    .await?,
-            ),
-            None => None,
-        };
-        let result = self.runtime.run_profile(profile, self.operation).await?;
-        let inventory = match inventory {
-            Some(inventory) if result.success => match inventory.refresh().await {
-                Ok(inventory) => inventory,
-                Err(error) => {
-                    let mut inventory = inventory.current_inventory().await?;
-                    inventory.freshness = if inventory.has_snapshot {
-                        colui_domain::InventoryFreshness::Stale
-                    } else {
-                        colui_domain::InventoryFreshness::Unavailable
-                    };
-                    inventory.error = Some(error);
-                    inventory
-                }
-            },
-            Some(inventory) => inventory.current_inventory().await?,
-            None => return Ok(result),
-        };
-        Ok(LifecycleResult {
-            inventory,
-            ..result
-        })
+        match (self.locks, self.inventory) {
+            (Some(locks), Some(inventory)) => {
+                run_lifecycle(self.runtime, locks, inventory, profile, self.operation).await
+            }
+            _ => self.runtime.run_profile(profile, self.operation).await,
+        }
     }
 
     async fn execute_plain(&self, id: ProfileId) -> Result<LifecycleResult, AppError> {

@@ -2,14 +2,14 @@ use super::ComposeOperation;
 use super::{build_cli_environment, resolve_endpoint, DockerControl};
 use bollard::Docker;
 use colui_app::{
-    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleExecutionResult,
-    LifecycleExecutor, LifecycleFuture, LifecycleOperation, RuntimeConnector, RuntimeFuture,
+    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleFuture,
+    LifecycleOperation, LifecycleResult, LifecycleRuntime, RuntimeConnector, RuntimeFuture,
     RuntimeStateReader,
 };
 use colui_domain::{
     AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerObservation, DaemonFingerprint,
-    DockerEndpoint, MismatchDetails, RuntimeSessionId, RuntimeSessionState, SessionContext,
-    Timestamp,
+    DockerEndpoint, MismatchDetails, RuntimeInventory, RuntimeSessionId, RuntimeSessionState,
+    SessionContext, Timestamp,
 };
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -178,12 +178,12 @@ impl RuntimeGateway {
     }
 }
 
-impl LifecycleExecutor for RuntimeGateway {
-    fn execute_profile(
+impl LifecycleRuntime for RuntimeGateway {
+    fn run_profile(
         &self,
         profile: colui_domain::ProjectProfile,
         operation: LifecycleOperation,
-    ) -> LifecycleFuture<'_, LifecycleExecutionResult> {
+    ) -> LifecycleFuture<'_, LifecycleResult> {
         Box::pin(async move {
             let profile_id = profile.id.clone();
             let compose_operation = match operation {
@@ -211,9 +211,10 @@ impl LifecycleExecutor for RuntimeGateway {
                     "compose exited unsuccessfully",
                 ));
             }
-            Ok(LifecycleExecutionResult {
+            Ok(LifecycleResult {
                 profile_id,
                 success: true,
+                inventory: RuntimeInventory::unavailable(),
             })
         })
     }

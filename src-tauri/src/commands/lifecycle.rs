@@ -21,10 +21,15 @@ macro_rules! command {
             request: ProfileIdRequestDto,
             state: State<'_, AppState>,
         ) -> Result<LifecycleResultDto, AppErrorDto> {
-            let result = $use_case::new(state.profiles.as_ref(), state.runtime.as_ref())
-                .execute(id(request.profile_id, stringify!($name))?)
-                .await
-                .map_err(AppErrorDto::from)?;
+            let result = $use_case::new_with_dependencies(
+                state.profiles.as_ref(),
+                state.runtime.as_ref(),
+                state.locks.as_ref(),
+                state.inventory.as_ref(),
+            )
+            .execute(id(request.profile_id, stringify!($name))?)
+            .await
+            .map_err(AppErrorDto::from)?;
             Ok(result.into())
         }
     };

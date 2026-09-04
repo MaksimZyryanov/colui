@@ -361,3 +361,26 @@ async fn duplicate_lifecycle_conflicts_without_compose_or_refresh() {
     assert_eq!(*inventory.calls.lock().unwrap(), 0);
     drop(guard);
 }
+
+#[tokio::test]
+async fn lifecycle_runtime_failure_releases_guard() {
+    let reader = FakeReader::with_profile(profile("id-1"));
+    let runtime = FakeRuntime::context_mismatch();
+    let locks = FakeLocks {
+        busy: Arc::new(Mutex::new(false)),
+        events: runtime.events.clone(),
+    };
+    let inventory = FakeInventory {
+        current: RuntimeInventory::unavailable(),
+        refresh_result: Ok(RuntimeInventory::unavailable()),
+        calls: Arc::new(Mutex::new(0)),
+        events: runtime.events.clone(),
+    };
+    assert!(
+        ApplyProject::new_with_dependencies(&reader, &runtime, &locks, &inventory)
+            .execute(profile_id("id-1"))
+            .await
+            .is_err()
+    );
+    assert!(!locks.is_busy(&profile_id("id-1")));
+}

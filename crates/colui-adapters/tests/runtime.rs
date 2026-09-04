@@ -7,8 +7,8 @@ use colui_adapters::runtime::{
 use colui_adapters::runtime::{ComposeOperation, RuntimeGateway};
 use colui_adapters::runtime::{ComposeProcessRunner, TerminationConfig};
 use colui_app::{
-    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleExecutor,
-    LifecycleOperation, RuntimeConnector, RuntimeStateReader,
+    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleOperation,
+    LifecycleRuntime, RuntimeConnector, RuntimeStateReader,
 };
 use colui_domain::AppErrorCode;
 use colui_domain::{
@@ -446,7 +446,7 @@ async fn lifecycle_runtime_maps_all_operations_to_distinct_compose_verbs() {
         (LifecycleOperation::Restart, "restart"),
     ] {
         gateway
-            .execute_profile(profile.clone(), operation)
+            .run_profile(profile.clone(), operation)
             .await
             .unwrap();
         let invocation = last.lock().unwrap().clone().unwrap();
@@ -465,7 +465,7 @@ async fn gateway_profile_route_returns_typed_error_when_not_ready() {
     );
     let profile = test_profile();
     let error = gateway
-        .execute_profile(profile, LifecycleOperation::Stop)
+        .run_profile(profile, LifecycleOperation::Stop)
         .await
         .unwrap_err();
 
@@ -484,7 +484,7 @@ async fn lifecycle_runtime_mismatch_does_not_invoke_runner() {
     gateway.connect_runtime(None).await.unwrap();
 
     let error = gateway
-        .execute_profile(test_profile(), LifecycleOperation::Apply)
+        .run_profile(test_profile(), LifecycleOperation::Apply)
         .await
         .unwrap_err();
 
@@ -510,7 +510,7 @@ async fn lifecycle_runtime_maps_nonzero_and_timeout_results() {
         );
         gateway.connect_runtime(None).await.unwrap();
         let error = gateway
-            .execute_profile(test_profile(), LifecycleOperation::Stop)
+            .run_profile(test_profile(), LifecycleOperation::Stop)
             .await
             .unwrap_err();
         assert_eq!(error.code, code);
@@ -539,11 +539,7 @@ async fn gateway_profile_lookup_waits_for_connect_operation_gate() {
     let profile = test_profile();
     let invoke = tokio::spawn({
         let gateway = gateway.clone();
-        async move {
-            gateway
-                .execute_profile(profile, LifecycleOperation::Stop)
-                .await
-        }
+        async move { gateway.run_profile(profile, LifecycleOperation::Stop).await }
     });
     tokio::task::yield_now().await;
     assert!(!invoke.is_finished());

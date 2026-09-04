@@ -8,9 +8,9 @@ use colui_adapters::{
     RegistryConfig, UuidGenerator,
 };
 use colui_app::{
-    Clock, DefinitionReader, IdGenerator, LifecycleExecutor, LifecycleFuture, LifecycleOperation,
-    LifecycleResult, LifecycleRuntime, OperationLockManager as OperationLockManagerPort,
-    ProfileStore, ProjectStatusFuture, ProjectStatusReader, RuntimeConnector, RuntimeStateReader,
+    Clock, DefinitionReader, IdGenerator, LifecycleFuture, LifecycleOperation, LifecycleResult,
+    LifecycleRuntime, ProfileStore, ProjectStatusFuture, ProjectStatusReader, RuntimeConnector,
+    RuntimeStateReader,
 };
 use std::sync::Arc;
 
@@ -27,12 +27,13 @@ pub struct AppState {
     pub profiles: Arc<dyn ProfileStore>,
     pub ids: Arc<dyn IdGenerator>,
     pub runtime: Arc<dyn RuntimePort>,
+    pub locks: Arc<OperationLockManager>,
+    pub inventory: Arc<InventoryCoordinator>,
 }
 
 pub struct RuntimeFacade {
     gateway: Arc<RuntimeGateway>,
     inventory: Arc<InventoryCoordinator>,
-    locks: Arc<OperationLockManager>,
     definitions: Arc<DefinitionCache>,
 }
 
@@ -52,13 +53,11 @@ impl RuntimeFacade {
     fn new(
         gateway: Arc<RuntimeGateway>,
         inventory: Arc<InventoryCoordinator>,
-        locks: Arc<OperationLockManager>,
         definitions: Arc<DefinitionCache>,
     ) -> Self {
         Self {
             gateway,
             inventory,
-            locks,
             definitions,
         }
     }
@@ -105,37 +104,7 @@ impl LifecycleRuntime for RuntimeFacade {
         profile: colui_domain::ProjectProfile,
         operation: LifecycleOperation,
     ) -> LifecycleFuture<'_, LifecycleResult> {
-        let gateway = self.gateway.clone();
-        let inventory = self.inventory.clone();
-        let locks = self.locks.clone();
-        Box::pin(async move {
-            let _guard = locks
-                .acquire_lifecycle(profile.id.clone(), operation)
-                .await?;
-            let execution = gateway.execute_profile(profile, operation).await?;
-            let inventory = if execution.success {
-                match inventory.refresh().await {
-                    Ok(inventory) => inventory,
-                    Err(error) => {
-                        let mut inventory = inventory.current_inventory().await?;
-                        inventory.error = Some(error);
-                        inventory.freshness = if inventory.has_snapshot {
-                            colui_domain::InventoryFreshness::Stale
-                        } else {
-                            colui_domain::InventoryFreshness::Unavailable
-                        };
-                        inventory
-                    }
-                }
-            } else {
-                inventory.current_inventory().await?
-            };
-            Ok(LifecycleResult {
-                profile_id: execution.profile_id,
-                success: execution.success,
-                inventory,
-            })
-        })
+        self.gateway.run_profile(profile, operation)
     }
 }
 
@@ -161,13 +130,15 @@ pub fn run() {
                 locks.clone(),
             ));
             let runtime: Arc<dyn RuntimePort> =
-                Arc::new(RuntimeFacade::new(gateway, inventory, locks, definitions));
+                Arc::new(RuntimeFacade::new(gateway, inventory.clone(), definitions));
             tauri::Manager::manage(
                 app,
                 AppState {
                     profiles,
                     ids: Arc::new(UuidGenerator),
                     runtime,
+                    locks,
+                    inventory,
                 },
             );
             Ok(())
