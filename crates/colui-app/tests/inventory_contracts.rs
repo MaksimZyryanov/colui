@@ -1,7 +1,9 @@
-use colui_app::{LifecycleResult, OperationKind};
-use colui_domain::{ProfileId, RuntimeInventory};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use colui_app::{
+    LifecycleOperationGuard, LifecycleResult, OperationFuture, OperationKind, OperationLockManager,
+    OperationLockReader,
+};
+use colui_domain::{AppError, AppErrorCode, ProfileId, RuntimeInventory};
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 fn profile_id() -> ProfileId {
@@ -18,43 +20,59 @@ impl FakeOperationLocks {
             locks: Arc::new(Mutex::new(Vec::new())),
         }
     }
+}
 
-    async fn acquire_lifecycle(
-        &self,
-        profile_id: ProfileId,
-        operation: OperationKind,
-    ) -> Result<LifecycleOperationGuard, colui_domain::AppError> {
-        let mut locks = self.locks.lock().await;
-        if locks.iter().any(|(id, _)| id == &profile_id) {
-            return Err(colui_domain::AppError::new(
-                colui_domain::AppErrorCode::OperationConflict,
-                "acquire_lifecycle",
-                Some(profile_id),
-                "operation already in progress",
-            ));
-        }
-        locks.push((profile_id.clone(), operation));
-        Ok(LifecycleOperationGuard {
-            profile_id,
-            locks: self.locks.clone(),
-        })
+impl OperationLockReader for FakeOperationLocks {
+    fn is_busy(&self, profile_id: &ProfileId) -> bool {
+        self.locks
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(id, _)| id == profile_id)
     }
 }
 
-#[derive(Debug)]
-struct LifecycleOperationGuard {
-    profile_id: ProfileId,
-    locks: Arc<Mutex<Vec<(ProfileId, OperationKind)>>>,
-}
+impl OperationLockManager for FakeOperationLocks {
+    fn acquire_lifecycle(
+        &self,
+        profile_id: ProfileId,
+        operation: OperationKind,
+    ) -> OperationFuture<'_, LifecycleOperationGuard> {
+        let lock_store = self.locks.clone();
+        Box::pin(async move {
+            let mut locks = lock_store.lock().unwrap();
+            if locks.iter().any(|(id, _)| id == &profile_id) {
+                return Err(AppError::new(
+                    AppErrorCode::OperationConflict,
+                    "acquire_lifecycle",
+                    Some(profile_id),
+                    "operation already in progress",
+                ));
+            }
+            locks.push((profile_id.clone(), operation));
+            let release_locks = lock_store.clone();
+            Ok(LifecycleOperationGuard::new(move || {
+                let mut locks = release_locks.lock().unwrap();
+                locks.retain(|(id, _)| id != &profile_id);
+            }))
+        })
+    }
 
-impl Drop for LifecycleOperationGuard {
-    fn drop(&mut self) {
-        let profile_id = self.profile_id.clone();
-        let locks = self.locks.clone();
-        tokio::spawn(async move {
-            let mut locks = locks.lock().await;
+    fn acquire_definition(
+        &self,
+        profile_id: ProfileId,
+    ) -> Result<colui_app::DefinitionLoadGuard, colui_app::DefinitionBusy> {
+        let mut locks = self.locks.lock().unwrap();
+        if locks.iter().any(|(id, _)| id == &profile_id) {
+            return Err(colui_app::DefinitionBusy::LifecyclePending);
+        }
+        locks.push((profile_id.clone(), OperationKind::Apply));
+        drop(locks);
+        let release_locks = self.locks.clone();
+        Ok(colui_app::DefinitionLoadGuard::new(move || {
+            let mut locks = release_locks.lock().unwrap();
             locks.retain(|(id, _)| id != &profile_id);
-        });
+        }))
     }
 }
 

@@ -1,34 +1,95 @@
-use crate::lifecycle::LifecycleOperation;
 use colui_domain::{AppError, ProfileId};
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Mutex;
 
-pub type OperationKind = LifecycleOperation;
+pub use crate::lifecycle::LifecycleOperation as OperationKind;
 
 pub type OperationFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>;
 
+type ReleaseAction = Box<dyn FnOnce() + Send + 'static>;
+
+struct ReleaseOnce(Mutex<Option<ReleaseAction>>);
+
+impl ReleaseOnce {
+    fn new(release: impl FnOnce() + Send + 'static) -> Self {
+        Self(Mutex::new(Some(Box::new(release))))
+    }
+}
+
+impl Drop for ReleaseOnce {
+    fn drop(&mut self) {
+        let release = match self.0.lock() {
+            Ok(mut action) => action.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(release) = release {
+            release();
+        }
+    }
+}
+
 /// RAII guard for lifecycle operations.
 /// Releases the operation lock exactly once when dropped.
-pub trait LifecycleOperationGuard: Send + Sync {}
+pub struct LifecycleOperationGuard {
+    _release: ReleaseOnce,
+}
+
+impl LifecycleOperationGuard {
+    pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            _release: ReleaseOnce::new(release),
+        }
+    }
+}
+
+impl fmt::Debug for LifecycleOperationGuard {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LifecycleOperationGuard(..)")
+    }
+}
 
 /// RAII guard for definition loading operations.
 /// Releases the definition lock exactly once when dropped.
-pub trait DefinitionLoadGuard: Send + Sync {}
+pub struct DefinitionLoadGuard {
+    _release: ReleaseOnce,
+}
 
-/// Manages exclusive locks for profile lifecycle operations.
-pub trait OperationLockManager: Send + Sync {
-    /// Acquire an exclusive lifecycle lock for the given profile.
-    /// Returns `OperationConflict` if another operation is already in progress.
+impl DefinitionLoadGuard {
+    pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            _release: ReleaseOnce::new(release),
+        }
+    }
+}
+
+impl fmt::Debug for DefinitionLoadGuard {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DefinitionLoadGuard(..)")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DefinitionBusy {
+    LifecyclePending,
+    DefinitionActive,
+}
+
+pub trait OperationLockReader: Send + Sync {
+    fn is_busy(&self, profile_id: &ProfileId) -> bool;
+}
+
+/// Manages exclusive locks for profile lifecycle operations and definition loads.
+pub trait OperationLockManager: OperationLockReader {
     fn acquire_lifecycle(
         &self,
         profile_id: ProfileId,
         operation: OperationKind,
-    ) -> OperationFuture<'_, Box<dyn LifecycleOperationGuard>>;
+    ) -> OperationFuture<'_, LifecycleOperationGuard>;
 
-    /// Acquire an exclusive definition load lock for the given profile.
-    /// Returns `OperationConflict` if a load is already in progress.
-    fn acquire_definition_load(
+    fn acquire_definition(
         &self,
         profile_id: ProfileId,
-    ) -> OperationFuture<'_, Box<dyn DefinitionLoadGuard>>;
+    ) -> Result<DefinitionLoadGuard, DefinitionBusy>;
 }

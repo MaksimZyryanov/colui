@@ -1,6 +1,8 @@
+pub mod operations;
 pub mod registry;
 pub mod runtime;
 
+pub use operations::OperationLockManager;
 pub use registry::{JsonProfileRegistry, RegistryConfig};
 
 pub struct UuidGenerator;
