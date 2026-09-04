@@ -1,0 +1,318 @@
+use colui_app::{
+    Clock, ComposeInvocation, ComposeRunner, DefinitionBusy, DefinitionFuture, DefinitionReader,
+    DefinitionRefresher, RuntimeStateReader,
+};
+use colui_domain::{
+    AppError, AppErrorCode, DefinitionRevision, DefinitionState, Issue, ProjectDefinition,
+    ProjectProfile, ServiceDefinition, Timestamp,
+};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+const TTL: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+struct CachedDefinition {
+    profile_revision: colui_domain::Revision,
+    definition_revision: DefinitionRevision,
+    loaded_at: Timestamp,
+    loaded_mono: Duration,
+    state: DefinitionState,
+    services: Vec<ServiceDefinition>,
+    issues: Vec<Issue>,
+    load_error: Option<AppError>,
+}
+
+struct State {
+    entries: HashMap<colui_domain::ProfileId, CachedDefinition>,
+    epoch: HashMap<colui_domain::ProfileId, u64>,
+    revisions: HashMap<colui_domain::ProfileId, colui_domain::Revision>,
+}
+
+pub struct DefinitionCache {
+    runner: Arc<dyn ComposeRunner>,
+    runtime: Arc<dyn RuntimeStateReader>,
+    clock: Arc<dyn Clock>,
+    locks: Arc<dyn colui_app::OperationLockManager>,
+    state: Arc<Mutex<State>>,
+}
+
+impl DefinitionCache {
+    pub fn new(
+        runner: Arc<dyn ComposeRunner>,
+        runtime: Arc<dyn RuntimeStateReader>,
+        clock: Arc<dyn Clock>,
+        locks: Arc<dyn colui_app::OperationLockManager>,
+    ) -> Self {
+        Self {
+            runner,
+            runtime,
+            clock,
+            locks,
+            state: Arc::new(Mutex::new(State {
+                entries: HashMap::new(),
+                epoch: HashMap::new(),
+                revisions: HashMap::new(),
+            })),
+        }
+    }
+
+    async fn access(
+        &self,
+        profile: ProjectProfile,
+        force: bool,
+    ) -> Result<ProjectDefinition, AppError> {
+        let id = profile.id.clone();
+        let now = self.clock.monotonic();
+        let cached = {
+            let mut state = lock(&self.state);
+            state.revisions.insert(id.clone(), profile.revision);
+            state.entries.get(&id).cloned()
+        };
+        if !force
+            && cached.as_ref().is_some_and(|e| {
+                e.profile_revision == profile.revision && now.saturating_sub(e.loaded_mono) < TTL
+            })
+        {
+            return Ok(to_definition(&id, cached.unwrap()));
+        }
+        let guard = match self.locks.acquire_definition(id.clone()) {
+            Ok(guard) => guard,
+            Err(DefinitionBusy::LifecyclePending | DefinitionBusy::DefinitionActive) => {
+                return Ok(retained(&id, cached))
+            }
+        };
+        let epoch = lock(&self.state).epoch.get(&id).copied().unwrap_or(0);
+        let result = self.load(&profile).await;
+        let mut state = lock(&self.state);
+        let current_epoch = state.epoch.get(&id).copied().unwrap_or(0);
+        if current_epoch == epoch && state.revisions.get(&id).copied() == Some(profile.revision) {
+            match result {
+                Ok((revision, services, issues)) => {
+                    let entry = CachedDefinition {
+                        profile_revision: profile.revision,
+                        definition_revision: revision,
+                        loaded_at: self.clock.now(),
+                        loaded_mono: now,
+                        state: if issues.is_empty() {
+                            DefinitionState::Valid
+                        } else {
+                            DefinitionState::Invalid
+                        },
+                        services,
+                        issues,
+                        load_error: None,
+                    };
+                    let output = to_definition(&id, entry.clone());
+                    state.entries.insert(id, entry);
+                    drop(guard);
+                    Ok(output)
+                }
+                Err(error) => {
+                    let output = retained(&id, state.entries.get(&id).cloned());
+                    if let Some(entry) = state.entries.get_mut(&id) {
+                        entry.state = DefinitionState::Stale;
+                        entry.load_error = Some(error);
+                    }
+                    drop(guard);
+                    Ok(output)
+                }
+            }
+        } else {
+            drop(guard);
+            Ok(retained(&id, state.entries.get(&id).cloned()))
+        }
+    }
+
+    async fn load(
+        &self,
+        profile: &ProjectProfile,
+    ) -> Result<(DefinitionRevision, Vec<ServiceDefinition>, Vec<Issue>), AppError> {
+        let endpoint = match self.runtime.session_state().await? {
+            colui_domain::RuntimeSessionState::Ready(context) => context.endpoint,
+            _ => {
+                return Err(AppError::new(
+                    AppErrorCode::RuntimeUnavailable,
+                    "definition",
+                    Some(profile.id.clone()),
+                    "runtime unavailable",
+                ))
+            }
+        };
+        let mut args = vec!["compose".into()];
+        for path in &profile.compose_files {
+            args.extend([
+                "-f".into(),
+                if path.is_absolute() {
+                    path.to_string_lossy().into_owned()
+                } else {
+                    profile
+                        .working_directory
+                        .join(path)
+                        .to_string_lossy()
+                        .into_owned()
+                },
+            ]);
+        }
+        args.extend([
+            "--project-name".into(),
+            profile.compose_project_name.as_ref().to_owned(),
+            "config".into(),
+            "--format".into(),
+            "json".into(),
+        ]);
+        for path in &profile.environment_files {
+            args.extend([
+                "--env-file".into(),
+                profile
+                    .working_directory
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned(),
+            ]);
+        }
+        let output = self
+            .runner
+            .invoke(ComposeInvocation {
+                executable: "docker".into(),
+                args,
+                working_directory: profile.working_directory.clone(),
+                environment: [("DOCKER_HOST".into(), endpoint.as_str().into())]
+                    .into_iter()
+                    .collect(),
+                deadline: Instant::now() + Duration::from_secs(120),
+            })
+            .await?;
+        if output.timed_out() || output.exit_code() != Some(0) {
+            return Err(AppError::new(
+                AppErrorCode::DefinitionFailed,
+                "definition",
+                Some(profile.id.clone()),
+                "compose config failed",
+            )
+            .with_details(output.stderr().to_owned()));
+        }
+        let value: serde_json::Value = match serde_json::from_str(output.stdout()) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok((
+                    DefinitionRevision(String::new()),
+                    Vec::new(),
+                    vec![Issue {
+                        field: None,
+                        message: error.to_string(),
+                    }],
+                ))
+            }
+        };
+        let canonical = canonical(value.clone());
+        let digest = Sha256::digest(serde_json::to_vec(&canonical).unwrap());
+        let revision =
+            DefinitionRevision(digest.iter().map(|byte| format!("{byte:02x}")).collect());
+        let mut services = Vec::new();
+        if let Some(map) = value.get("services").and_then(serde_json::Value::as_object) {
+            for (name, service) in map {
+                services.push(ServiceDefinition {
+                    name: name.clone(),
+                    image: service
+                        .get("image")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                    build_context: service
+                        .get("build")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned)
+                        .or_else(|| {
+                            service
+                                .get("build")
+                                .and_then(|v| v.get("context"))
+                                .and_then(|v| v.as_str())
+                                .map(str::to_owned)
+                        }),
+                    declared_ports: service
+                        .get("ports")
+                        .and_then(|v| v.as_array())
+                        .map(|ports| {
+                            ports
+                                .iter()
+                                .map(|v| {
+                                    v.as_str()
+                                        .map(str::to_owned)
+                                        .unwrap_or_else(|| v.to_string())
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                });
+            }
+        }
+        Ok((revision, services, Vec::new()))
+    }
+}
+
+fn canonical(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (key, canonical(value)))
+                .collect(),
+        ),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(canonical).collect())
+        }
+        value => value,
+    }
+}
+fn to_definition(id: &colui_domain::ProfileId, entry: CachedDefinition) -> ProjectDefinition {
+    ProjectDefinition {
+        profile_id: id.clone(),
+        definition_revision: entry.definition_revision,
+        loaded_at: entry.loaded_at,
+        state: entry.state,
+        services: entry.services,
+        issues: entry.issues,
+    }
+}
+fn retained(id: &colui_domain::ProfileId, entry: Option<CachedDefinition>) -> ProjectDefinition {
+    entry
+        .map(|mut entry| {
+            entry.state = DefinitionState::Stale;
+            to_definition(id, entry)
+        })
+        .unwrap_or(ProjectDefinition {
+            profile_id: id.clone(),
+            definition_revision: DefinitionRevision(String::new()),
+            loaded_at: Timestamp(String::new()),
+            state: DefinitionState::Unchecked,
+            services: Vec::new(),
+            issues: Vec::new(),
+        })
+}
+
+impl DefinitionReader for DefinitionCache {
+    fn definition(&self, profile: ProjectProfile) -> DefinitionFuture<'_, ProjectDefinition> {
+        Box::pin(self.access(profile, false))
+    }
+}
+impl DefinitionRefresher for DefinitionCache {
+    fn refresh_definition(
+        &self,
+        profile: ProjectProfile,
+    ) -> DefinitionFuture<'_, ProjectDefinition> {
+        Box::pin(self.access(profile, true))
+    }
+    fn invalidate(&self, profile_id: colui_domain::ProfileId) {
+        let mut state = lock(&self.state);
+        *state.epoch.entry(profile_id.clone()).or_default() += 1;
+        state.entries.remove(&profile_id);
+    }
+}
+
+fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
