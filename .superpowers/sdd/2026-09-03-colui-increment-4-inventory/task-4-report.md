@@ -24,6 +24,21 @@ Completed. Added concrete atomic per-profile operation locks in `colui-adapters`
 - `cargo check -p colui-adapters --features docker-tests --tests`: passed; compile-only, Docker tests not run.
 - `cargo fmt --all -- --check`: passed.
 - `bash scripts/check-boundaries.sh`: `Dependency boundaries OK`.
+
+## Fix Round 2
+
+Review found `cancelled_active_lifecycle_releases_guard` used one `yield_now()` before aborting its spawned task. Scheduler timing could abort the task before it acquired its lifecycle guard, making the test pass without testing active-guard cleanup.
+
+Fix:
+
+- Added an explicit `tokio::sync::Notify` handshake after lifecycle guard acquisition. The test waits with a one-second timeout before asserting `is_busy`, aborting, and verifying the next lifecycle can acquire. No sleeps or unbounded polling remain.
+
+Verification:
+
+- `cargo test -p colui-adapters --test operations -- --nocapture`: 11 passed, 0 failed.
+- `cargo test --workspace`: 121 passed, 0 failed.
+- `cargo fmt --all -- --check`: passed.
+- `bash scripts/check-boundaries.sh`: `Dependency boundaries OK`.
 - `git diff --check`: passed.
 
 ## Port Reconciliation

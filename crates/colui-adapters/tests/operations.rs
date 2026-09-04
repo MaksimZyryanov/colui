@@ -175,16 +175,21 @@ fn acquire_definition_at_barrier(
 #[tokio::test]
 async fn cancelled_active_lifecycle_releases_guard() {
     let locks = Arc::new(ConcreteOperationLockManager::new());
+    let acquired = Arc::new(tokio::sync::Notify::new());
     let held = Arc::clone(&locks);
+    let acquired_task = Arc::clone(&acquired);
     let task = tokio::spawn(async move {
         let _guard = held
             .acquire_lifecycle(id(1), OperationKind::Apply)
             .await
             .unwrap();
+        acquired_task.notify_one();
         std::future::pending::<()>().await;
     });
 
-    tokio::task::yield_now().await;
+    tokio::time::timeout(Duration::from_secs(1), acquired.notified())
+        .await
+        .unwrap();
     assert!(locks.is_busy(&id(1)));
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
