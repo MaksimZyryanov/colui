@@ -2,14 +2,14 @@ use bollard::models::ContainerSummary;
 use colui_adapters::runtime::{normalize_container_summary, DockerControl, RuntimeGateway};
 use colui_adapters::InventoryCoordinator;
 use colui_app::{
-    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, RuntimeConnector,
+    Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, RuntimeConnector,
     RuntimeFuture,
 };
 use colui_domain::{
     AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerObservation, DaemonFingerprint,
 };
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
     Arc,
 };
 use std::time::Duration;
@@ -43,21 +43,36 @@ async fn list_maps_all_four_compose_labels_from_one_docker_call() {
 
 #[tokio::test]
 async fn concurrent_refreshes_share_one_list_and_generation() {
-    let gateway = gateway_with_summary(compose_summary("checkout", "web")).await;
-    let coordinator = InventoryCoordinator::new(Arc::new(gateway.gateway));
-    let (a, b) = tokio::join!(coordinator.refresh(), coordinator.refresh());
+    let source = Arc::new(BlockingSource::new(vec![observation(
+        "checkout-web",
+        Some("checkout"),
+    )]));
+    let coordinator = Arc::new(InventoryCoordinator::new(source.clone(), test_clock()));
+    let first = tokio::spawn({
+        let coordinator = coordinator.clone();
+        async move { coordinator.refresh().await }
+    });
+    source.started.notified().await;
+    let second = tokio::spawn({
+        let coordinator = coordinator.clone();
+        async move { coordinator.refresh().await }
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(source.calls.load(Ordering::Acquire), 1);
+    source.release.notify_waiters();
 
-    let a = a.unwrap();
-    let b = b.unwrap();
+    let (a, b) = tokio::join!(first, second);
+    let a = a.unwrap().unwrap();
+    let b = b.unwrap().unwrap();
     assert_eq!(a.generation, 1);
     assert_eq!(a.generation, b.generation);
-    assert_eq!(gateway.docker.list_calls.load(Ordering::Acquire), 1);
+    assert_eq!(source.calls.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]
 async fn first_inventory_is_unavailable_and_success_groups_observations() {
     let gateway = gateway_with_summary(compose_summary("checkout", "web")).await;
-    let coordinator = InventoryCoordinator::new(Arc::new(gateway.gateway));
+    let coordinator = InventoryCoordinator::new(Arc::new(gateway.gateway), test_clock());
     let before = coordinator.current_inventory().await.unwrap();
     assert!(!before.has_snapshot);
     assert_eq!(before.generation, 0);
@@ -74,7 +89,7 @@ async fn first_inventory_is_unavailable_and_success_groups_observations() {
 #[tokio::test]
 async fn successful_refresh_notifies_subscriber_once() {
     let gateway = gateway_with_summary(compose_summary("checkout", "web")).await;
-    let coordinator = InventoryCoordinator::new(Arc::new(gateway.gateway));
+    let coordinator = InventoryCoordinator::new(Arc::new(gateway.gateway), test_clock());
     let mut subscriber = coordinator.subscribe();
 
     coordinator.refresh().await.unwrap();
@@ -89,10 +104,15 @@ async fn refresh_failure_retains_snapshot_and_automatic_backoff() {
         Err(runtime_error("offline")),
         Ok(vec![observation("third", None)]),
     ]));
-    let coordinator = InventoryCoordinator::new(source.clone());
+    let clock = test_clock();
+    let coordinator = InventoryCoordinator::new(source.clone(), clock.clone());
     assert_eq!(coordinator.refresh().await.unwrap().generation, 1);
 
-    let retained = coordinator.refresh().await.unwrap();
+    assert_eq!(
+        coordinator.refresh().await.unwrap_err().code,
+        AppErrorCode::RuntimeUnavailable
+    );
+    let retained = coordinator.current_inventory().await.unwrap();
     assert_eq!(retained.generation, 1);
     assert_eq!(retained.freshness, colui_domain::InventoryFreshness::Stale);
     assert_eq!(retained.containers[0].name, "first");
@@ -102,6 +122,66 @@ async fn refresh_failure_retains_snapshot_and_automatic_backoff() {
     assert_eq!(blocked.generation, 1);
     assert_eq!(source.calls.load(Ordering::Acquire), 2);
     assert_eq!(coordinator.refresh().await.unwrap().generation, 2);
+}
+
+#[tokio::test]
+async fn automatic_backoff_uses_injected_clock_and_caps_then_resets() {
+    let source = Arc::new(QueuedSource::new(vec![
+        Err(runtime_error("1")),
+        Err(runtime_error("2")),
+        Err(runtime_error("3")),
+        Err(runtime_error("4")),
+        Err(runtime_error("5")),
+        Ok(vec![]),
+        Err(runtime_error("reset")),
+        Ok(vec![]),
+    ]));
+    let clock = test_clock();
+    let coordinator = InventoryCoordinator::new(source.clone(), clock.clone());
+
+    for (attempt, delay) in [1, 2, 4, 8, 10].into_iter().enumerate() {
+        assert!(coordinator.refresh_automatic().await.is_err());
+        let calls = attempt + 1;
+        assert_eq!(source.calls.load(Ordering::Acquire), calls);
+        assert!(coordinator.refresh_automatic().await.is_ok());
+        assert_eq!(source.calls.load(Ordering::Acquire), calls);
+        clock.advance(delay);
+    }
+    assert_eq!(coordinator.refresh_automatic().await.unwrap().generation, 1);
+    assert!(coordinator.refresh_automatic().await.is_err());
+    assert_eq!(source.calls.load(Ordering::Acquire), 7);
+    assert!(coordinator.refresh_automatic().await.is_ok());
+    assert_eq!(source.calls.load(Ordering::Acquire), 7);
+    clock.advance(1);
+    assert_eq!(coordinator.refresh_automatic().await.unwrap().generation, 2);
+}
+
+#[derive(Default)]
+struct TestClock {
+    seconds: AtomicU64,
+}
+
+impl TestClock {
+    fn advance(&self, seconds: u64) {
+        self.seconds.fetch_add(seconds, Ordering::AcqRel);
+    }
+}
+
+impl Clock for TestClock {
+    fn now(&self) -> colui_domain::Timestamp {
+        colui_domain::Timestamp(format!(
+            "2026-09-04T00:00:{:02}Z",
+            self.seconds.load(Ordering::Acquire)
+        ))
+    }
+
+    fn monotonic(&self) -> Duration {
+        Duration::from_secs(self.seconds.load(Ordering::Acquire))
+    }
+}
+
+fn test_clock() -> Arc<TestClock> {
+    Arc::new(TestClock::default())
 }
 
 fn observation(name: &str, project: Option<&str>) -> ContainerObservation {
@@ -130,19 +210,64 @@ struct QueuedSource {
     context: colui_domain::SessionContext,
 }
 
+struct BlockingSource {
+    observations: Vec<ContainerObservation>,
+    calls: AtomicUsize,
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    context: colui_domain::SessionContext,
+}
+
+impl BlockingSource {
+    fn new(observations: Vec<ContainerObservation>) -> Self {
+        Self {
+            observations,
+            calls: AtomicUsize::new(0),
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            context: session_context(),
+        }
+    }
+}
+
+impl DockerApi for BlockingSource {
+    fn list_containers(&self) -> RuntimeFuture<'_, Vec<ContainerObservation>> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Box::pin(async move {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(self.observations.clone())
+        })
+    }
+
+    fn inspect_container(&self, _: &ContainerId) -> RuntimeFuture<'_, ContainerDetails> {
+        panic!("inventory refresh must not inspect")
+    }
+}
+
+impl colui_app::RuntimeStateReader for BlockingSource {
+    fn session_state(&self) -> RuntimeFuture<'_, colui_domain::RuntimeSessionState> {
+        let context = self.context.clone();
+        Box::pin(async move { Ok(colui_domain::RuntimeSessionState::Ready(context)) })
+    }
+}
+
 impl QueuedSource {
     fn new(values: Vec<Result<Vec<ContainerObservation>, AppError>>) -> Self {
         Self {
             values: std::sync::Mutex::new(values.into()),
             calls: AtomicUsize::new(0),
-            context: colui_domain::SessionContext {
-                session_id: colui_domain::RuntimeSessionId::new(uuid::Uuid::from_u128(1)),
-                endpoint: colui_domain::DockerEndpoint::try_from("unix:///tmp/docker.sock")
-                    .unwrap(),
-                daemon_fingerprint: DaemonFingerprint::new("same", "1", "linux", "x86_64"),
-                connected_at: colui_domain::Timestamp("now".to_owned()),
-            },
+            context: session_context(),
         }
+    }
+}
+
+fn session_context() -> colui_domain::SessionContext {
+    colui_domain::SessionContext {
+        session_id: colui_domain::RuntimeSessionId::new(uuid::Uuid::from_u128(1)),
+        endpoint: colui_domain::DockerEndpoint::try_from("unix:///tmp/docker.sock").unwrap(),
+        daemon_fingerprint: DaemonFingerprint::new("same", "1", "linux", "x86_64"),
+        connected_at: colui_domain::Timestamp("now".to_owned()),
     }
 }
 
@@ -275,7 +400,6 @@ impl DockerControl for CountingDocker {
         self.list_calls.fetch_add(1, Ordering::AcqRel);
         let summaries = self.summaries.clone();
         Box::pin(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
             Ok(summaries
                 .iter()
                 .cloned()

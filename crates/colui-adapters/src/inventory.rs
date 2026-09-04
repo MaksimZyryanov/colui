@@ -1,39 +1,49 @@
-use colui_app::{InventoryFuture, InventoryReader, InventoryRefresher, RuntimeInventorySource};
+use colui_app::{
+    Clock, InventoryFuture, InventoryReader, InventoryRefresher, RuntimeInventorySource,
+};
 use colui_domain::{
     AppError, AppErrorCode, ContainerObservation, InventoryFreshness, ProjectRuntimeSnapshot,
-    RuntimeInventory, RuntimeSessionState, Timestamp,
+    RuntimeInventory, RuntimeSessionState, SessionContext, Timestamp,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, Mutex, OnceCell};
+use std::time::Duration;
+use tokio::sync::{broadcast, watch, Mutex};
+
+type RefreshResult = Result<RuntimeInventory, AppError>;
+
+struct InFlight {
+    completed: watch::Receiver<Option<RefreshResult>>,
+}
 
 struct State {
     current: RuntimeInventory,
     generation: u64,
-    in_flight: Option<Arc<OnceCell<Result<RuntimeInventory, AppError>>>>,
+    in_flight: Option<InFlight>,
     failures: u32,
-    retry_at: Option<Instant>,
+    retry_at: Option<Duration>,
 }
 
 pub struct InventoryCoordinator {
     api: Arc<dyn RuntimeInventorySource>,
-    state: Arc<Mutex<State>>,
+    clock: Arc<dyn Clock>,
+    state: Mutex<State>,
     subscribers: broadcast::Sender<RuntimeInventory>,
 }
 
 impl InventoryCoordinator {
-    pub fn new(api: Arc<dyn RuntimeInventorySource>) -> Self {
+    pub fn new(api: Arc<dyn RuntimeInventorySource>, clock: Arc<dyn Clock>) -> Self {
         let (subscribers, _) = broadcast::channel(16);
         Self {
             api,
-            state: Arc::new(Mutex::new(State {
+            clock,
+            state: Mutex::new(State {
                 current: RuntimeInventory::unavailable(),
                 generation: 0,
                 in_flight: None,
                 failures: 0,
                 retry_at: None,
-            })),
+            }),
             subscribers,
         }
     }
@@ -54,99 +64,89 @@ impl InventoryCoordinator {
         self.subscribers.subscribe()
     }
 
-    async fn refresh_inner(&self, automatic: bool) -> Result<RuntimeInventory, AppError> {
-        let cell = {
+    async fn refresh_inner(&self, automatic: bool) -> RefreshResult {
+        let (sender, mut completed) = {
             let mut state = self.state.lock().await;
-            if automatic && state.retry_at.is_some_and(|at| Instant::now() < at) {
+            if automatic
+                && state
+                    .retry_at
+                    .is_some_and(|deadline| self.clock.monotonic() < deadline)
+            {
                 return Ok(state.current.clone());
             }
-            if let Some(cell) = &state.in_flight {
-                cell.clone()
+            if let Some(in_flight) = &state.in_flight {
+                (None, in_flight.completed.clone())
             } else {
-                let cell = Arc::new(OnceCell::new());
-                state.in_flight = Some(cell.clone());
-                cell
+                let (sender, receiver) = watch::channel(None);
+                state.in_flight = Some(InFlight {
+                    completed: receiver.clone(),
+                });
+                (Some(sender), receiver)
             }
         };
-        let result = cell
-            .get_or_init(|| async {
-                let observed = self.observe().await;
-                let mut state = self.state.lock().await;
-                match observed {
-                    Ok((captured, observations)) => {
-                        let mut projects = BTreeMap::<String, ProjectRuntimeSnapshot>::new();
-                        let mut containers = Vec::with_capacity(observations.len());
-                        let mut standalone = Vec::new();
-                        for observation in observations {
-                            add_observation(
-                                observation,
-                                &mut containers,
-                                &mut standalone,
-                                &mut projects,
-                            );
-                        }
-                        let now = Timestamp(chrono::Utc::now().to_rfc3339());
-                        let generation = state.generation + 1;
-                        let snapshot = RuntimeInventory {
-                            generation,
-                            has_snapshot: true,
-                            observed_at: Some(now.clone()),
-                            runtime_session_id: Some(captured.session_id),
-                            daemon_fingerprint: Some(captured.daemon_fingerprint),
-                            freshness: InventoryFreshness::Fresh,
-                            last_successful_observed_at: Some(now),
-                            containers,
-                            project_snapshots: projects.into_values().collect(),
-                            standalone_containers: standalone,
-                            error: None,
-                        };
-                        if generation > state.generation {
-                            state.generation = generation;
-                            state.current = snapshot.clone();
-                            state.failures = 0;
-                            state.retry_at = None;
-                            let _ = self.subscribers.send(snapshot.clone());
-                        }
-                        Ok(snapshot)
-                    }
-                    Err(error) => {
-                        state.failures = state.failures.saturating_add(1);
-                        let delay = match state.failures {
-                            1 => 1,
-                            2 => 2,
-                            3 => 4,
-                            4 => 8,
-                            _ => 10,
-                        };
-                        state.retry_at = Some(Instant::now() + Duration::from_secs(delay));
-                        let mut retained = state.current.clone();
-                        retained.freshness = if retained.has_snapshot {
-                            InventoryFreshness::Stale
-                        } else {
-                            InventoryFreshness::Unavailable
-                        };
-                        retained.error = Some(error);
-                        state.current = retained.clone();
-                        Ok(retained)
-                    }
-                }
-            })
-            .await
-            .clone();
+
+        let Some(sender) = sender else {
+            return wait_for_result(&mut completed).await;
+        };
+
+        let observed = self.observe().await;
         let mut state = self.state.lock().await;
-        if state
+        let result = self.complete_refresh(&mut state, observed);
+        state
             .in_flight
-            .as_ref()
-            .is_some_and(|active| Arc::ptr_eq(active, &cell))
-        {
-            state.in_flight = None;
-        }
+            .take()
+            .expect("refresh creator owns installed in-flight state");
+        sender.send_replace(Some(result.clone()));
         result
     }
 
-    async fn observe(
+    fn complete_refresh(
         &self,
-    ) -> Result<(colui_domain::SessionContext, Vec<ContainerObservation>), AppError> {
+        state: &mut State,
+        observed: Result<(SessionContext, Vec<ContainerObservation>), AppError>,
+    ) -> RefreshResult {
+        match observed {
+            Ok((captured, observations)) => {
+                let generation = state.generation.checked_add(1).ok_or_else(|| {
+                    AppError::new(
+                        AppErrorCode::RuntimeUnavailable,
+                        "inventory",
+                        None,
+                        "inventory generation exhausted",
+                    )
+                })?;
+                let snapshot = normalize(generation, self.clock.now(), captured, observations);
+                state.generation = generation;
+                state.current = snapshot.clone();
+                state.failures = 0;
+                state.retry_at = None;
+                let _ = self.subscribers.send(snapshot.clone());
+                Ok(snapshot)
+            }
+            Err(error) => {
+                state.failures = state.failures.saturating_add(1);
+                let delay = match state.failures {
+                    1 => 1,
+                    2 => 2,
+                    3 => 4,
+                    4 => 8,
+                    _ => 10,
+                };
+                state.retry_at = Some(self.clock.monotonic() + Duration::from_secs(delay));
+                let mut retained = state.current.clone();
+                retained.freshness = if retained.has_snapshot {
+                    InventoryFreshness::Stale
+                } else {
+                    InventoryFreshness::Unavailable
+                };
+                retained.error = Some(error.clone());
+                state.current = retained;
+                Err(error)
+            }
+        }
+    }
+
+    async fn observe(&self) -> Result<(SessionContext, Vec<ContainerObservation>), AppError> {
         let captured = ready_context(self.api.session_state().await?, "runtime unavailable")?;
         let observations = self.api.list_containers().await?;
         let after = ready_context(self.api.session_state().await?, "runtime session changed")?;
@@ -164,10 +164,50 @@ impl InventoryCoordinator {
     }
 }
 
-fn ready_context(
-    state: RuntimeSessionState,
-    message: &str,
-) -> Result<colui_domain::SessionContext, AppError> {
+async fn wait_for_result(completed: &mut watch::Receiver<Option<RefreshResult>>) -> RefreshResult {
+    loop {
+        if let Some(result) = completed.borrow().clone() {
+            return result;
+        }
+        completed.changed().await.map_err(|_| {
+            AppError::new(
+                AppErrorCode::RuntimeUnavailable,
+                "inventory",
+                None,
+                "inventory refresh cancelled",
+            )
+        })?;
+    }
+}
+
+fn normalize(
+    generation: u64,
+    now: Timestamp,
+    captured: SessionContext,
+    observations: Vec<ContainerObservation>,
+) -> RuntimeInventory {
+    let mut projects = BTreeMap::<String, ProjectRuntimeSnapshot>::new();
+    let mut containers = Vec::with_capacity(observations.len());
+    let mut standalone = Vec::new();
+    for observation in observations {
+        add_observation(observation, &mut containers, &mut standalone, &mut projects);
+    }
+    RuntimeInventory {
+        generation,
+        has_snapshot: true,
+        observed_at: Some(now.clone()),
+        runtime_session_id: Some(captured.session_id),
+        daemon_fingerprint: Some(captured.daemon_fingerprint),
+        freshness: InventoryFreshness::Fresh,
+        last_successful_observed_at: Some(now),
+        containers,
+        project_snapshots: projects.into_values().collect(),
+        standalone_containers: standalone,
+        error: None,
+    }
+}
+
+fn ready_context(state: RuntimeSessionState, message: &str) -> Result<SessionContext, AppError> {
     match state {
         RuntimeSessionState::Ready(context) => Ok(context),
         _ => Err(AppError::new(
@@ -208,6 +248,7 @@ impl InventoryReader for InventoryCoordinator {
         self.current_inventory()
     }
 }
+
 impl InventoryRefresher for InventoryCoordinator {
     fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
         self.refresh()

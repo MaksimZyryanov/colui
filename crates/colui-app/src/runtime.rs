@@ -1,6 +1,6 @@
 use colui_domain::{
     AppError, ContainerDetails, ContainerId, ContainerObservation, DockerEndpoint,
-    RuntimeSessionState,
+    RuntimeSessionState, Timestamp,
 };
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -118,3 +118,8 @@ pub trait RuntimeStateReader: Send + Sync {
 
 pub trait RuntimeInventorySource: DockerApi + RuntimeStateReader {}
 impl<T: DockerApi + RuntimeStateReader> RuntimeInventorySource for T {}
+
+pub trait Clock: Send + Sync {
+    fn now(&self) -> Timestamp;
+    fn monotonic(&self) -> Duration;
+}
