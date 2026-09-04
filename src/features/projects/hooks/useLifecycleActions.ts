@@ -2,10 +2,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { applyProject, restartProject, stopProject, tearDownProject } from '../../../ipc/commands';
 import { projectKeys } from '../query-keys';
 import type { LifecycleResult } from '../../../ipc/types';
-export const shouldInvalidateLifecycle = (result: LifecycleResult) => result.success;
+import { inventoryKeys } from '../../../features/runtime/query-keys';
+import { inventoryStructuralSharing } from '../../../features/runtime/hooks/useInventory';
+export const shouldPublishLifecycleInventory = (result: LifecycleResult) => result.success;
 export function useLifecycleActions() {
   const client = useQueryClient();
-  const onSuccess = (result: LifecycleResult, profileId: string) => { if (shouldInvalidateLifecycle(result)) void client.invalidateQueries({ queryKey: projectKeys.status(profileId), exact: true }); };
+  const onSuccess = (result: LifecycleResult) => { if (shouldPublishLifecycleInventory(result)) client.setQueryData(inventoryKeys.snapshot(), (old: import('../../../ipc/types').RuntimeInventory | undefined) => inventoryStructuralSharing(old, result.inventory)); };
   const apply = useMutation({ mutationFn: applyProject, onSuccess });
   const stop = useMutation({ mutationFn: stopProject, onSuccess });
   const tearDown = useMutation({ mutationFn: tearDownProject, onSuccess });

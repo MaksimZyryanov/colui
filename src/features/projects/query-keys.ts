@@ -3,4 +3,5 @@ export const projectKeys = {
   list: () => ['projects', 'list'] as const,
   detail: (profileId: string) => ['projects', 'detail', profileId] as const,
   status: (profileId: string) => ['projects', 'status', profileId] as const,
+  definition: (profileId: string) => ['projects', 'definition', profileId] as const,
 };

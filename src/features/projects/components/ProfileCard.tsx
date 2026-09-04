@@ -14,7 +14,7 @@ const unavailableStatus = (profileId: string): ProjectStatus => ({ profileId, ru
 export function ProfileCard({ profile, initialStatus, runtimeReady }: { profile: ProfileSummary; initialStatus?: ProjectStatus; runtimeReady?: boolean }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
-  const status = useProjectStatus(profile.id);
+  const status = useProjectStatus(profile);
   const runtime = useRuntimeState();
   const details = useProfile(editing ? profile.id : undefined);
   const projectedStatus = initialStatus ?? status.data ?? (status.isError ? unavailableStatus(profile.id) : undefined);

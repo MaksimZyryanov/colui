@@ -6,6 +6,7 @@ export const queryClient = new QueryClient({
     queries: {
       retry: (failureCount, error) => error instanceof AppErrorException && error.retryable && failureCount < 2,
       refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
       refetchInterval: false,
     },
     mutations: { retry: false },

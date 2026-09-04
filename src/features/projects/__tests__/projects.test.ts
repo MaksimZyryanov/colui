@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { projectKeys } from '../query-keys';
 import { projectStatusLabel } from '../components/StatusBadge';
 import { validateProfileDraft } from '../components/ProfileFormDialog';
-import { shouldInvalidateLifecycle } from '../hooks/useLifecycleActions';
+import { shouldPublishLifecycleInventory } from '../hooks/useLifecycleActions';
 
 describe('projects foundations', () => {
   it('keys every query by profile id', () => {
@@ -21,10 +21,10 @@ describe('projects foundations', () => {
     expect(validateProfileDraft({ displayName: '', composeProjectName: 'Bad Name', workingDirectory: '', composeFiles: ['a.yml', 'a.yml'], environmentFiles: [] })).toEqual(expect.objectContaining({ displayName: expect.any(String), composeProjectName: expect.any(String), workingDirectory: expect.any(String), composeFiles: expect.any(String) }));
   });
 
-  it('only invalidates status for successful lifecycle results', () => {
+  it('only publishes inventory for successful lifecycle results', () => {
     const inventory = { generation: 0, hasSnapshot: false, observedAt: null, runtimeSessionId: null, daemonFingerprint: null, freshness: 'unavailable' as const, lastSuccessfulObservedAt: null, containers: [], projects: [], standaloneContainers: [], error: null };
-    expect(shouldInvalidateLifecycle({ profileId: 'id-1', success: true, inventoryGeneration: 0, inventory })).toBe(true);
-    expect(shouldInvalidateLifecycle({ profileId: 'id-1', success: false, inventoryGeneration: 0, inventory })).toBe(false);
+    expect(shouldPublishLifecycleInventory({ profileId: 'id-1', success: true, inventoryGeneration: 0, inventory })).toBe(true);
+    expect(shouldPublishLifecycleInventory({ profileId: 'id-1', success: false, inventoryGeneration: 0, inventory })).toBe(false);
   });
 
   it('maps backend issue fields to form error associations', () => {
