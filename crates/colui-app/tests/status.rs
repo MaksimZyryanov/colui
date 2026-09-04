@@ -1,9 +1,10 @@
 use colui_app::{
-    GetProjectStatus, ProfileReader, ProjectStatus, ProjectStatusFuture, ProjectStatusReader,
-    RegistrySnapshot, RuntimeProjection, StoreFuture,
+    project_status_from_inventory, GetProjectStatus, ProfileReader, ProjectStatus,
+    ProjectStatusFuture, ProjectStatusReader, RegistrySnapshot, RuntimeProjection, StoreFuture,
 };
 use colui_domain::{
-    AppError, DefinitionState, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin,
+    AppError, ContainerId, ContainerInstance, ContainerState, DefinitionState, ProfileDraft,
+    ProfileId, ProjectProfile, ProjectRuntimeSnapshot, RegistrationOrigin, RuntimeInventory,
     RuntimePresence,
 };
 use std::sync::Mutex;
@@ -72,4 +73,43 @@ async fn get_project_status_resolves_profile_before_runtime_read() -> Result<(),
     assert_eq!(result.profile_id, expected_id);
     assert_eq!(*port.0.lock().unwrap(), Some(expected_id));
     Ok(())
+}
+
+#[test]
+fn pre_observation_status_is_unavailable_without_runtime_reads() {
+    let status = project_status_from_inventory(&profile(), RuntimeInventory::unavailable());
+    assert_eq!(status.runtime.presence, RuntimePresence::Unavailable);
+    assert_eq!(status.runtime.activity, None);
+    assert_eq!(status.runtime.container_count, 0);
+    assert_eq!(status.runtime.running_container_count, 0);
+    assert_eq!(status.runtime.observed_at, None);
+    assert_eq!(status.definition_state, DefinitionState::Unchecked);
+    assert!(status.issues.is_empty());
+}
+
+#[test]
+fn status_projection_uses_shared_project_snapshot() {
+    let inventory = RuntimeInventory {
+        generation: 1,
+        has_snapshot: true,
+        project_snapshots: vec![ProjectRuntimeSnapshot {
+            compose_project_name: "demo".into(),
+            working_directory: None,
+            config_files: vec![],
+            containers: vec![ContainerInstance {
+                id: ContainerId("container".into()),
+                name: "web".into(),
+                image: "web".into(),
+                state: ContainerState::Running,
+                status_text: "Up".into(),
+                service_name: None,
+                published_ports: vec![],
+            }],
+        }],
+        ..RuntimeInventory::unavailable()
+    };
+    let status = project_status_from_inventory(&profile(), inventory);
+    assert_eq!(status.runtime.presence, RuntimePresence::Present);
+    assert_eq!(status.runtime.container_count, 1);
+    assert_eq!(status.runtime.running_container_count, 1);
 }

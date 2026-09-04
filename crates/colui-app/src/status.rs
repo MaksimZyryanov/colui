@@ -3,6 +3,59 @@ use colui_domain::{
     AppError, AppErrorCode, DefinitionState, Issue, ProfileId, ProjectProfile, RuntimeActivity,
     RuntimePresence, Timestamp,
 };
+
+pub fn project_status_from_inventory(
+    profile: &ProjectProfile,
+    inventory: colui_domain::RuntimeInventory,
+) -> ProjectStatus {
+    let containers = inventory
+        .project_snapshots
+        .iter()
+        .find(|snapshot| snapshot.compose_project_name == profile.compose_project_name.as_ref())
+        .map(|snapshot| snapshot.containers.as_slice())
+        .unwrap_or(&[]);
+    let container_count = containers.len() as u32;
+    let running_container_count = containers
+        .iter()
+        .filter(|container| container.state == colui_domain::ContainerState::Running)
+        .count() as u32;
+    let (presence, activity) = if !inventory.has_snapshot {
+        (RuntimePresence::Unavailable, None)
+    } else if container_count == 0 {
+        (RuntimePresence::Absent, None)
+    } else if running_container_count == container_count {
+        (RuntimePresence::Present, Some(RuntimeActivity::AllRunning))
+    } else if running_container_count == 0 {
+        (RuntimePresence::Present, Some(RuntimeActivity::NoneRunning))
+    } else {
+        (RuntimePresence::Present, Some(RuntimeActivity::Mixed))
+    };
+    ProjectStatus {
+        profile_id: profile.id.clone(),
+        runtime: RuntimeProjection {
+            presence,
+            activity,
+            container_count,
+            running_container_count,
+            observed_at: inventory.observed_at,
+        },
+        definition_state: DefinitionState::Unchecked,
+        issues: Vec::new(),
+    }
+}
+
+pub fn project_status_from_inventory_and_definition(
+    profile: &ProjectProfile,
+    inventory: colui_domain::RuntimeInventory,
+    definition: Option<colui_domain::ProjectDefinition>,
+) -> ProjectStatus {
+    let mut status = project_status_from_inventory(profile, inventory);
+    if let Some(definition) = definition {
+        status.definition_state = definition.state;
+        status.issues = definition.issues;
+    }
+    status
+}
 use std::future::Future;
 use std::pin::Pin;
 

@@ -2,14 +2,13 @@ use super::ComposeOperation;
 use super::{build_cli_environment, resolve_endpoint, DockerControl};
 use bollard::Docker;
 use colui_app::{
-    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleFuture,
-    LifecycleOperation, LifecycleResult, LifecycleRuntime, ProjectStatus, ProjectStatusFuture,
-    ProjectStatusReader, RuntimeConnector, RuntimeFuture, RuntimeProjection, RuntimeStateReader,
+    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleExecutionResult,
+    LifecycleExecutor, LifecycleFuture, LifecycleOperation, RuntimeConnector, RuntimeFuture,
+    RuntimeStateReader,
 };
 use colui_domain::{
-    AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerObservation, ContainerState,
-    DaemonFingerprint, DefinitionState, DockerEndpoint, MismatchDetails, RuntimeActivity,
-    RuntimeInventory, RuntimePresence, RuntimeSessionId, RuntimeSessionState, SessionContext,
+    AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerObservation, DaemonFingerprint,
+    DockerEndpoint, MismatchDetails, RuntimeSessionId, RuntimeSessionState, SessionContext,
     Timestamp,
 };
 use std::sync::{
@@ -103,12 +102,17 @@ impl RuntimeGateway {
             created: AtomicUsize::new(0),
         }
     }
+
+    pub fn with_runner(runner: Arc<dyn ComposeRunner>) -> Self {
+        Self::with_factory(Arc::new(BollardFactory), runner)
+    }
     pub fn new(runner: Box<dyn ComposeRunner>) -> Self {
         Self::with_factory(Arc::new(BollardFactory), runner.into())
     }
     pub fn created_client_count(&self) -> usize {
         self.created.load(Ordering::Relaxed)
     }
+
     pub fn replace_runner_for_tests(&self, runner: Box<dyn ComposeRunner>) {
         let runner = runner.into();
         let mut current = self.runner.try_lock().expect("test runner is idle");
@@ -174,12 +178,12 @@ impl RuntimeGateway {
     }
 }
 
-impl LifecycleRuntime for RuntimeGateway {
-    fn run_profile(
+impl LifecycleExecutor for RuntimeGateway {
+    fn execute_profile(
         &self,
         profile: colui_domain::ProjectProfile,
         operation: LifecycleOperation,
-    ) -> LifecycleFuture<'_, LifecycleResult> {
+    ) -> LifecycleFuture<'_, LifecycleExecutionResult> {
         Box::pin(async move {
             let profile_id = profile.id.clone();
             let compose_operation = match operation {
@@ -207,11 +211,9 @@ impl LifecycleRuntime for RuntimeGateway {
                     "compose exited unsuccessfully",
                 ));
             }
-            Ok(LifecycleResult {
+            Ok(LifecycleExecutionResult {
                 profile_id,
                 success: true,
-                // Task 7 wires refresh-on-success through the inventory coordinator.
-                inventory: RuntimeInventory::unavailable(),
             })
         })
     }
@@ -451,71 +453,6 @@ impl DockerApi for RuntimeGateway {
                 ));
             }
             Ok(result)
-        })
-    }
-}
-
-impl ProjectStatusReader for RuntimeGateway {
-    fn project_status(&self, profile: colui_domain::ProjectProfile) -> ProjectStatusFuture<'_> {
-        Box::pin(async move {
-            if !matches!(self.session_state().await?, RuntimeSessionState::Ready(_)) {
-                return Ok(ProjectStatus {
-                    profile_id: profile.id,
-                    runtime: RuntimeProjection {
-                        presence: RuntimePresence::Unavailable,
-                        activity: None,
-                        container_count: 0,
-                        running_container_count: 0,
-                        observed_at: None,
-                    },
-                    definition_state: DefinitionState::Unchecked,
-                    issues: vec![],
-                });
-            }
-            let containers = self.list_containers().await?;
-            let mut matching = Vec::new();
-            for observation in containers {
-                let details = self.inspect_container(&observation.instance.id).await?;
-                if details
-                    .labels
-                    .get("com.docker.compose.project")
-                    .map(String::as_str)
-                    == Some(profile.compose_project_name.as_ref())
-                {
-                    matching.push(details.instance);
-                }
-            }
-            let container_count = matching.len() as u32;
-            let running_container_count = matching
-                .iter()
-                .filter(|container| container.state == ContainerState::Running)
-                .count() as u32;
-            let presence = if matching.is_empty() {
-                RuntimePresence::Absent
-            } else {
-                RuntimePresence::Present
-            };
-            let activity = if matching.is_empty() {
-                None
-            } else if running_container_count == container_count {
-                Some(RuntimeActivity::AllRunning)
-            } else if running_container_count == 0 {
-                Some(RuntimeActivity::NoneRunning)
-            } else {
-                Some(RuntimeActivity::Mixed)
-            };
-            Ok(ProjectStatus {
-                profile_id: profile.id,
-                runtime: RuntimeProjection {
-                    presence,
-                    activity,
-                    container_count,
-                    running_container_count,
-                    observed_at: Some(timestamp()),
-                },
-                definition_state: DefinitionState::Unchecked,
-                issues: vec![],
-            })
         })
     }
 }
