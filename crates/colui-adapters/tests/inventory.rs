@@ -48,6 +48,7 @@ async fn concurrent_refreshes_share_one_list_and_generation() {
         Some("checkout"),
     )]));
     let coordinator = Arc::new(InventoryCoordinator::new(source.clone(), test_clock()));
+    let mut joined = coordinator.subscribe_refresh_joins();
     let first = tokio::spawn({
         let coordinator = coordinator.clone();
         async move { coordinator.refresh().await }
@@ -57,9 +58,9 @@ async fn concurrent_refreshes_share_one_list_and_generation() {
         let coordinator = coordinator.clone();
         async move { coordinator.refresh().await }
     });
-    tokio::task::yield_now().await;
+    joined.recv().await.unwrap();
     assert_eq!(source.calls.load(Ordering::Acquire), 1);
-    source.release.notify_waiters();
+    source.release.add_permits(2);
 
     let (a, b) = tokio::join!(first, second);
     let a = a.unwrap().unwrap();
@@ -67,6 +68,25 @@ async fn concurrent_refreshes_share_one_list_and_generation() {
     assert_eq!(a.generation, 1);
     assert_eq!(a.generation, b.generation);
     assert_eq!(source.calls.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn cancelled_creator_does_not_leak_in_flight_refresh() {
+    let source = Arc::new(BlockingSource::new(vec![]));
+    let coordinator = Arc::new(InventoryCoordinator::new(source.clone(), test_clock()));
+    let first = tokio::spawn({
+        let coordinator = coordinator.clone();
+        async move { coordinator.refresh().await }
+    });
+    source.started.notified().await;
+    first.abort();
+    source.release.add_permits(2);
+
+    let completed = coordinator.refresh().await.unwrap();
+    assert_eq!(completed.generation, 1);
+    assert_eq!(source.calls.load(Ordering::Acquire), 1);
+    assert_eq!(coordinator.refresh().await.unwrap().generation, 2);
+    assert_eq!(source.calls.load(Ordering::Acquire), 2);
 }
 
 #[tokio::test]
@@ -214,7 +234,7 @@ struct BlockingSource {
     observations: Vec<ContainerObservation>,
     calls: AtomicUsize,
     started: tokio::sync::Notify,
-    release: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
     context: colui_domain::SessionContext,
 }
 
@@ -224,7 +244,7 @@ impl BlockingSource {
             observations,
             calls: AtomicUsize::new(0),
             started: tokio::sync::Notify::new(),
-            release: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
             context: session_context(),
         }
     }
@@ -235,7 +255,7 @@ impl DockerApi for BlockingSource {
         self.calls.fetch_add(1, Ordering::AcqRel);
         Box::pin(async move {
             self.started.notify_one();
-            self.release.notified().await;
+            self.release.acquire().await.unwrap().forget();
             Ok(self.observations.clone())
         })
     }

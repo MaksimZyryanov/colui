@@ -41,3 +41,19 @@ Fix verification:
 - `bash scripts/check-boundaries.sh`: `Dependency boundaries OK`.
 
 Concern: Docker daemon smoke remains intentionally unrun per task scope.
+
+## Fix Round 2
+
+- Moved refresh observation and completion cleanup into a cancellation-independent Tokio task. Aborting any caller no longer drops the completion sender or leaves stale in-flight state; worker clears matching ownership and wakes all waiters.
+- Added `cancelled_creator_does_not_leak_in_flight_refresh` regression coverage.
+- Replaced scheduler-dependent coalescing yield with an explicit coordinator join notification and blocking fake Docker source.
+
+Fix verification:
+
+- `cargo test -p colui-adapters --test inventory -- --nocapture`: 10 passed, 0 failed.
+- `cargo test --workspace`: 98 passed, 0 failed.
+- `cargo check -p colui-adapters --features docker-tests --tests`: passed.
+- `cargo fmt --all -- --check`: passed.
+- `bash scripts/check-boundaries.sh`: `Dependency boundaries OK`.
+
+Concern: Docker daemon smoke remains intentionally unrun per task scope.
