@@ -7,6 +7,8 @@ pub fn generate_all_schemas() -> BTreeMap<String, Value> {
     [
         ("AppErrorCodeDto", schema_for!(AppErrorCodeDto)),
         ("AppErrorDto", schema_for!(AppErrorDto)),
+        ("ContainerInstanceDto", schema_for!(ContainerInstanceDto)),
+        ("ContainerStateDto", schema_for!(ContainerStateDto)),
         (
             "DefinitionProjectionDto",
             schema_for!(DefinitionProjectionDto),
@@ -14,6 +16,7 @@ pub fn generate_all_schemas() -> BTreeMap<String, Value> {
         ("DefinitionStateDto", schema_for!(DefinitionStateDto)),
         ("DaemonFingerprintDto", schema_for!(DaemonFingerprintDto)),
         ("IssueDto", schema_for!(IssueDto)),
+        ("InventoryFreshnessDto", schema_for!(InventoryFreshnessDto)),
         ("LifecycleResultDto", schema_for!(LifecycleResultDto)),
         ("MismatchDetailsDto", schema_for!(MismatchDetailsDto)),
         ("OperationDto", schema_for!(OperationDto)),
@@ -36,6 +39,18 @@ pub fn generate_all_schemas() -> BTreeMap<String, Value> {
         ("RuntimeStateDto", schema_for!(RuntimeStateDto)),
         ("SessionContextDto", schema_for!(SessionContextDto)),
         ("ProjectStatusDto", schema_for!(ProjectStatusDto)),
+        ("ProjectDefinitionDto", schema_for!(ProjectDefinitionDto)),
+        (
+            "ProjectDetailsResponseDto",
+            schema_for!(ProjectDetailsResponseDto),
+        ),
+        (
+            "ProjectRuntimeSnapshotDto",
+            schema_for!(ProjectRuntimeSnapshotDto),
+        ),
+        ("PortBindingDto", schema_for!(PortBindingDto)),
+        ("RuntimeInventoryDto", schema_for!(RuntimeInventoryDto)),
+        ("ServiceDefinitionDto", schema_for!(ServiceDefinitionDto)),
         (
             "UpdateProfileRequestDto",
             schema_for!(UpdateProfileRequestDto),
@@ -122,11 +137,19 @@ fn fixtures() -> Vec<(&'static str, Value)> {
         ),
         (
             "lifecycle_result_valid.json",
-            json!({"profileId":"00000000-0000-0000-0000-000000000001","success":true}),
+            json!({"profileId":"00000000-0000-0000-0000-000000000001","success":true,"inventoryGeneration":0,"inventory":{"generation":0,"hasSnapshot":false,"observedAt":null,"runtimeSessionId":null,"daemonFingerprint":null,"freshness":"unavailable","lastSuccessfulObservedAt":null,"containers":[],"projects":[],"standaloneContainers":[],"error":null}}),
         ),
         (
             "lifecycle_result_invalid_missing_success.json",
             json!({"profileId":"00000000-0000-0000-0000-000000000001"}),
+        ),
+        (
+            "inventory_pre_observation_valid.json",
+            json!({"generation":0,"hasSnapshot":false,"observedAt":null,"runtimeSessionId":null,"daemonFingerprint":null,"freshness":"unavailable","lastSuccessfulObservedAt":null,"containers":[],"projects":[],"standaloneContainers":[],"error":null}),
+        ),
+        (
+            "inventory_pre_observation_invalid_snapshot.json",
+            json!({"generation":0,"hasSnapshot":true,"observedAt":null,"runtimeSessionId":null,"daemonFingerprint":null,"freshness":"unavailable","lastSuccessfulObservedAt":null,"containers":[],"projects":[],"standaloneContainers":[],"error":null}),
         ),
         (
             "profile_validation_valid.json",

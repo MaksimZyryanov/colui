@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyProject, connectRuntime, createProfile, getProfile, getProjectStatus, getRuntimeState, inspectProfileDraft, listProfiles, removeProfile, restartProject, stopProject, tearDownProject, updateProfile } from '../commands';
+import { applyProject, connectRuntime, createProfile, getProfile, getProjectStatus, getRuntimeState, inspectProfileDraft, listProfiles, removeProfile, restartProject, stopProject, tearDownProject, updateProfile, getInventory, refreshInventory, getProjectDetails, refreshProjectDefinition } from '../commands';
 import { mockBackend } from '../mock-backend';
 import { AppErrorException, normalizeError } from '../errors';
 

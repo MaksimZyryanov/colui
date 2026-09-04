@@ -1,0 +1,255 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "DefinitionStateDto": {
+      "enum": [
+        "unchecked",
+        "valid",
+        "invalid",
+        "stale"
+      ],
+      "type": "string"
+    },
+    "IssueDto": {
+      "properties": {
+        "field": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "ProfileDetailsDto": {
+      "properties": {
+        "composeFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "environmentFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "profile": {
+          "$ref": "#/definitions/ProfileSummaryDto"
+        }
+      },
+      "required": [
+        "composeFiles",
+        "environmentFiles",
+        "profile"
+      ],
+      "type": "object"
+    },
+    "ProfileSummaryDto": {
+      "properties": {
+        "composeProjectName": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "registrationOrigin": {
+          "$ref": "#/definitions/RegistrationOriginDto"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "workingDirectory": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "composeProjectName",
+        "displayName",
+        "id",
+        "registrationOrigin",
+        "revision",
+        "workingDirectory"
+      ],
+      "type": "object"
+    },
+    "ProjectDefinitionDto": {
+      "properties": {
+        "definitionRevision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "issues": {
+          "items": {
+            "$ref": "#/definitions/IssueDto"
+          },
+          "type": "array"
+        },
+        "loadedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profileId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "services": {
+          "items": {
+            "$ref": "#/definitions/ServiceDefinitionDto"
+          },
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/definitions/DefinitionStateDto"
+        }
+      },
+      "required": [
+        "issues",
+        "profileId",
+        "services",
+        "state"
+      ],
+      "type": "object"
+    },
+    "RegistrationOriginDto": {
+      "enum": [
+        "manual",
+        "discovered",
+        "migrated"
+      ],
+      "type": "string"
+    },
+    "Rfc3339Schema": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "RuntimeActivityDto": {
+      "enum": [
+        "all-running",
+        "mixed",
+        "none-running"
+      ],
+      "type": "string"
+    },
+    "RuntimePresenceDto": {
+      "enum": [
+        "unavailable",
+        "absent",
+        "present"
+      ],
+      "type": "string"
+    },
+    "RuntimeProjectionDto": {
+      "properties": {
+        "activity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RuntimeActivityDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "containerCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "observedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presence": {
+          "$ref": "#/definitions/RuntimePresenceDto"
+        },
+        "runningContainerCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "containerCount",
+        "presence",
+        "runningContainerCount"
+      ],
+      "type": "object"
+    },
+    "ServiceDefinitionDto": {
+      "properties": {
+        "buildContext": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "declaredPorts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "image": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "declaredPorts",
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "definition": {
+      "$ref": "#/definitions/ProjectDefinitionDto"
+    },
+    "profile": {
+      "$ref": "#/definitions/ProfileDetailsDto"
+    },
+    "runtime": {
+      "$ref": "#/definitions/RuntimeProjectionDto"
+    }
+  },
+  "required": [
+    "definition",
+    "profile",
+    "runtime"
+  ],
+  "title": "ProjectDetailsResponseDto",
+  "type": "object"
+}

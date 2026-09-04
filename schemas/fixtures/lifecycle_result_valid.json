@@ -1,4 +1,18 @@
 {
+  "inventory": {
+    "containers": [],
+    "daemonFingerprint": null,
+    "error": null,
+    "freshness": "unavailable",
+    "generation": 0,
+    "hasSnapshot": false,
+    "lastSuccessfulObservedAt": null,
+    "observedAt": null,
+    "projects": [],
+    "runtimeSessionId": null,
+    "standaloneContainers": []
+  },
+  "inventoryGeneration": 0,
   "profileId": "00000000-0000-0000-0000-000000000001",
   "success": true
 }

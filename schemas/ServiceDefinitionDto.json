@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "buildContext": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "declaredPorts": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "image": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "declaredPorts",
+    "name"
+  ],
+  "title": "ServiceDefinitionDto",
+  "type": "object"
+}

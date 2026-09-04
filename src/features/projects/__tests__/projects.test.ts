@@ -22,8 +22,9 @@ describe('projects foundations', () => {
   });
 
   it('only invalidates status for successful lifecycle results', () => {
-    expect(shouldInvalidateLifecycle({ profileId: 'id-1', success: true })).toBe(true);
-    expect(shouldInvalidateLifecycle({ profileId: 'id-1', success: false })).toBe(false);
+    const inventory = { generation: 0, hasSnapshot: false, observedAt: null, runtimeSessionId: null, daemonFingerprint: null, freshness: 'unavailable' as const, lastSuccessfulObservedAt: null, containers: [], projects: [], standaloneContainers: [], error: null };
+    expect(shouldInvalidateLifecycle({ profileId: 'id-1', success: true, inventoryGeneration: 0, inventory })).toBe(true);
+    expect(shouldInvalidateLifecycle({ profileId: 'id-1', success: false, inventoryGeneration: 0, inventory })).toBe(false);
   });
 
   it('maps backend issue fields to form error associations', () => {

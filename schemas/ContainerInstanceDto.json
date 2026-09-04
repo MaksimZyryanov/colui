@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ContainerStateDto": {
+      "enum": [
+        "running",
+        "stopped",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "PortBindingDto": {
+      "properties": {
+        "containerPort": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "hostIp": {
+          "type": "string"
+        },
+        "hostPort": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "protocol": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "containerPort",
+        "hostIp",
+        "hostPort",
+        "protocol"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "image": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "publishedPorts": {
+      "items": {
+        "$ref": "#/definitions/PortBindingDto"
+      },
+      "type": "array"
+    },
+    "serviceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "$ref": "#/definitions/ContainerStateDto"
+    },
+    "statusText": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "image",
+    "name",
+    "publishedPorts",
+    "state",
+    "statusText"
+  ],
+  "title": "ContainerInstanceDto",
+  "type": "object"
+}

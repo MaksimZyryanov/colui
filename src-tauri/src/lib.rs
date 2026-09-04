@@ -29,6 +29,7 @@ pub struct AppState {
     pub runtime: Arc<dyn RuntimePort>,
     pub locks: Arc<OperationLockManager>,
     pub inventory: Arc<InventoryCoordinator>,
+    pub definitions: Arc<DefinitionCache>,
 }
 
 pub struct RuntimeFacade {
@@ -129,8 +130,11 @@ pub fn run() {
                 Arc::new(SystemClock(std::time::Instant::now())),
                 locks.clone(),
             ));
-            let runtime: Arc<dyn RuntimePort> =
-                Arc::new(RuntimeFacade::new(gateway, inventory.clone(), definitions));
+            let runtime: Arc<dyn RuntimePort> = Arc::new(RuntimeFacade::new(
+                gateway,
+                inventory.clone(),
+                definitions.clone(),
+            ));
             tauri::Manager::manage(
                 app,
                 AppState {
@@ -139,6 +143,7 @@ pub fn run() {
                     runtime,
                     locks,
                     inventory,
+                    definitions,
                 },
             );
             Ok(())
@@ -153,6 +158,10 @@ pub fn run() {
             commands::runtime::get_runtime_state,
             commands::runtime::connect_runtime,
             commands::runtime::get_project_status,
+            commands::inventory::get_inventory,
+            commands::inventory::refresh_inventory,
+            commands::definitions::get_project_details,
+            commands::definitions::refresh_project_definition,
             commands::lifecycle::apply_project,
             commands::lifecycle::stop_project,
             commands::lifecycle::tear_down_project,

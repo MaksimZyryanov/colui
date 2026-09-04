@@ -19,10 +19,11 @@ const dtoManifest = [
   ['OperationPhaseDto', z.enum(['queued', 'running', 'succeeded', 'failed'])], ['RuntimeProjectionDto', runtimeProjectionSchema],
   ['DefinitionProjectionDto', z.object({ state: z.enum(['unchecked', 'valid', 'invalid', 'stale']), revision: z.string().nullable().optional(), serviceCount: z.number().int().nonnegative().nullable().optional() })],
   ['OperationDto', z.object({ kind: z.enum(['apply', 'stop', 'tear-down', 'restart']), phase: z.enum(['queued', 'running', 'succeeded', 'failed']), startedAt: z.string().datetime({ offset: true }) })],
-  ['ProjectStatusDto', projectStatusSchema], ['RuntimeStateDto', runtimeStateSchema], ['LifecycleResultDto', lifecycleResultSchema],
+  ['ProjectStatusDto', projectStatusSchema], ['RuntimeStateDto', runtimeStateSchema], ['LifecycleResultDto', lifecycleResultSchema], ['RuntimeInventoryDto', s.inventorySchema], ['ProjectDefinitionDto', s.projectDefinitionSchema], ['ProjectDetailsResponseDto', s.projectDetailsResponseSchema],
 ] as const;
 const fixtureManifest: Array<[string, { safeParse: (value: unknown) => { success: boolean } }, boolean]> = [
   ['app_error_invalid_code.json', appErrorSchema, false], ['app_error_missing_retryable.json', appErrorSchema, false],
+  ['inventory_pre_observation_invalid_snapshot.json', s.inventorySchema, false], ['inventory_pre_observation_valid.json', s.inventorySchema, true],
   ['lifecycle_result_invalid_missing_success.json', lifecycleResultSchema, false], ['lifecycle_result_valid.json', lifecycleResultSchema, true],
   ['profile_details_invalid_missing_required.json', profileDetailsSchema, false], ['profile_summary_invalid_enum.json', profileSummarySchema, false],
   ['profile_summary_invalid_missing_id.json', profileSummarySchema, false], ['profile_summary_invalid_uuid.json', profileSummarySchema, false], ['profile_summary_valid.json', profileSummarySchema, true],
@@ -74,6 +75,24 @@ const normalizeSchema = (value: unknown, root = value): unknown => {
 };
 
 describe('IPC contracts', () => {
+  it('decodes pre-observation generation zero only with hasSnapshot false', () => {
+    const preObservationFixture = {
+      generation: 0,
+      hasSnapshot: false,
+      observedAt: null,
+      runtimeSessionId: null,
+      daemonFingerprint: null,
+      freshness: 'unavailable',
+      lastSuccessfulObservedAt: null,
+      containers: [],
+      projects: [],
+      standaloneContainers: [],
+      error: null,
+    };
+    expect(s.inventorySchema.parse(preObservationFixture).hasSnapshot).toBe(false);
+    expect(s.inventorySchema.safeParse({ ...preObservationFixture, hasSnapshot: true }).success).toBe(false);
+  });
+
   it('turns malformed success payload into protocol_mismatch', () => {
     const raw = { revision: 1, displayName: 'Missing id' };
     expect(() => decodeResponse(profileSummarySchema, raw, 'list_profiles'))
@@ -168,7 +187,7 @@ describe('IPC contracts', () => {
       const generated = zodToJsonSchema(schema, { name, $refStrategy: 'none' });
       expect(normalizeSchema(generated), name).toEqual(normalizeSchema(rust));
     }
-    expect(dtoManifest).toHaveLength(26);
+  expect(dtoManifest).toHaveLength(29);
   });
 
   it('does not discard additionalProperties contract metadata', () => {

@@ -2,8 +2,8 @@ use colui_app::LifecycleResult;
 use colui_domain::{AppError, AppErrorCode, ProfileId, RuntimeInventory};
 use colui_tauri_lib::dto::{
     AppErrorDto, DefinitionStateDto, LifecycleResultDto, OperationKindDto, OperationPhaseDto,
-    ProjectStatusDto, RegistrationOriginDto, RuntimeActivityDto, RuntimePresenceDto,
-    RuntimeStateDto, SessionContextDto, UpdateProfileRequestDto,
+    ProjectStatusDto, RegistrationOriginDto, RuntimeActivityDto, RuntimeInventoryDto,
+    RuntimePresenceDto, RuntimeStateDto, SessionContextDto, UpdateProfileRequestDto,
 };
 use colui_tauri_lib::schema_generation::{generate_all_schemas, write_schemas};
 use std::fs;
@@ -20,10 +20,24 @@ fn update_request_serializes_only_camel_case_metadata_and_patch() {
 #[test]
 fn lifecycle_result_contains_profile_id_and_success() {
     let value = serde_json::to_value(LifecycleResultDto::success("id-1")).unwrap();
-    assert_eq!(
-        value,
-        serde_json::json!({"profileId":"id-1","success":true})
-    );
+    assert_eq!(value["profileId"], "id-1");
+    assert_eq!(value["success"], true);
+    assert_eq!(value["inventoryGeneration"], 0);
+}
+
+#[test]
+fn inventory_dto_contains_snapshot_marker_and_full_container_list() {
+    let json = serde_json::to_value(RuntimeInventoryDto::fixture()).unwrap();
+    assert_eq!(json["hasSnapshot"], true);
+    assert!(json["containers"].is_array());
+    assert!(json["projects"].is_array());
+    assert!(json["standaloneContainers"].is_array());
+}
+
+#[test]
+fn lifecycle_generation_matches_embedded_inventory() {
+    let dto = LifecycleResultDto::fixture();
+    assert_eq!(dto.inventory_generation, dto.inventory.generation);
 }
 
 #[test]
@@ -249,7 +263,7 @@ fn lifecycle_result_deserializes_only_canonical_profile_ids() {
         ("00000000000000000000000000000001", false),
         ("00000000-0000-0000-0000-00000000000A", false),
     ] {
-        let value = serde_json::json!({"profileId": profile_id, "success": true});
+        let value = serde_json::json!({"profileId": profile_id, "success": true, "inventoryGeneration": 0, "inventory": RuntimeInventoryDto::from(RuntimeInventory::unavailable())});
         assert_eq!(
             serde_json::from_value::<LifecycleResultDto>(value).is_ok(),
             valid
@@ -294,7 +308,7 @@ fn generated_schema_files_are_deterministic() {
         bytes,
         serde_json::to_vec_pretty(&generated["LifecycleResultDto"]).unwrap()
     );
-    assert_eq!(generated.len(), 26);
+    assert_eq!(generated.len(), 35);
     assert_eq!(
         generated["ProjectStatusDto"]["properties"]
             .as_object()
@@ -396,6 +410,6 @@ fn generated_fixture_manifest_has_expected_negative_cases() {
         .collect::<std::collections::BTreeSet<_>>();
     assert!(fixtures.contains("profile_summary_invalid_uuid.json"));
     assert!(fixtures.contains("project_status_invalid_runtime_combination.json"));
-    assert_eq!(fixtures.len(), 16);
+    assert_eq!(fixtures.len(), 18);
     fs::remove_dir_all(output).unwrap();
 }

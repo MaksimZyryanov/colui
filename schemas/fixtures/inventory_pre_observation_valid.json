@@ -1,0 +1,13 @@
+{
+  "containers": [],
+  "daemonFingerprint": null,
+  "error": null,
+  "freshness": "unavailable",
+  "generation": 0,
+  "hasSnapshot": false,
+  "lastSuccessfulObservedAt": null,
+  "observedAt": null,
+  "projects": [],
+  "runtimeSessionId": null,
+  "standaloneContainers": []
+}

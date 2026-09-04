@@ -203,126 +203,100 @@
       "format": "date-time",
       "type": "string"
     },
-    "RuntimeInventoryDto": {
-      "properties": {
-        "containers": {
-          "items": {
-            "$ref": "#/definitions/ContainerInstanceDto"
-          },
-          "type": "array"
-        },
-        "daemonFingerprint": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/DaemonFingerprintDto"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AppErrorDto"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "freshness": {
-          "$ref": "#/definitions/InventoryFreshnessDto"
-        },
-        "generation": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "hasSnapshot": {
-          "type": "boolean"
-        },
-        "lastSuccessfulObservedAt": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/Rfc3339Schema"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "observedAt": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/Rfc3339Schema"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "projects": {
-          "items": {
-            "$ref": "#/definitions/ProjectRuntimeSnapshotDto"
-          },
-          "type": "array"
-        },
-        "runtimeSessionId": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/UuidSchema"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "standaloneContainers": {
-          "items": {
-            "$ref": "#/definitions/ContainerInstanceDto"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "containers",
-        "freshness",
-        "generation",
-        "hasSnapshot",
-        "projects",
-        "standaloneContainers"
-      ],
-      "type": "object"
-    },
     "UuidSchema": {
       "format": "uuid",
       "type": "string"
     }
   },
   "properties": {
-    "inventory": {
-      "$ref": "#/definitions/RuntimeInventoryDto"
+    "containers": {
+      "items": {
+        "$ref": "#/definitions/ContainerInstanceDto"
+      },
+      "type": "array"
     },
-    "inventoryGeneration": {
+    "daemonFingerprint": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DaemonFingerprintDto"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AppErrorDto"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "freshness": {
+      "$ref": "#/definitions/InventoryFreshnessDto"
+    },
+    "generation": {
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
     },
-    "profileId": {
-      "format": "uuid",
-      "type": "string"
-    },
-    "success": {
+    "hasSnapshot": {
       "type": "boolean"
+    },
+    "lastSuccessfulObservedAt": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Rfc3339Schema"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "observedAt": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Rfc3339Schema"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "projects": {
+      "items": {
+        "$ref": "#/definitions/ProjectRuntimeSnapshotDto"
+      },
+      "type": "array"
+    },
+    "runtimeSessionId": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/UuidSchema"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "standaloneContainers": {
+      "items": {
+        "$ref": "#/definitions/ContainerInstanceDto"
+      },
+      "type": "array"
     }
   },
   "required": [
-    "inventory",
-    "inventoryGeneration",
-    "profileId",
-    "success"
+    "containers",
+    "freshness",
+    "generation",
+    "hasSnapshot",
+    "projects",
+    "standaloneContainers"
   ],
-  "title": "LifecycleResultDto",
+  "title": "RuntimeInventoryDto",
   "type": "object"
 }

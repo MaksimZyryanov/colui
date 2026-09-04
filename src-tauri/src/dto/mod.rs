@@ -1,4 +1,6 @@
+mod definition;
 mod error;
+mod inventory;
 mod profile;
 mod request;
 mod runtime;
@@ -73,7 +75,9 @@ impl JsonSchema for Rfc3339Schema {
     }
 }
 
+pub use definition::*;
 pub use error::*;
+pub use inventory::*;
 pub use profile::*;
 pub use request::*;
 pub use runtime::*;

@@ -1,6 +1,7 @@
 use crate::{dto::*, AppState};
 use colui_app::{
-    CreateProfile, GetProfile, InspectProfileDraft, ListProfiles, RemoveProfile, UpdateProfile,
+    CreateProfile, DefinitionRefresher, GetProfile, InspectProfileDraft, ListProfiles,
+    RemoveProfile, UpdateProfile,
 };
 use colui_domain::{AppError, AppErrorCode, ProfileId};
 use tauri::State;
@@ -87,26 +88,28 @@ pub async fn update_profile(
     request: UpdateProfileRequestDto,
     state: State<'_, AppState>,
 ) -> Result<ProfileSummaryDto, AppErrorDto> {
-    Ok(UpdateProfile::new(state.profiles.as_ref())
+    let profile_id = id(request.profile_id, "update_profile")?;
+    let updated = UpdateProfile::new(state.profiles.as_ref())
         .execute(
-            id(request.profile_id, "update_profile")?,
+            profile_id.clone(),
             request.expected_revision,
             request.patch.into_domain().map_err(AppErrorDto::from)?,
         )
         .await
-        .map_err(AppErrorDto::from)?
-        .into())
+        .map_err(AppErrorDto::from)?;
+    state.definitions.invalidate(profile_id);
+    Ok(updated.into())
 }
 #[tauri::command]
 pub async fn remove_profile(
     request: RemoveProfileRequestDto,
     state: State<'_, AppState>,
 ) -> Result<(), AppErrorDto> {
+    let profile_id = id(request.profile_id, "remove_profile")?;
     RemoveProfile::new(state.profiles.as_ref())
-        .execute(
-            id(request.profile_id, "remove_profile")?,
-            request.expected_revision,
-        )
+        .execute(profile_id.clone(), request.expected_revision)
         .await
-        .map_err(AppErrorDto::from)
+        .map_err(AppErrorDto::from)?;
+    state.definitions.invalidate(profile_id);
+    Ok(())
 }

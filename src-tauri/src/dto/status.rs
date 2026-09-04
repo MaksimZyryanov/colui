@@ -1,4 +1,4 @@
-use super::IssueDto;
+use super::{IssueDto, RuntimeInventoryDto};
 use colui_app::{LifecycleResult, ProjectStatus};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -98,21 +98,41 @@ pub struct LifecycleResultDto {
     #[serde(deserialize_with = "super::deserialize_canonical_uuid")]
     pub profile_id: String,
     pub success: bool,
+    pub inventory_generation: u64,
+    pub inventory: RuntimeInventoryDto,
 }
 impl LifecycleResultDto {
     pub fn success(profile_id: impl Into<String>) -> Self {
+        let inventory = RuntimeInventoryDto::from(colui_domain::RuntimeInventory::unavailable());
         Self {
             profile_id: profile_id.into(),
             success: true,
+            inventory_generation: inventory.generation,
+            inventory,
+        }
+    }
+
+    pub fn fixture() -> Self {
+        let inventory = RuntimeInventoryDto::fixture();
+        Self {
+            profile_id: "00000000-0000-0000-0000-000000000001".into(),
+            success: true,
+            inventory_generation: inventory.generation,
+            inventory,
         }
     }
 }
 
 impl From<LifecycleResult> for LifecycleResultDto {
     fn from(result: LifecycleResult) -> Self {
+        let inventory_generation = result.inventory_generation();
+        let inventory: RuntimeInventoryDto = result.inventory.into();
+        debug_assert_eq!(inventory_generation, inventory.generation);
         Self {
             profile_id: result.profile_id.to_string(),
             success: result.success,
+            inventory_generation,
+            inventory,
         }
     }
 }
