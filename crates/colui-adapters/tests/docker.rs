@@ -260,9 +260,7 @@ impl TempComposeFixture {
 
     async fn assert_containers_present(&self, gateway: &RuntimeGateway) {
         let containers = gateway.list_containers().await.unwrap();
-        let matching = self
-            .containers_with_exact_project(gateway, &containers)
-            .await;
+        let matching = self.containers_with_exact_project(&containers);
         assert!(
             !matching.is_empty(),
             "expected disposable project containers"
@@ -271,9 +269,7 @@ impl TempComposeFixture {
 
     async fn assert_containers_stopped(&self, gateway: &RuntimeGateway) {
         let containers = gateway.list_containers().await.unwrap();
-        let matching = self
-            .containers_with_exact_project(gateway, &containers)
-            .await;
+        let matching = self.containers_with_exact_project(&containers);
         assert!(!matching.is_empty(), "expected project containers");
         assert!(matching
             .iter()
@@ -282,29 +278,24 @@ impl TempComposeFixture {
 
     async fn containers_with_service(&self, gateway: &RuntimeGateway, service: &str) -> usize {
         let containers = gateway.list_containers().await.unwrap();
-        self.containers_with_exact_project(gateway, &containers)
-            .await
+        self.containers_with_exact_project(&containers)
             .into_iter()
             .filter(|container| container.service_name.as_deref() == Some(service))
             .count()
     }
 
-    async fn containers_with_exact_project(
+    fn containers_with_exact_project(
         &self,
-        gateway: &RuntimeGateway,
         containers: &[colui_domain::ContainerObservation],
     ) -> Vec<colui_domain::ContainerInstance> {
-        let mut matching = Vec::new();
-        for observation in containers {
-            let details = gateway
-                .inspect_container(&observation.instance.id)
-                .await
-                .unwrap();
-            if details.labels.get("com.docker.compose.project") == Some(&self.project_name) {
-                matching.push(details.instance);
-            }
-        }
-        matching
+        containers
+            .iter()
+            .filter(|observation| {
+                observation.compose.as_ref().map(|compose| &compose.project)
+                    == Some(&self.project_name)
+            })
+            .map(|observation| observation.instance.clone())
+            .collect()
     }
 
     async fn assert_project_resources_absent(&self) {

@@ -80,8 +80,8 @@ fn state(value: Option<&str>) -> ContainerState {
 
 const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
 const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
-const COMPOSE_WORKING_DIR_LABEL: &str = "com.docker.compose.working_dir";
-const COMPOSE_CONFIG_FILES_LABEL: &str = "com.docker.compose.config-files";
+const COMPOSE_WORKING_DIR_LABEL: &str = "com.docker.compose.project.working_dir";
+const COMPOSE_CONFIG_FILES_LABEL: &str = "com.docker.compose.project.config_files";
 
 /// Maps one Docker list entry into a runtime-free observation.
 ///
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn normalization_extracts_only_the_four_official_compose_labels() {
         let observation = normalize_container_summary(summary_json(
-            r#"{"com.docker.compose.project":"checkout","com.docker.compose.service":"web","com.docker.compose.working_dir":"/workspace","com.docker.compose.config-files":"/workspace/compose.yml,/workspace/compose.override.yml","com.docker.compose.oneoff":"False","custom.label":"ignored"}"#,
+            r#"{"com.docker.compose.project":"checkout","com.docker.compose.service":"web","com.docker.compose.project.working_dir":"/workspace","com.docker.compose.project.config_files":"/workspace/compose.yml,/workspace/compose.override.yml","com.docker.compose.oneoff":"False","custom.label":"ignored"}"#,
         ));
         let compose = observation.compose.unwrap();
         assert_eq!(compose.project, "checkout");

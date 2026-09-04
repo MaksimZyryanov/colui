@@ -509,8 +509,8 @@ fn compose_summary(project: &str, service: &str) -> ContainerSummary {
             "Labels": {{
                 "com.docker.compose.project": "{project}",
                 "com.docker.compose.service": "{service}",
-                "com.docker.compose.working_dir": "/workspace",
-                "com.docker.compose.config-files": "/workspace/compose.yml,/workspace/compose.override.yml",
+                "com.docker.compose.project.working_dir": "/workspace",
+                "com.docker.compose.project.config_files": "/workspace/compose.yml,/workspace/compose.override.yml",
                 "com.docker.compose.container-number": "1"
             }},
             "Ports": []
