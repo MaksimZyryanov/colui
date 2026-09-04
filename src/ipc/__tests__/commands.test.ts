@@ -33,6 +33,39 @@ describe('typed commands', () => {
     expect(mockBackend.getInvocations().slice(8).map(({ args }) => args)).toEqual([{ profileId: id }, { profileId: id }, { profileId: id }, { profileId: id }, { profileId: id }]);
   });
 
+  it('invokes inventory and definition commands with typed responses', async () => {
+    mockBackend.reset();
+    const id = '00000000-0000-0000-0000-000000000001';
+    await createProfile({ displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', composeFiles: ['compose.yml'], environmentFiles: [] });
+    expect((await getInventory()).hasSnapshot).toBe(false);
+    const refreshed = await refreshInventory();
+    expect(refreshed).toMatchObject({ generation: 1, hasSnapshot: true, freshness: 'fresh' });
+    expect(refreshed.runtimeSessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(refreshed.daemonFingerprint).toMatchObject({ daemonId: 'mock' });
+    expect((await getProjectDetails(id)).profile.profile.id).toBe(id);
+    expect((await refreshProjectDefinition(id)).profileId).toBe(id);
+    const lifecycle = await applyProject(id);
+    expect(lifecycle.inventoryGeneration).toBe(lifecycle.inventory.generation);
+    expect(lifecycle.inventory.generation).toBe(2);
+    expect(lifecycle.inventory.projects[0]).toMatchObject({ composeProjectName: 'demo', containers: [{ state: 'running', serviceName: 'web' }] });
+    expect(mockBackend.getInvocations().slice(1).map(({ command, args }) => ({ command, args }))).toEqual([
+      { command: 'get_inventory', args: undefined }, { command: 'refresh_inventory', args: undefined },
+      { command: 'get_project_details', args: { profileId: id } }, { command: 'refresh_project_definition', args: { profileId: id } }, { command: 'apply_project', args: { profileId: id } },
+    ]);
+  });
+
+  it('decodes malformed inventory responses as protocol mismatch', async () => {
+    mockBackend.reset();
+    mockBackend.setResponseOverride('refresh_inventory', { generation: 1 });
+    await expect(refreshInventory()).rejects.toMatchObject({ code: 'protocol_mismatch', operation: 'refresh_inventory' });
+  });
+
+  it('rejects invalid profile IDs for new profile-scoped commands before dispatch', async () => {
+    mockBackend.reset();
+    await expect(getProjectDetails('not-a-uuid')).rejects.toMatchObject({ code: 'profile_invalid', operation: 'get_project_details' });
+    await expect(refreshProjectDefinition('not-a-uuid')).rejects.toMatchObject({ code: 'profile_invalid', operation: 'refresh_project_definition' });
+  });
+
   it('rejects malformed command arguments before dispatch', async () => {
     mockBackend.reset();
     await expect(getProfile('not-a-uuid')).rejects.toMatchObject({ code: 'profile_invalid', operation: 'get_profile' });

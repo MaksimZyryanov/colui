@@ -64,6 +64,7 @@ pub struct RuntimeInventoryDto {
     #[schemars(with = "Option<super::Rfc3339Schema>")]
     pub observed_at: Option<String>,
     #[schemars(with = "Option<super::UuidSchema>")]
+    #[serde(deserialize_with = "super::deserialize_optional_canonical_uuid")]
     pub runtime_session_id: Option<String>,
     pub daemon_fingerprint: Option<DaemonFingerprintDto>,
     pub freshness: InventoryFreshnessDto,

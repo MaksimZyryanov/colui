@@ -21,7 +21,15 @@ let nextId = nextPersistedId(profiles);
 let drafts = new Map<string, ProfileDraft>(initial?.drafts ?? []);
 let runtime: unknown = { state: 'disconnected' };
 let inventoryGeneration = 0;
-const inventory = () => ({ generation: inventoryGeneration, hasSnapshot: inventoryGeneration > 0, observedAt: inventoryGeneration > 0 ? now() : null, runtimeSessionId: null, daemonFingerprint: null, freshness: inventoryGeneration > 0 ? 'fresh' : 'unavailable', lastSuccessfulObservedAt: inventoryGeneration > 0 ? now() : null, containers: [], projects: [], standaloneContainers: [], error: null });
+let inventoryObservedAt: string | null = null;
+let inventoryContainerState: 'running' | 'stopped' = 'running';
+const inventory = () => {
+  if (inventoryGeneration === 0) return { generation: 0, hasSnapshot: false, observedAt: null, runtimeSessionId: null, daemonFingerprint: null, freshness: 'unavailable', lastSuccessfulObservedAt: null, containers: [], projects: [], standaloneContainers: [], error: null };
+  const containers = profiles.map((profile, index) => ({ id: `mock-container-${index + 1}`, name: `${profile.composeProjectName}-web-1`, image: 'mock:latest', state: inventoryContainerState, statusText: inventoryContainerState === 'running' ? 'Up' : 'Exited', serviceName: 'web', publishedPorts: [] }));
+  const projects = profiles.map((profile, index) => ({ composeProjectName: profile.composeProjectName, workingDirectory: profile.workingDirectory, configFiles: drafts.get(profile.id)?.composeFiles ?? [], containers: [containers[index]] }));
+  return { generation: inventoryGeneration, hasSnapshot: true, observedAt: inventoryObservedAt, runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: inventoryObservedAt, containers, projects, standaloneContainers: [], error: null };
+};
+const publishInventory = (state: 'running' | 'stopped' = inventoryContainerState) => { inventoryGeneration += 1; inventoryObservedAt = now(); inventoryContainerState = state; return inventory(); };
 let statuses = new Map<string, unknown>(initial?.statuses ?? []);
 const overrides = new Map<string, unknown>();
 const errors = new Map<string, unknown>();
@@ -31,7 +39,7 @@ const persist = () => { if (typeof localStorage !== 'undefined') localStorage.se
 const baseStatus = (profileId: string) => typeof window !== 'undefined' && /runtimeFailure|lifecycle/.test(window.location.search) ? { profileId, runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: now() }, definition: { state: 'valid', revision: '1', serviceCount: 1 }, operation: null, issues: [] } : { profileId, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null }, definition: { state: 'unchecked', revision: null, serviceCount: null }, operation: null, issues: [] };
 function validateId(args: unknown, operation: string) { const result = profileIdRequestSchema.safeParse(args); if (!result.success) error('profile_invalid', operation, 'profileId must be a UUID'); return result.data!.profileId; }
 export const mockBackend = {
-  reset() { profiles = []; drafts = new Map(); runtime = { state: 'disconnected' }; statuses = new Map(); inventoryGeneration = 0; if (typeof localStorage !== 'undefined') localStorage.removeItem(storageKey); overrides.clear(); errors.clear(); invocations = []; nextId = 1; },
+  reset() { profiles = []; drafts = new Map(); runtime = { state: 'disconnected' }; statuses = new Map(); inventoryGeneration = 0; inventoryObservedAt = null; inventoryContainerState = 'running'; if (typeof localStorage !== 'undefined') localStorage.removeItem(storageKey); overrides.clear(); errors.clear(); invocations = []; nextId = 1; },
   getInvocations() { return [...invocations]; },
   setResponseOverride(command: string, value: unknown) { overrides.set(command, value); },
   setErrorOverride(command: string, value: unknown) { errors.set(command, value); },
@@ -49,11 +57,11 @@ export const mockBackend = {
       case 'get_runtime_state': return runtime;
       case 'connect_runtime': if (typeof window !== 'undefined' && window.location.search.includes('runtimeFailure')) error('runtime_connection_failed', command, 'runtime offline'); runtime = { state: 'ready', context: { sessionId: id(), endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: now() } }; return runtime;
       case 'get_inventory': return inventory();
-      case 'refresh_inventory': inventoryGeneration += 1; return inventory();
+      case 'refresh_inventory': return publishInventory();
       case 'get_project_details': { const profileId = validateId(args, command); if (!profiles.some(p => p.id === profileId)) error('profile_not_found', command, 'Profile not found', profileId); return { profile: { profile: profiles.find(p => p.id === profileId), composeFiles: drafts.get(profileId)!.composeFiles, environmentFiles: drafts.get(profileId)!.environmentFiles }, definition: { profileId, definitionRevision: null, loadedAt: null, state: 'unchecked', services: [], issues: [] }, runtime: baseStatus(profileId).runtime }; }
       case 'refresh_project_definition': { const profileId = validateId(args, command); if (!profiles.some(p => p.id === profileId)) error('profile_not_found', command, 'Profile not found', profileId); return { profileId, definitionRevision: 'mock-definition', loadedAt: now(), state: 'valid', services: [], issues: [] }; }
       case 'get_project_status': { const profileId = validateId(args, command); if (!profiles.some(p => p.id === profileId)) error('profile_not_found', command, 'Profile not found', profileId); return statuses.get(profileId) ?? baseStatus(profileId); }
-       case 'apply_project': case 'stop_project': case 'tear_down_project': case 'restart_project': { const profileId = validateId(args, command); if (!profiles.some(p => p.id === profileId)) error('profile_not_found', command, 'Profile not found', profileId); const activity = command === 'stop_project' || command === 'tear_down_project' ? 'none-running' : 'all-running'; const kind = command.replace('_project', '').replace('_', '-') as 'apply' | 'stop' | 'tear-down' | 'restart'; const status = { ...(statuses.get(profileId) as object ?? baseStatus(profileId)), runtime: { presence: 'present', activity, containerCount: 1, runningContainerCount: activity === 'none-running' ? 0 : 1, observedAt: now() }, operation: { kind, phase: 'succeeded', startedAt: now() } }; statuses.set(profileId, status); inventoryGeneration += 1; return { profileId, success: true, inventoryGeneration, inventory: inventory() }; }
+        case 'apply_project': case 'stop_project': case 'tear_down_project': case 'restart_project': { const profileId = validateId(args, command); if (!profiles.some(p => p.id === profileId)) error('profile_not_found', command, 'Profile not found', profileId); const activity = command === 'stop_project' || command === 'tear_down_project' ? 'none-running' : 'all-running'; const kind = command.replace('_project', '').replace('_', '-') as 'apply' | 'stop' | 'tear-down' | 'restart'; const status = { ...(statuses.get(profileId) as object ?? baseStatus(profileId)), runtime: { presence: 'present', activity, containerCount: 1, runningContainerCount: activity === 'none-running' ? 0 : 1, observedAt: now() }, operation: { kind, phase: 'succeeded', startedAt: now() } }; statuses.set(profileId, status); const refreshed = publishInventory(activity === 'none-running' ? 'stopped' : 'running'); return { profileId, success: true, inventoryGeneration: refreshed.generation, inventory: refreshed }; }
       default: error('protocol_mismatch', command, `Unknown command: ${command}`);
     }
   },

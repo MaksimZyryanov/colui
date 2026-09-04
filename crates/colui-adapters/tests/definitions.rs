@@ -43,6 +43,7 @@ impl Runner {
         })
     }
 }
+
 impl ComposeRunner for Runner {
     fn invoke(&self, _: ComposeInvocation) -> RuntimeFuture<'_, ComposeProcessResult> {
         self.calls.fetch_add(1, Ordering::SeqCst);

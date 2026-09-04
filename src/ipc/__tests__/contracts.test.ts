@@ -121,6 +121,15 @@ describe('IPC contracts', () => {
     expect(profileSummarySchema.parse({ id: '00000000-0000-0000-0000-000000000001', revision: 0, displayName: '', composeProjectName: '', workingDirectory: '', registrationOrigin: 'manual' }).revision).toBe(0);
   });
 
+  it('validates both inventory observation fixtures and generation marker invariants', () => {
+    const valid = JSON.parse(readFileSync(resolve('schemas/fixtures/inventory_pre_observation_valid.json'), 'utf8'));
+    const invalid = JSON.parse(readFileSync(resolve('schemas/fixtures/inventory_pre_observation_invalid_snapshot.json'), 'utf8'));
+    expect(s.inventorySchema.safeParse(valid).success).toBe(true);
+    expect(s.inventorySchema.safeParse(invalid).success).toBe(false);
+    expect(s.inventorySchema.safeParse({ ...valid, generation: 1, hasSnapshot: false }).success).toBe(false);
+    expect(s.inventorySchema.safeParse({ ...valid, generation: 0, hasSnapshot: true }).success).toBe(false);
+  });
+
   it('accepts Rust DTO empty strings and omitted optional projections', () => {
     expect(profileDraftSchema.parse({ displayName: '', composeProjectName: '', workingDirectory: '', composeFiles: [], environmentFiles: [] })).toBeTruthy();
     expect(projectStatusSchema.parse({ profileId: '00000000-0000-0000-0000-000000000001', runtime: { presence: 'unavailable', containerCount: 0, runningContainerCount: 0 }, definition: { state: 'unchecked' }, issues: [] })).toBeTruthy();

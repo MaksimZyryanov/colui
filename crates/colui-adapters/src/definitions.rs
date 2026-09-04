@@ -190,13 +190,7 @@ impl DefinitionCache {
             })
             .await?;
         if output.timed_out() || output.exit_code() != Some(0) {
-            return Err(AppError::new(
-                AppErrorCode::DefinitionFailed,
-                "definition",
-                Some(profile.id.clone()),
-                "compose config failed",
-            )
-            .with_details(output.stderr().to_owned()));
+            return Err(compose_config_error(profile.id.clone(), output.stderr()));
         }
         let value: serde_json::Value = match serde_json::from_str(output.stdout()) {
             Ok(value) => value,
@@ -254,6 +248,15 @@ impl DefinitionCache {
         }
         Ok((revision, services, Vec::new()))
     }
+}
+
+fn compose_config_error(profile_id: colui_domain::ProfileId, _stderr: &str) -> AppError {
+    AppError::new(
+        AppErrorCode::DefinitionFailed,
+        "definition",
+        Some(profile_id),
+        "compose config failed",
+    )
 }
 
 fn canonical(value: serde_json::Value) -> serde_json::Value {
@@ -318,4 +321,23 @@ fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
     state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compose_config_error;
+    use colui_domain::{AppErrorCode, ProfileId};
+    use uuid::Uuid;
+
+    #[test]
+    fn compose_failure_omits_raw_stderr_from_transport_error() {
+        let error = compose_config_error(
+            ProfileId::new(Uuid::nil()),
+            "secret=/Users/max/private.env project=top-secret",
+        );
+        assert_eq!(error.code, AppErrorCode::DefinitionFailed);
+        assert!(error.details.is_none());
+        assert!(!error.message.contains("secret"));
+        assert!(!error.message.contains("/Users/max"));
+    }
 }

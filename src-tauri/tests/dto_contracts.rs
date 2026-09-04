@@ -41,6 +41,14 @@ fn lifecycle_generation_matches_embedded_inventory() {
 }
 
 #[test]
+fn inventory_rejects_noncanonical_runtime_session_ids() {
+    let mut value =
+        serde_json::to_value(RuntimeInventoryDto::from(RuntimeInventory::unavailable())).unwrap();
+    value["runtimeSessionId"] = serde_json::json!("00000000000000000000000000000001");
+    assert!(serde_json::from_value::<RuntimeInventoryDto>(value).is_err());
+}
+
+#[test]
 fn status_enums_use_approved_wire_values() {
     let cases = [
         (
