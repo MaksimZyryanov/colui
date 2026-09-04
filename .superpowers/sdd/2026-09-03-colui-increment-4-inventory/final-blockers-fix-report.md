@@ -59,3 +59,21 @@ Both Important whole-branch findings are fixed. Required hermetic verification p
 
 - Real Docker was not exercised because `COLUI_REAL_DOCKER_SMOKE=1` was not enabled.
 - Vitest emits expected stderr from deliberate error-boundary tests while exiting successfully.
+
+## Fix Round 1
+
+Scoped review found that adapter-level projection coverage could not detect a regression in Tauri command orchestration. `get_project_details` now delegates to private `get_project_details_inner`, parameterized only by existing `ProfileReader`, `DefinitionReader`, and `InventoryReader` ports. Command visibility and IPC schema are unchanged.
+
+- RED: focused `colui-tauri` test failed to compile because `get_project_details_inner` did not exist.
+- GREEN: `project_details_reads_failed_definition_once` passed, 1 passed and 0 failed.
+- Command proof: recording failed `DefinitionReader` observed exactly one call; response retained `unchecked`, typed `definition_failed`, and unavailable runtime projection with zero containers.
+- `cargo fmt --all -- --check`: PASS after formatter applied one test-only line wrap.
+- `cargo test --workspace`: PASS, 157 passed and 0 failed.
+- `cargo test -p colui-tauri --test dto_contracts`: PASS, 20 passed and 0 failed.
+- `cargo check -p colui-adapters --features docker-tests --tests`: PASS.
+- Frontend lint and typecheck: PASS.
+- Frontend tests: PASS, 87 passed and 0 failed; contracts 34 passed and 0 failed.
+- Frontend build: PASS, 191 modules transformed.
+- `bash scripts/check-boundaries.sh`: PASS.
+- `bash scripts/verify-increment-4.sh`: PASS; real-Docker smoke skipped by gate.
+- `git diff --check`: PASS.
