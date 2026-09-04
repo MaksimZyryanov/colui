@@ -1,4 +1,4 @@
-use crate::runtime::build_cli_environment;
+use crate::runtime::{build_cli_environment, ComposeExecutionGate};
 use colui_app::{
     Clock, ComposeInvocation, ComposeRunner, DefinitionBusy, DefinitionFuture, DefinitionReader,
     DefinitionRefresher, RuntimeStateReader,
@@ -38,6 +38,7 @@ pub struct DefinitionCache {
     runtime: Arc<dyn RuntimeStateReader>,
     clock: Arc<dyn Clock>,
     locks: Arc<dyn colui_app::OperationLockManager>,
+    compose_gate: Arc<ComposeExecutionGate>,
     state: Arc<Mutex<State>>,
 }
 
@@ -47,12 +48,14 @@ impl DefinitionCache {
         runtime: Arc<dyn RuntimeStateReader>,
         clock: Arc<dyn Clock>,
         locks: Arc<dyn colui_app::OperationLockManager>,
+        compose_gate: Arc<ComposeExecutionGate>,
     ) -> Self {
         Self {
             runner,
             runtime,
             clock,
             locks,
+            compose_gate,
             state: Arc::new(Mutex::new(State {
                 entries: HashMap::new(),
                 epoch: HashMap::new(),
@@ -179,6 +182,7 @@ impl DefinitionCache {
             "--format".into(),
             "json".into(),
         ]);
+        let _permit = self.compose_gate.acquire().await?;
         let output = self
             .runner
             .invoke(ComposeInvocation {

@@ -1,4 +1,5 @@
 use colui_adapters::definitions::DefinitionCache;
+use colui_adapters::runtime::ComposeExecutionGate;
 use colui_adapters::OperationLockManager;
 use colui_app::{
     Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, DefinitionReader,
@@ -66,7 +67,13 @@ async fn changed_profile_revision_does_not_return_old_services_when_busy() {
     let clock = Arc::new(TestClock {
         mono: Arc::new(0.into()),
     });
-    let cache = DefinitionCache::new(runner.clone(), Arc::new(Runtime), clock, locks.clone());
+    let cache = DefinitionCache::new(
+        runner.clone(),
+        Arc::new(Runtime),
+        clock,
+        locks.clone(),
+        Arc::new(ComposeExecutionGate::new()),
+    );
     let old = profile(1);
     cache.refresh_definition(old.clone()).await.unwrap();
     let guard = locks
@@ -118,6 +125,7 @@ fn cache(runner: Arc<dyn ComposeRunner>, clock: Arc<TestClock>) -> DefinitionCac
         Arc::new(Runtime),
         clock,
         Arc::new(OperationLockManager::new()),
+        Arc::new(ComposeExecutionGate::new()),
     )
 }
 
@@ -311,6 +319,7 @@ async fn lifecycle_busy_returns_unchecked_without_running_compose() {
             mono: Arc::new(0.into()),
         }),
         locks,
+        Arc::new(ComposeExecutionGate::new()),
     );
     let definition = cache.definition(profile(1)).await.unwrap();
     assert_eq!(definition.state, DefinitionState::Unchecked);

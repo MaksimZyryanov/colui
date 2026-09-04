@@ -1,14 +1,16 @@
 #![cfg(feature = "test-support")]
 
+use colui_adapters::runtime::ComposeExecutionGate;
 use colui_adapters::runtime::{
     bollard_fingerprint, build_cli_environment, parse_cli_fingerprint, resolve_endpoint,
     EndpointPreference,
 };
 use colui_adapters::runtime::{ComposeOperation, RuntimeGateway};
 use colui_adapters::runtime::{ComposeProcessRunner, TerminationConfig};
+use colui_adapters::{DefinitionCache, OperationLockManager};
 use colui_app::{
-    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleOperation,
-    LifecycleRuntime, RuntimeConnector, RuntimeStateReader,
+    Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, DefinitionRefresher, DockerApi,
+    LifecycleOperation, LifecycleRuntime, RuntimeConnector, RuntimeStateReader,
 };
 use colui_domain::AppErrorCode;
 use colui_domain::{
@@ -659,6 +661,108 @@ async fn compose_gate_serializes_two_profiles() {
     assert!(observed_args
         .iter()
         .any(|args| args == &vec![String::from("profile-b")]));
+}
+
+#[derive(Clone)]
+struct FixedClock;
+
+impl Clock for FixedClock {
+    fn now(&self) -> colui_domain::Timestamp {
+        colui_domain::Timestamp("2026-09-03T00:00:00Z".into())
+    }
+
+    fn monotonic(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
+#[derive(Clone, Default)]
+struct LifecycleBlockingRunner {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl ComposeRunner for LifecycleBlockingRunner {
+    fn invoke(
+        &self,
+        invocation: ComposeInvocation,
+    ) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
+        let started = self.started.clone();
+        let release = self.release.clone();
+        Box::pin(async move {
+            if invocation.args == vec!["info"] {
+                return Ok(ComposeProcessResult::completed(
+                    0,
+                    "ID: same\nServer Version: 1\nOSType: linux\nArchitecture: x86_64\n",
+                    "",
+                    Duration::ZERO,
+                ));
+            }
+            started.notify_one();
+            release.notified().await;
+            Ok(ComposeProcessResult::completed(0, "", "", Duration::ZERO))
+        })
+    }
+}
+
+struct DefinitionCountingRunner(Arc<AtomicUsize>);
+
+impl ComposeRunner for DefinitionCountingRunner {
+    fn invoke(&self, _: ComposeInvocation) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        Box::pin(async {
+            Ok(ComposeProcessResult::completed(
+                0,
+                r#"{"services":{}}"#,
+                "",
+                Duration::ZERO,
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+async fn shared_compose_gate_serializes_lifecycle_and_definition_across_profiles() {
+    let gate = Arc::new(ComposeExecutionGate::new());
+    let lifecycle_runner = LifecycleBlockingRunner::default();
+    let gateway = Arc::new(RuntimeGateway::new_for_tests_with_gate(
+        Box::new(FakeDocker::new("same")),
+        Box::new(lifecycle_runner.clone()),
+        gate.clone(),
+    ));
+    gateway.connect_runtime(None).await.unwrap();
+    let definition_calls = Arc::new(AtomicUsize::new(0));
+    let definitions = Arc::new(DefinitionCache::new(
+        Arc::new(DefinitionCountingRunner(definition_calls.clone())),
+        gateway.clone(),
+        Arc::new(FixedClock),
+        Arc::new(OperationLockManager::new()),
+        gate,
+    ));
+
+    let lifecycle = tokio::spawn({
+        let gateway = gateway.clone();
+        async move {
+            gateway
+                .run_profile(test_profile(), LifecycleOperation::Stop)
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(1), lifecycle_runner.started.notified())
+        .await
+        .unwrap();
+    let definition = tokio::spawn(async move {
+        let mut profile = test_profile();
+        profile.id = ProfileId::new(uuid::Uuid::from_u128(4));
+        definitions.refresh_definition(profile).await
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(definition_calls.load(Ordering::Acquire), 0);
+
+    lifecycle_runner.release.notify_one();
+    assert!(lifecycle.await.unwrap().is_ok());
+    assert!(definition.await.unwrap().is_ok());
+    assert_eq!(definition_calls.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]

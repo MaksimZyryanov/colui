@@ -265,6 +265,37 @@ fn project_status_deserializes_only_canonical_profile_ids() {
 }
 
 #[test]
+fn absent_project_status_serializes_and_decodes_without_runtime_timestamp() {
+    let profile = colui_domain::ProjectProfile::from_draft(
+        colui_domain::ProfileId::parse("00000000-0000-0000-0000-000000000001").unwrap(),
+        colui_domain::ProfileDraft {
+            display_name: "Demo".try_into().unwrap(),
+            compose_project_name: "demo".try_into().unwrap(),
+            working_directory: "/tmp/demo".into(),
+            compose_files: vec!["compose.yml".into()],
+            environment_files: vec![],
+            registration_origin: colui_domain::RegistrationOrigin::Manual,
+        },
+    )
+    .unwrap();
+    let inventory = RuntimeInventory {
+        generation: 1,
+        has_snapshot: true,
+        observed_at: Some(colui_domain::Timestamp("2026-09-03T00:00:00Z".into())),
+        ..RuntimeInventory::unavailable()
+    };
+    let dto = ProjectStatusDto::from(colui_app::project_status_from_inventory(
+        &profile, inventory,
+    ));
+    let value = serde_json::to_value(dto).unwrap();
+
+    assert_eq!(value["runtime"]["presence"], "absent");
+    assert!(value["runtime"]["activity"].is_null());
+    assert!(value["runtime"]["observedAt"].is_null());
+    assert!(serde_json::from_value::<ProjectStatusDto>(value).is_ok());
+}
+
+#[test]
 fn lifecycle_result_deserializes_only_canonical_profile_ids() {
     for (profile_id, valid) in [
         ("00000000-0000-0000-0000-000000000001", true),

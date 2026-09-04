@@ -3,7 +3,7 @@ pub mod dto;
 pub mod schema_generation;
 
 use colui_adapters::{
-    runtime::{ComposeProcessRunner, RuntimeGateway},
+    runtime::{ComposeExecutionGate, ComposeProcessRunner, RuntimeGateway},
     DefinitionCache, InventoryCoordinator, JsonProfileRegistry, OperationLockManager,
     RegistryConfig, UuidGenerator,
 };
@@ -118,7 +118,11 @@ pub fn run() {
                     .map_err(|error| std::io::Error::other(error.message))?,
             );
             let runner = Arc::new(ComposeProcessRunner::default());
-            let gateway = Arc::new(RuntimeGateway::with_runner(runner.clone()));
+            let compose_gate = Arc::new(ComposeExecutionGate::new());
+            let gateway = Arc::new(RuntimeGateway::with_runner_and_gate(
+                runner.clone(),
+                compose_gate.clone(),
+            ));
             let inventory = Arc::new(InventoryCoordinator::new(
                 gateway.clone(),
                 Arc::new(SystemClock(std::time::Instant::now())),
@@ -129,6 +133,7 @@ pub fn run() {
                 gateway.clone(),
                 Arc::new(SystemClock(std::time::Instant::now())),
                 locks.clone(),
+                compose_gate,
             ));
             let runtime: Arc<dyn RuntimePort> = Arc::new(RuntimeFacade::new(
                 gateway,

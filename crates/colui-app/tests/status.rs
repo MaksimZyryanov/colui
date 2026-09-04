@@ -5,7 +5,7 @@ use colui_app::{
 use colui_domain::{
     AppError, ContainerId, ContainerInstance, ContainerState, DefinitionState, ProfileDraft,
     ProfileId, ProjectProfile, ProjectRuntimeSnapshot, RegistrationOrigin, RuntimeInventory,
-    RuntimePresence,
+    RuntimePresence, Timestamp,
 };
 use std::sync::Mutex;
 
@@ -21,6 +21,22 @@ impl ProfileReader for Profiles {
             })
         })
     }
+}
+
+#[test]
+fn successful_inventory_without_matching_project_has_no_observation_timestamp() {
+    let inventory = RuntimeInventory {
+        generation: 1,
+        has_snapshot: true,
+        observed_at: Some(Timestamp("2026-09-03T00:00:00Z".into())),
+        ..RuntimeInventory::unavailable()
+    };
+
+    let status = project_status_from_inventory(&profile(), inventory);
+
+    assert_eq!(status.runtime.presence, RuntimePresence::Absent);
+    assert_eq!(status.runtime.activity, None);
+    assert_eq!(status.runtime.observed_at, None);
 }
 
 struct StatusPort(Mutex<Option<ProfileId>>);

@@ -73,7 +73,7 @@ describe('useInventory polling lifecycle', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mockBackend.reset();
-    mockBackend.setResponseOverride('refresh_inventory', published);
+    mockBackend.setResponseOverride('get_inventory', published);
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
   });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
@@ -81,11 +81,11 @@ describe('useInventory polling lifecycle', () => {
   it('polls once at each visible three-second interval', async () => {
     renderInventory();
     await act(async () => { await Promise.resolve(); });
-    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'refresh_inventory')).toHaveLength(1);
+    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'get_inventory')).toHaveLength(1);
     await act(async () => { vi.advanceTimersByTime(2999); });
-    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'refresh_inventory')).toHaveLength(1);
+    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'get_inventory')).toHaveLength(1);
     await act(async () => { vi.advanceTimersByTime(1); await Promise.resolve(); });
-    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'refresh_inventory')).toHaveLength(2);
+    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'get_inventory')).toHaveLength(2);
   });
 
   it('pauses hidden polling and refetches once when visible again', async () => {
@@ -94,19 +94,19 @@ describe('useInventory polling lifecycle', () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
     await act(async () => { vi.advanceTimersByTime(6000); });
-    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'refresh_inventory')).toHaveLength(1);
+    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'get_inventory')).toHaveLength(1);
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await Promise.resolve(); });
-    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'refresh_inventory')).toHaveLength(2);
+    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'get_inventory')).toHaveLength(2);
     await act(async () => { vi.advanceTimersByTime(3000); await Promise.resolve(); });
-    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'refresh_inventory')).toHaveLength(3);
+    expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'get_inventory')).toHaveLength(3);
   });
 
   it('retains published inventory while exposing refresh failure', async () => {
     const client = renderInventory();
     await act(async () => { await Promise.resolve(); });
     const retained = client.getQueryData(inventoryKeys.snapshot());
-    mockBackend.setErrorOverride('refresh_inventory', new AppErrorException({ code: 'runtime_unavailable', operation: 'refresh_inventory', subjectId: null, message: 'offline', details: null, retryable: false }));
+    mockBackend.setErrorOverride('get_inventory', new AppErrorException({ code: 'runtime_unavailable', operation: 'get_inventory', subjectId: null, message: 'offline', details: null, retryable: false }));
     await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(screen.getByTestId('inventory')).toHaveTextContent('1:offline');

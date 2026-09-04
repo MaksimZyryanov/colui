@@ -18,6 +18,30 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore};
 
+pub struct ComposeExecutionGate(Semaphore);
+
+impl ComposeExecutionGate {
+    pub fn new() -> Self {
+        Self(Semaphore::new(1))
+    }
+
+    pub(crate) async fn acquire(&self) -> Result<tokio::sync::SemaphorePermit<'_>, AppError> {
+        self.0.acquire().await.map_err(|_| {
+            error(
+                AppErrorCode::ComposeFailed,
+                "compose",
+                "compose gate closed",
+            )
+        })
+    }
+}
+
+impl Default for ComposeExecutionGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub trait DockerFactory: Send + Sync {
     fn connect(&self, endpoint: &DockerEndpoint) -> Result<Arc<dyn DockerControl>, AppError>;
 }
@@ -76,7 +100,7 @@ pub struct RuntimeGateway {
     factory: Arc<dyn DockerFactory>,
     runner: Mutex<Arc<dyn ComposeRunner>>,
     snapshot: Mutex<Snapshot>,
-    gate: Arc<Semaphore>,
+    gate: Arc<ComposeExecutionGate>,
     created: AtomicUsize,
 }
 
@@ -89,7 +113,28 @@ impl RuntimeGateway {
             runner.into(),
         )
     }
+    pub fn new_for_tests_with_gate(
+        docker: Box<dyn DockerControl>,
+        runner: Box<dyn ComposeRunner>,
+        gate: Arc<ComposeExecutionGate>,
+    ) -> Self {
+        Self::with_factory_and_gate(
+            Arc::new(FixedFactory {
+                docker: docker.into(),
+            }),
+            runner.into(),
+            gate,
+        )
+    }
     pub fn with_factory(factory: Arc<dyn DockerFactory>, runner: Arc<dyn ComposeRunner>) -> Self {
+        Self::with_factory_and_gate(factory, runner, Arc::new(ComposeExecutionGate::new()))
+    }
+
+    pub fn with_factory_and_gate(
+        factory: Arc<dyn DockerFactory>,
+        runner: Arc<dyn ComposeRunner>,
+        gate: Arc<ComposeExecutionGate>,
+    ) -> Self {
         Self {
             factory,
             runner: Mutex::new(runner),
@@ -98,13 +143,19 @@ impl RuntimeGateway {
                 state: RuntimeSessionState::Disconnected,
                 client: None,
             }),
-            gate: Arc::new(Semaphore::new(1)),
+            gate,
             created: AtomicUsize::new(0),
         }
     }
 
     pub fn with_runner(runner: Arc<dyn ComposeRunner>) -> Self {
         Self::with_factory(Arc::new(BollardFactory), runner)
+    }
+    pub fn with_runner_and_gate(
+        runner: Arc<dyn ComposeRunner>,
+        gate: Arc<ComposeExecutionGate>,
+    ) -> Self {
+        Self::with_factory_and_gate(Arc::new(BollardFactory), runner, gate)
     }
     pub fn new(runner: Box<dyn ComposeRunner>) -> Self {
         Self::with_factory(Arc::new(BollardFactory), runner.into())
@@ -124,13 +175,7 @@ impl RuntimeGateway {
         profile: colui_domain::ProjectProfile,
         operation: ComposeOperation,
     ) -> Result<ComposeProcessResult, AppError> {
-        let _permit = self.gate.acquire().await.map_err(|_| {
-            error(
-                AppErrorCode::ComposeFailed,
-                "compose",
-                "compose gate closed",
-            )
-        })?;
+        let _permit = self.gate.acquire().await?;
         let state = self.snapshot.lock().await.state.clone();
         let endpoint = match state {
             RuntimeSessionState::Ready(context) => context.endpoint,
@@ -163,13 +208,7 @@ impl RuntimeGateway {
         if let Some(error) = self.compose_error().await {
             return Err(error);
         }
-        let _permit = self.gate.acquire().await.map_err(|_| {
-            error(
-                AppErrorCode::ComposeFailed,
-                "compose",
-                "compose gate closed",
-            )
-        })?;
+        let _permit = self.gate.acquire().await?;
         if let Some(error) = self.compose_error().await {
             return Err(error);
         }

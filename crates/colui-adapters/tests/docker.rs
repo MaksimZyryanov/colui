@@ -1,5 +1,6 @@
 #![cfg(feature = "docker-tests")]
 
+use colui_adapters::runtime::ComposeExecutionGate;
 use colui_adapters::runtime::{
     compose_args, ComposeOperation, ComposeProcessRunner, RuntimeGateway,
 };
@@ -108,6 +109,7 @@ async fn fixture_labels_feed_inventory_and_profile_change_updates_definition_rev
         gateway.clone(),
         Arc::new(WallClock),
         Arc::new(OperationLockManager::new()),
+        Arc::new(ComposeExecutionGate::new()),
     );
     let before = cache
         .refresh_definition(fixture.profile.clone())

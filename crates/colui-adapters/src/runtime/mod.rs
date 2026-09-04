@@ -9,5 +9,5 @@ pub use compose::{compose_args, ComposeOperation};
 pub use docker_api::{normalize_container_summary, DockerApiAdapter, DockerControl};
 pub use endpoint::{build_cli_environment, resolve_endpoint, EndpointPreference};
 pub use fingerprint::{bollard_fingerprint, parse_cli_fingerprint};
-pub use gateway::{DockerFactory, RuntimeGateway};
+pub use gateway::{ComposeExecutionGate, DockerFactory, RuntimeGateway};
 pub use process::{ComposeProcessRunner, TerminationConfig};

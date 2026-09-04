@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useQuery, type QueryObserverResult } from '@tanstack/react-query';
-import { refreshInventory } from '../../../ipc/commands';
+import { getInventory } from '../../../ipc/commands';
 import type { RuntimeInventory } from '../../../ipc/types';
 import { inventoryKeys } from '../query-keys';
 
@@ -15,7 +15,7 @@ const isVisible = () => typeof document === 'undefined' || document.visibilitySt
 export function useInventory({ owner = true }: { owner?: boolean } = {}): QueryObserverResult<RuntimeInventory> {
   const query = useQuery<RuntimeInventory>({
     queryKey: inventoryKeys.snapshot(),
-    queryFn: refreshInventory,
+    queryFn: getInventory,
     enabled: owner,
     refetchInterval: () => isVisible() ? 3000 : false,
     structuralSharing: queryStructuralSharing,

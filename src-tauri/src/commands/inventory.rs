@@ -5,7 +5,7 @@ use tauri::State;
 pub async fn get_inventory(state: State<'_, AppState>) -> Result<RuntimeInventoryDto, AppErrorDto> {
     Ok(state
         .inventory
-        .current_inventory()
+        .refresh_automatic()
         .await
         .map_err(AppErrorDto::from)?
         .into())

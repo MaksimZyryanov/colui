@@ -226,6 +226,24 @@ async fn refresh_failure_retains_snapshot_and_automatic_backoff() {
 }
 
 #[tokio::test]
+async fn repeated_poll_during_backoff_skips_list_while_explicit_refresh_bypasses() {
+    let source = Arc::new(QueuedSource::new(vec![
+        Err(runtime_error("offline")),
+        Ok(vec![observation("manual", None)]),
+    ]));
+    let coordinator = InventoryCoordinator::new(source.clone(), test_clock());
+
+    assert!(coordinator.refresh_automatic().await.is_err());
+    assert_eq!(source.calls.load(Ordering::Acquire), 1);
+    assert_eq!(coordinator.refresh_automatic().await.unwrap().generation, 0);
+    assert_eq!(coordinator.refresh_automatic().await.unwrap().generation, 0);
+    assert_eq!(source.calls.load(Ordering::Acquire), 1);
+
+    assert_eq!(coordinator.refresh().await.unwrap().generation, 1);
+    assert_eq!(source.calls.load(Ordering::Acquire), 2);
+}
+
+#[tokio::test]
 async fn automatic_backoff_uses_injected_clock_and_caps_then_resets() {
     let source = Arc::new(QueuedSource::new(vec![
         Err(runtime_error("1")),

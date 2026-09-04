@@ -30,6 +30,9 @@ pub fn project_status_from_inventory(
     } else {
         (RuntimePresence::Present, Some(RuntimeActivity::Mixed))
     };
+    let observed_at = (presence == RuntimePresence::Present)
+        .then_some(inventory.observed_at)
+        .flatten();
     ProjectStatus {
         profile_id: profile.id.clone(),
         runtime: RuntimeProjection {
@@ -37,7 +40,7 @@ pub fn project_status_from_inventory(
             activity,
             container_count,
             running_container_count,
-            observed_at: inventory.observed_at,
+            observed_at,
         },
         definition_state: DefinitionState::Unchecked,
         issues: Vec::new(),
