@@ -160,3 +160,67 @@ Browser mock smoke OK
 - Verified hash listener uses current location, updates route on browser history navigation, and is removed on unmount.
 - Verified port copy/open and container action paths still use Task 10 hooks or browser clipboard only; production contains no direct IPC invoke.
 - Existing Node localStorage warnings and intentional React error-boundary stderr remain. Live Tauri/Docker/native opener testing remains outside this frontend round.
+
+## Task 11 Fix Round 2
+
+Status: **DONE**
+
+Base: `ad26e7f79760ef781c3b3e44abe90c54af624011`.
+No subagents, push, merge, amend, or Git configuration changes.
+
+### Findings And Fixes
+
+1. Replaced shared registration and ignore mutation feedback with request-scoped feedback keyed by operation and immutable candidate ID. Concurrent same-type outcomes now remain independently visible and name their candidate.
+2. Split `runtime_context_mismatch` from stale-session recovery. Context mismatch now instructs users to align Docker CLI context with the Docker API endpoint while preserving stable code and expandable daemon details.
+
+### RED Evidence
+
+Focused command:
+
+```sh
+npx --yes pnpm@9.15.5 test -- src/features/discovery/__tests__/DiscoverySection.test.tsx src/features/containers/__tests__/OtherContainers.test.tsx
+```
+
+Relevant failures before production changes:
+
+```text
+Unable to find role="alert" and name "Registration candidate-b failed"
+Unable to find role="alert" and name "Registration new_unambiguous-app failed"
+Unable to find role="alert" and name "Ignore new_unambiguous-app failed"
+```
+
+The context mismatch regression also required alignment guidance and rejected stale-session `Reconnect and retry` copy.
+
+### GREEN Evidence
+
+Focused result:
+
+```text
+Test Files 2 passed (2)
+Tests 19 passed (19)
+```
+
+Final exact chain:
+
+```sh
+npx --yes pnpm@9.15.5 test && npx --yes pnpm@9.15.5 typecheck && npx --yes pnpm@9.15.5 lint && npx --yes pnpm@9.15.5 build && npx --yes pnpm@9.15.5 test:browser && git diff --check
+```
+
+```text
+Test Files 15 passed (15)
+Tests 144 passed (144)
+> tsc --noEmit
+> tsc --noEmit
+207 modules transformed
+✓ built in 558ms
+Test Files 1 passed (1)
+Tests 2 passed (2)
+Browser mock smoke OK
+```
+
+### Self-Review And Concerns
+
+- Verified same-type registration promises can resolve out of order without relabeling or replacing another candidate's result.
+- Verified request feedback keys include operation and immutable candidate ID, preventing registration/ignore collisions for one candidate.
+- Verified `runtime_context_mismatch` is evaluated before generic runtime/session recovery and retains backend technical details.
+- Existing Node localStorage warnings and intentional React error-boundary stderr remain. Live Tauri/Docker testing remains outside this frontend round.

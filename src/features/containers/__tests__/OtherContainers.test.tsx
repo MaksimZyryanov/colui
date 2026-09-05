@@ -86,4 +86,17 @@ describe('OtherContainers', () => {
     expect(screen.getByText('Safe technical detail').closest('details')).toHaveAttribute('open');
     expect(alert).toHaveTextContent('Safe technical detail');
   });
+
+  it('distinguishes context alignment from stale-session reconnect guidance', async () => {
+    mockBackend.setErrorOverride('run_container_action', new AppErrorException({ code: 'runtime_context_mismatch', operation: 'run_container_action', subject: { kind: 'container', id: 'one' }, message: 'Docker contexts differ', details: 'API daemon api-id; CLI daemon cli-id', retryable: false }));
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><OtherContainers inventory={{ ...inventory, standaloneContainers: [container('one', 'web-one')] }} /></QueryClientProvider>);
+    await user.click(screen.getByRole('button', { name: /stop web-one/i }));
+    const alert = await screen.findByRole('alert', { name: 'Stop web-one failed' });
+    expect(alert).toHaveTextContent('runtime_context_mismatch');
+    expect(alert).toHaveTextContent('Align Docker CLI context with the Docker API endpoint, then retry.');
+    expect(alert).not.toHaveTextContent('Reconnect and retry');
+    await user.click(screen.getByText('Technical details'));
+    expect(alert).toHaveTextContent('API daemon api-id; CLI daemon cli-id');
+  });
 });
