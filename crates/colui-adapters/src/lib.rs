@@ -7,7 +7,7 @@ pub mod runtime;
 pub use definitions::DefinitionCache;
 pub use inventory::InventoryCoordinator;
 pub use operations::OperationLockManager;
-pub use registry::{JsonProfileRegistry, RegistryConfig};
+pub use registry::{JsonProfileRegistry, RegistryConfig, RegistryRecoveryIo};
 
 pub struct UuidGenerator;
 

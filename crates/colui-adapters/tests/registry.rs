@@ -1,6 +1,6 @@
 use colui_adapters::{
     registry::{import_v1, import_v1_if_needed},
-    JsonProfileRegistry, RegistryConfig,
+    JsonProfileRegistry, RegistryConfig, RegistryRecoveryIo,
 };
 use colui_app::{
     DefinitionInvalidator, IdGenerator, ProfileReader, ProfileStore, RegistryHealthState,
@@ -14,6 +14,41 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use uuid::Uuid;
+
+#[derive(Default)]
+struct FailingRecoveryIo {
+    failed_deletions_remaining: std::sync::atomic::AtomicUsize,
+}
+
+impl RegistryRecoveryIo for FailingRecoveryIo {
+    fn replace_canonical(&self, _path: &Path, _bytes: &[u8]) -> Result<(), AppError> {
+        Err(AppError::new(
+            AppErrorCode::RegistryWriteFailed,
+            "test_replace_registry",
+            None,
+            "injected replacement failure",
+        ))
+    }
+
+    fn remove_artifact(&self, path: &Path) -> Result<(), std::io::Error> {
+        if self
+            .failed_deletions_remaining
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |remaining| remaining.checked_sub(1),
+            )
+            .is_ok()
+        {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected deletion failure",
+            ))
+        } else {
+            std::fs::remove_file(path)
+        }
+    }
+}
 
 #[test]
 fn retry_sleep_never_exceeds_remaining_deadline() {
@@ -812,6 +847,89 @@ async fn every_restore_attempt_prunes_completed_artifacts_to_three() {
         })
         .count();
     assert_eq!(count, 3);
+}
+
+#[tokio::test]
+async fn post_artifact_replacement_failure_removes_attempt_artifact() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = RegistryConfig::in_directory(directory.path());
+    let registry = JsonProfileRegistry::with_recovery_io(
+        config,
+        std::sync::Arc::new(FailingRecoveryIo::default()),
+    )
+    .unwrap();
+    let canonical = directory.path().join("registry.json");
+    std::fs::write(
+        &canonical,
+        br#"{"schemaVersion":2,"registryRevision":1,"profiles":[]}"#,
+    )
+    .unwrap();
+    registry.create_registry_backup().await.unwrap();
+    let locks =
+        colui_adapters::OperationLockManager::new(directory.path().join("registry.recovery.lock"));
+    RestoreRegistryBackup::new(&registry, &locks, &CountingInvalidator::default())
+        .execute()
+        .await
+        .unwrap_err();
+    assert!(pre_restore_artifacts(directory.path()).is_empty());
+    assert_eq!(
+        bytes(&canonical),
+        br#"{"schemaVersion":2,"registryRevision":1,"profiles":[]}"#
+    );
+}
+
+#[tokio::test]
+async fn failed_attempt_artifact_deletion_is_pruned_as_completed() {
+    let directory = tempfile::tempdir().unwrap();
+    for index in 0..3 {
+        std::fs::write(
+            directory
+                .path()
+                .join(format!("registry.pre-restore.2025010{index}.old.json")),
+            b"old",
+        )
+        .unwrap();
+    }
+    let io = FailingRecoveryIo {
+        failed_deletions_remaining: std::sync::atomic::AtomicUsize::new(1),
+    };
+    let registry = JsonProfileRegistry::with_recovery_io(
+        RegistryConfig::in_directory(directory.path()),
+        std::sync::Arc::new(io),
+    )
+    .unwrap();
+    let canonical = directory.path().join("registry.json");
+    std::fs::write(
+        &canonical,
+        br#"{"schemaVersion":2,"registryRevision":1,"profiles":[]}"#,
+    )
+    .unwrap();
+    registry.create_registry_backup().await.unwrap();
+    let locks =
+        colui_adapters::OperationLockManager::new(directory.path().join("registry.recovery.lock"));
+    RestoreRegistryBackup::new(&registry, &locks, &CountingInvalidator::default())
+        .execute()
+        .await
+        .unwrap_err();
+    let artifacts = pre_restore_artifacts(directory.path());
+    assert_eq!(artifacts.len(), 3);
+    assert!(artifacts
+        .iter()
+        .any(|path| bytes(path) == bytes(&canonical)));
+}
+
+fn pre_restore_artifacts(directory: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(directory)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("registry.pre-restore.")
+        })
+        .map(|entry| entry.path())
+        .collect()
 }
 
 #[tokio::test]

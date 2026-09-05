@@ -48,6 +48,24 @@ impl RegistryConfig {
 pub struct JsonProfileRegistry {
     config: RegistryConfig,
     history: Arc<Mutex<RegistryHistory>>,
+    recovery_io: Arc<dyn RegistryRecoveryIo>,
+}
+
+pub trait RegistryRecoveryIo: Send + Sync {
+    fn replace_canonical(&self, path: &Path, bytes: &[u8]) -> Result<(), AppError>;
+    fn remove_artifact(&self, path: &Path) -> Result<(), io::Error>;
+}
+
+struct SystemRegistryRecoveryIo;
+
+impl RegistryRecoveryIo for SystemRegistryRecoveryIo {
+    fn replace_canonical(&self, path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+        atomic_write(path, bytes)
+    }
+
+    fn remove_artifact(&self, path: &Path) -> Result<(), io::Error> {
+        fs::remove_file(path)
+    }
 }
 
 #[derive(Default)]
@@ -65,9 +83,17 @@ pub(crate) enum ImportResult {
 
 impl JsonProfileRegistry {
     pub fn new(config: RegistryConfig) -> Result<Self, AppError> {
+        Self::with_recovery_io(config, Arc::new(SystemRegistryRecoveryIo))
+    }
+
+    pub fn with_recovery_io(
+        config: RegistryConfig,
+        recovery_io: Arc<dyn RegistryRecoveryIo>,
+    ) -> Result<Self, AppError> {
         Ok(Self {
             config,
             history: Arc::new(Mutex::new(RegistryHistory::default())),
+            recovery_io,
         })
     }
 
@@ -174,10 +200,16 @@ impl JsonProfileRegistry {
 impl ProfileReader for JsonProfileRegistry {
     fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
         let config = self.config.clone();
+        let recovery_io = self.recovery_io.clone();
         Box::pin(async move {
             let history = self.history.clone();
             tokio::task::spawn_blocking(move || {
-                JsonProfileRegistry { config, history }.load_bytes()
+                JsonProfileRegistry {
+                    config,
+                    history,
+                    recovery_io,
+                }
+                .load_bytes()
             })
             .await
             .map_err(|error| write_error("load_registry", error))?
@@ -189,12 +221,14 @@ impl ProfileStore for JsonProfileRegistry {
     fn mutate(&self, mutation: ProfileMutation) -> StoreFuture<'_, RegistrySnapshot> {
         let config = self.config.clone();
         let history = self.history.clone();
+        let recovery_io = self.recovery_io.clone();
         Box::pin(async move {
             let task_history = history.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let registry = JsonProfileRegistry {
                     config,
                     history: task_history,
+                    recovery_io,
                 };
                 let lock = registry.lock()?;
                 let before = registry.load_bytes()?;
@@ -268,10 +302,12 @@ impl RegistryRecovery for JsonProfileRegistry {
     ) -> StoreFuture<'_, RegistrySnapshot> {
         let config = self.config.clone();
         let history = self.history.clone();
+        let recovery_io = self.recovery_io.clone();
         Box::pin(async move {
-            let result = tokio::task::spawn_blocking(move || restore_backup(&config))
-                .await
-                .map_err(|error| write_error("restore_registry_backup", error))?;
+            let result =
+                tokio::task::spawn_blocking(move || restore_backup(&config, recovery_io.as_ref()))
+                    .await
+                    .map_err(|error| write_error("restore_registry_backup", error))?;
             record_result(&history, &result);
             result
         })
@@ -349,9 +385,12 @@ fn create_backup(config: &RegistryConfig) -> Result<RegistrySnapshotIdentity, Ap
     Ok(identity(&snapshot, &bytes))
 }
 
-fn restore_backup(config: &RegistryConfig) -> Result<RegistrySnapshot, AppError> {
-    let result = restore_backup_attempt(config);
-    let prune = prune_artifacts(config);
+fn restore_backup(
+    config: &RegistryConfig,
+    recovery_io: &dyn RegistryRecoveryIo,
+) -> Result<RegistrySnapshot, AppError> {
+    let result = restore_backup_attempt(config, recovery_io);
+    let prune = prune_artifacts(config, recovery_io);
     match (result, prune) {
         (Err(error), _) => Err(error),
         (Ok(_), Err(error)) => Err(error),
@@ -359,7 +398,10 @@ fn restore_backup(config: &RegistryConfig) -> Result<RegistrySnapshot, AppError>
     }
 }
 
-fn restore_backup_attempt(config: &RegistryConfig) -> Result<RegistrySnapshot, AppError> {
+fn restore_backup_attempt(
+    config: &RegistryConfig,
+    recovery_io: &dyn RegistryRecoveryIo,
+) -> Result<RegistrySnapshot, AppError> {
     let backup_path = backup_path(config);
     let initial_backup =
         fs::read(&backup_path).map_err(|error| io_error("read_registry_backup", error))?;
@@ -421,7 +463,7 @@ fn restore_backup_attempt(config: &RegistryConfig) -> Result<RegistrySnapshot, A
         .map(|bytes| preserve_canonical(config, bytes))
         .transpose()?;
     let result = (|| {
-        atomic_write(&config.canonical_path, &encode(&restored)?)?;
+        recovery_io.replace_canonical(&config.canonical_path, &encode(&restored)?)?;
         let reread = registry.load_bytes()?;
         if reread != restored {
             return Err(write_error(
@@ -433,7 +475,7 @@ fn restore_backup_attempt(config: &RegistryConfig) -> Result<RegistrySnapshot, A
     })();
     if result.is_err() {
         if let Some(path) = artifact {
-            let _ = fs::remove_file(path);
+            let _ = recovery_io.remove_artifact(&path);
         }
     }
     result
@@ -496,7 +538,10 @@ fn preserve_canonical(config: &RegistryConfig, bytes: &[u8]) -> Result<PathBuf, 
     Ok(path)
 }
 
-fn prune_artifacts(config: &RegistryConfig) -> Result<(), AppError> {
+fn prune_artifacts(
+    config: &RegistryConfig,
+    recovery_io: &dyn RegistryRecoveryIo,
+) -> Result<(), AppError> {
     let parent = config
         .canonical_path
         .parent()
@@ -514,7 +559,8 @@ fn prune_artifacts(config: &RegistryConfig) -> Result<(), AppError> {
     artifacts.sort_by_key(|entry| entry.file_name());
     let remove_count = artifacts.len().saturating_sub(3);
     for entry in artifacts.into_iter().take(remove_count) {
-        fs::remove_file(entry.path())
+        recovery_io
+            .remove_artifact(&entry.path())
             .map_err(|error| io_error("prune_registry_artifacts", error))?;
     }
     Ok(())
