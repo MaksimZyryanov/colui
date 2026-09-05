@@ -1,7 +1,8 @@
-use crate::{InventoryReader, ProfileReader};
+use crate::{generate_profile_ids, IdGenerator, InventoryReader, ProfileReader, ProfileStore};
 use colui_domain::{
-    classify_candidates, AppError, CandidateId, DiscoveryCandidate, DiscoveryClassification,
-    RuntimeInventory, RuntimeSessionId, Timestamp,
+    classify_candidates, AppError, AppErrorCode, AppErrorSubject, CandidateId, ComposeProjectName,
+    DiscoveryCandidate, DiscoveryClassification, DisplayName, ProfileDraft, ProjectProfile,
+    RegistrationOrigin, RuntimeInventory, RuntimeSessionId, Timestamp,
 };
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::future::Future;
@@ -16,13 +17,30 @@ pub type DiscoveryFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError
 
 pub struct CandidateLease {
     _guard: Box<dyn Send + Sync>,
+    validator: Box<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl CandidateLease {
     pub fn hold<T: Send + Sync + 'static>(guard: T) -> Self {
         Self {
             _guard: Box::new(guard),
+            validator: Box::new(|| true),
         }
+    }
+
+    pub fn hold_validated<T, F>(guard: T, validator: F) -> Self
+    where
+        T: Send + Sync + 'static,
+        F: Fn() -> bool + Send + Sync + 'static,
+    {
+        Self {
+            _guard: Box::new(guard),
+            validator: Box::new(validator),
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        (self.validator)()
     }
 }
 
@@ -32,6 +50,226 @@ pub trait DiscoveryReader: InventoryReader {
         runtime_session_id: RuntimeSessionId,
         inventory_generation: u64,
     ) -> DiscoveryFuture<'_, CandidateLease>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegisterCandidateRequest {
+    pub candidate_id: CandidateId,
+    pub runtime_session_id: RuntimeSessionId,
+    pub inventory_generation: u64,
+    pub compose_project_name: String,
+    pub working_directory: Option<String>,
+    pub config_files: Vec<String>,
+}
+
+impl From<&DiscoveryCandidate> for RegisterCandidateRequest {
+    fn from(candidate: &DiscoveryCandidate) -> Self {
+        Self {
+            candidate_id: candidate.candidate_id.clone(),
+            runtime_session_id: candidate.runtime_session_id,
+            inventory_generation: candidate.inventory_generation,
+            compose_project_name: candidate.compose_project_name.clone(),
+            working_directory: candidate.working_directory.clone(),
+            config_files: candidate.config_files.clone(),
+        }
+    }
+}
+
+pub struct RegisterCandidate<'a, I: ?Sized, S: ?Sized, G: ?Sized> {
+    inventory: &'a I,
+    store: &'a S,
+    ids: &'a G,
+}
+
+impl<'a, I, S, G> RegisterCandidate<'a, I, S, G>
+where
+    I: DiscoveryReader + ?Sized,
+    S: ProfileStore + ?Sized,
+    G: IdGenerator + ?Sized,
+{
+    pub fn new(inventory: &'a I, store: &'a S, ids: &'a G) -> Self {
+        Self {
+            inventory,
+            store,
+            ids,
+        }
+    }
+
+    pub async fn execute(
+        &self,
+        request: RegisterCandidateRequest,
+    ) -> Result<ProjectProfile, AppError> {
+        let lease = self
+            .inventory
+            .lease_candidate(request.runtime_session_id, request.inventory_generation)
+            .await
+            .map_err(|_| {
+                candidate_error(AppErrorCode::CandidateStale, &request, "candidate is stale")
+            })?;
+        let inventory = self.inventory.current_inventory().await?;
+        require_registrable_candidate(&inventory, &[], &request)?;
+
+        let draft = ProfileDraft {
+            display_name: DisplayName::try_from(request.compose_project_name.as_str())
+                .expect("registrable candidate has valid display name"),
+            compose_project_name: ComposeProjectName::try_from(
+                request.compose_project_name.as_str(),
+            )
+            .expect("registrable candidate has valid Compose name"),
+            working_directory: request
+                .working_directory
+                .clone()
+                .expect("registrable candidate has working directory")
+                .into(),
+            compose_files: request.config_files.iter().map(Into::into).collect(),
+            environment_files: vec![],
+            registration_origin: RegistrationOrigin::Discovered,
+        };
+        let ids = generate_profile_ids(self.ids);
+        let result_ids = ids.clone();
+        let request_for_mutation = request.clone();
+        let snapshot = self
+            .store
+            .mutate(Box::new(move |mut snapshot| {
+                if !lease.is_valid() {
+                    return Err(candidate_error(
+                        AppErrorCode::CandidateStale,
+                        &request_for_mutation,
+                        "candidate is stale",
+                    ));
+                }
+                require_registrable_candidate(
+                    &inventory,
+                    &snapshot.profiles,
+                    &request_for_mutation,
+                )?;
+                let id = ids
+                    .into_iter()
+                    .find(|id| !snapshot.profiles.iter().any(|profile| profile.id == *id))
+                    .ok_or_else(|| {
+                        AppError::for_subject(
+                            AppErrorCode::RegistryWriteFailed,
+                            "register_candidate",
+                            AppErrorSubject::registry("registry"),
+                            "generated profile IDs already exist",
+                        )
+                    })?;
+                let profile = ProjectProfile::from_draft(id, draft)?;
+                snapshot.profiles.push(profile);
+                snapshot.registry_revision =
+                    snapshot.registry_revision.checked_add(1).ok_or_else(|| {
+                        AppError::for_subject(
+                            AppErrorCode::RegistryWriteFailed,
+                            "register_candidate",
+                            AppErrorSubject::registry("registry"),
+                            "registry revision exhausted",
+                        )
+                    })?;
+                Ok(snapshot)
+            }))
+            .await
+            .map_err(registration_store_error)?;
+
+        snapshot
+            .profiles
+            .into_iter()
+            .find(|profile| result_ids.contains(&profile.id))
+            .ok_or_else(|| {
+                candidate_error(
+                    AppErrorCode::CandidateStale,
+                    &request,
+                    "registered profile disappeared",
+                )
+            })
+    }
+}
+
+fn registration_store_error(mut error: AppError) -> AppError {
+    if error.subject.is_none()
+        && matches!(
+            error.code,
+            AppErrorCode::RegistryCorrupt
+                | AppErrorCode::RegistryLocked
+                | AppErrorCode::RegistryWriteFailed
+        )
+    {
+        error.subject = Some(AppErrorSubject::registry("registry"));
+    }
+    error
+}
+
+fn require_registrable_candidate(
+    inventory: &RuntimeInventory,
+    profiles: &[ProjectProfile],
+    request: &RegisterCandidateRequest,
+) -> Result<(), AppError> {
+    if inventory.runtime_session_id != Some(request.runtime_session_id)
+        || inventory.generation != request.inventory_generation
+    {
+        return Err(candidate_error(
+            AppErrorCode::CandidateStale,
+            request,
+            "candidate is stale",
+        ));
+    }
+    let candidate = classify_candidates(
+        request.runtime_session_id,
+        request.inventory_generation,
+        &inventory.compose_observation_groups,
+        profiles,
+    )
+    .into_iter()
+    .find(|candidate| candidate.candidate_id == request.candidate_id)
+    .ok_or_else(|| candidate_error(AppErrorCode::CandidateStale, request, "candidate is stale"))?;
+    if candidate.compose_project_name != request.compose_project_name
+        || candidate.working_directory != request.working_directory
+        || candidate.config_files != request.config_files
+    {
+        return Err(candidate_error(
+            AppErrorCode::CandidateStale,
+            request,
+            "candidate is stale",
+        ));
+    }
+    match candidate.classification {
+        DiscoveryClassification::NewUnambiguous => Ok(()),
+        DiscoveryClassification::AlreadyRegistered => {
+            let mut error = candidate_error(
+                AppErrorCode::ProfileAlreadyRegistered,
+                request,
+                "profile is already registered",
+            );
+            if let Some(profile) = profiles.iter().find(|profile| {
+                profile.compose_project_name.as_ref() == request.compose_project_name
+            }) {
+                error.details = Some(format!("existing profile ID: {}", profile.id));
+            }
+            Err(error)
+        }
+        DiscoveryClassification::NameConflict => Err(candidate_error(
+            AppErrorCode::DiscoveryConflict,
+            request,
+            "candidate conflicts with registered or runtime evidence",
+        )),
+        DiscoveryClassification::IncompleteMetadata => Err(candidate_error(
+            AppErrorCode::CandidateStale,
+            request,
+            "candidate is no longer registrable",
+        )),
+    }
+}
+
+fn candidate_error(
+    code: AppErrorCode,
+    request: &RegisterCandidateRequest,
+    message: &'static str,
+) -> AppError {
+    AppError::for_subject(
+        code,
+        "register_candidate",
+        AppErrorSubject::candidate(&request.candidate_id),
+        message,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -342,6 +580,49 @@ impl<'a, P: ProfileReader + ?Sized> ScheduleAutoRegistration<'a, P> {
             .session
             .observe_successful_publication(inventory, profiles)
             .await)
+    }
+}
+
+pub struct AutoRegisterCandidates<'a, I: ?Sized, S: ?Sized, G: ?Sized> {
+    registration: RegisterCandidate<'a, I, S, G>,
+    session: &'a DiscoverySession,
+}
+
+impl<'a, I, S, G> AutoRegisterCandidates<'a, I, S, G>
+where
+    I: DiscoveryReader + ?Sized,
+    S: ProfileStore + ?Sized,
+    G: IdGenerator + ?Sized,
+{
+    pub fn new(inventory: &'a I, store: &'a S, ids: &'a G, session: &'a DiscoverySession) -> Self {
+        Self {
+            registration: RegisterCandidate::new(inventory, store, ids),
+            session,
+        }
+    }
+
+    pub async fn execute(
+        &self,
+        schedule: AutoRegistrationSchedule,
+    ) -> Vec<Result<ProjectProfile, AppError>> {
+        let candidates = self.session.claim_schedule(&schedule).await;
+        let mut results = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            let result = self
+                .registration
+                .execute(RegisterCandidateRequest::from(&candidate))
+                .await;
+            let outcome = match &result {
+                Ok(_) => AutoRegistrationOutcome::Succeeded,
+                Err(error) if error.retryable => AutoRegistrationOutcome::RetryableFailure,
+                Err(_) => AutoRegistrationOutcome::TerminalFailure,
+            };
+            self.session
+                .complete_auto_candidate(&schedule, &candidate, outcome)
+                .await;
+            results.push(result);
+        }
+        results
     }
 }
 

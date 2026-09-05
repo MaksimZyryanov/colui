@@ -3,7 +3,8 @@ use colui_app::{
     ProfileReader, ProfileStore, RegistrySnapshot, RemoveProfile, UpdateProfile,
 };
 use colui_domain::{
-    AppError, AppErrorCode, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin, Revision,
+    AppError, AppErrorCode, AppErrorSubject, AppErrorSubjectKind, ProfileDraft, ProfileId,
+    ProjectProfile, RegistrationOrigin, Revision,
 };
 use std::future::Future;
 use std::pin::Pin;
@@ -365,4 +366,41 @@ async fn remove_missing_profile_returns_typed_error() {
 
     assert_eq!(error.code, AppErrorCode::ProfileNotFound);
     assert_eq!(store.write_count(), 0);
+}
+
+#[test]
+fn discovery_and_registry_errors_have_typed_subjects_and_stable_retryability() {
+    let stale = AppError::for_subject(
+        AppErrorCode::CandidateStale,
+        "register_candidate",
+        AppErrorSubject::candidate("candidate-1"),
+        "candidate is stale",
+    );
+    let conflict = AppError::for_subject(
+        AppErrorCode::DiscoveryConflict,
+        "register_candidate",
+        AppErrorSubject::candidate("candidate-2"),
+        "candidate conflicts",
+    );
+    let recovery = AppError::for_subject(
+        AppErrorCode::RecoveryConflict,
+        "restore_registry",
+        AppErrorSubject::registry("registry"),
+        "recovery conflicts with active work",
+    );
+
+    assert_eq!(stale.subject.unwrap().kind, AppErrorSubjectKind::Candidate);
+    assert!(!stale.retryable);
+    assert!(!conflict.retryable);
+    assert!(recovery.retryable);
+    assert!(
+        AppError::new(
+            AppErrorCode::RegistryWriteFailed,
+            "write",
+            None,
+            "write failed"
+        )
+        .retryable
+    );
+    assert!(!AppError::new(AppErrorCode::RegistryCorrupt, "read", None, "corrupt").retryable);
 }

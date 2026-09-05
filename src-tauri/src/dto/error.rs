@@ -8,6 +8,8 @@ pub enum AppErrorCodeDto {
     RuntimeUnavailable,
     RuntimeConnectionFailed,
     RuntimeContextMismatch,
+    CandidateStale,
+    DiscoveryConflict,
     ProfileNotFound,
     ProfileAlreadyRegistered,
     ProfileRevisionConflict,
@@ -20,6 +22,7 @@ pub enum AppErrorCodeDto {
     RegistryCorrupt,
     RegistryLocked,
     RegistryWriteFailed,
+    RecoveryConflict,
     PermissionDenied,
     ProtocolMismatch,
 }
@@ -43,6 +46,8 @@ impl From<AppErrorCode> for AppErrorCodeDto {
             AppErrorCode::RuntimeUnavailable => Self::RuntimeUnavailable,
             AppErrorCode::RuntimeConnectionFailed => Self::RuntimeConnectionFailed,
             AppErrorCode::RuntimeContextMismatch => Self::RuntimeContextMismatch,
+            AppErrorCode::CandidateStale => Self::CandidateStale,
+            AppErrorCode::DiscoveryConflict => Self::DiscoveryConflict,
             AppErrorCode::ProfileNotFound => Self::ProfileNotFound,
             AppErrorCode::ProfileAlreadyRegistered => Self::ProfileAlreadyRegistered,
             AppErrorCode::ProfileRevisionConflict => Self::ProfileRevisionConflict,
@@ -55,6 +60,7 @@ impl From<AppErrorCode> for AppErrorCodeDto {
             AppErrorCode::RegistryCorrupt => Self::RegistryCorrupt,
             AppErrorCode::RegistryLocked => Self::RegistryLocked,
             AppErrorCode::RegistryWriteFailed => Self::RegistryWriteFailed,
+            AppErrorCode::RecoveryConflict => Self::RecoveryConflict,
             AppErrorCode::PermissionDenied => Self::PermissionDenied,
             AppErrorCode::ProtocolMismatch => Self::ProtocolMismatch,
         }

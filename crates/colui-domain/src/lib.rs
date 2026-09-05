@@ -15,7 +15,7 @@ pub use discovery::{
     classify_candidates, CandidateId, DiscoveryCandidate, DiscoveryClassification,
     DiscoveryConflictEvidence, DiscoveryConflictSource,
 };
-pub use error::{AppError, AppErrorCode};
+pub use error::{AppError, AppErrorCode, AppErrorSubject, AppErrorSubjectKind};
 pub use identity::{ComposeProjectName, DisplayName, ProfileId, Revision};
 pub use profile::{validate_draft, ProfileDraft, ProjectProfile, RegistrationOrigin};
 pub use runtime::{

@@ -1,15 +1,18 @@
 use colui_app::{
-    AutoRegistrationOutcome, ConfigureAutoRegistration, DiscoverySession, IgnoreCandidate,
+    AutoRegisterCandidates, AutoRegistrationOutcome, CandidateLease, ConfigureAutoRegistration,
+    DiscoveryFuture, DiscoveryReader, DiscoverySession, IdGenerator, IgnoreCandidate,
     InventoryFuture, InventoryReader, InventoryRefresher, JournalEventKind,
-    ListDiscoveryCandidates, ProfileMutation, ProfileReader, ProfileStore, RegistrySnapshot,
-    ScheduleAutoRegistration, StoreFuture,
+    ListDiscoveryCandidates, ProfileMutation, ProfileReader, ProfileStore, RegisterCandidate,
+    RegisterCandidateRequest, RegistrySnapshot, ScheduleAutoRegistration, StoreFuture,
 };
 use colui_domain::{
-    ComposeObservationGroup, ContainerId, DaemonFingerprint, DiscoveryClassification,
-    InventoryFreshness, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin,
-    RuntimeInventory, RuntimeSessionId, Timestamp,
+    AppError, AppErrorCode, AppErrorSubjectKind, ComposeObservationGroup, ContainerId,
+    DaemonFingerprint, DiscoveryClassification, InventoryFreshness, ProfileDraft, ProfileId,
+    ProjectProfile, RegistrationOrigin, RuntimeInventory, RuntimeSessionId, Timestamp,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 struct CountingInventory {
@@ -313,4 +316,344 @@ async fn late_completion_cannot_change_dedup_state() {
         .await
         .unwrap()
         .is_some());
+}
+
+struct RegistrationInventory {
+    inventory: Mutex<RuntimeInventory>,
+    lease_valid: Arc<AtomicBool>,
+}
+
+impl InventoryReader for RegistrationInventory {
+    fn current_inventory(&self) -> InventoryFuture<'_, RuntimeInventory> {
+        let inventory = self.inventory.lock().unwrap().clone();
+        Box::pin(async move { Ok(inventory) })
+    }
+}
+
+impl DiscoveryReader for RegistrationInventory {
+    fn lease_candidate(
+        &self,
+        runtime_session_id: RuntimeSessionId,
+        inventory_generation: u64,
+    ) -> DiscoveryFuture<'_, CandidateLease> {
+        let current = self.inventory.lock().unwrap().clone();
+        let valid = self.lease_valid.clone();
+        Box::pin(async move {
+            if current.runtime_session_id != Some(runtime_session_id)
+                || current.generation != inventory_generation
+            {
+                return Err(AppError::new(
+                    AppErrorCode::RuntimeUnavailable,
+                    "lease",
+                    None,
+                    "changed",
+                ));
+            }
+            Ok(CandidateLease::hold_validated((), move || {
+                valid.load(Ordering::SeqCst)
+            }))
+        })
+    }
+}
+
+#[derive(Clone)]
+struct RegistrationStore {
+    state: Arc<Mutex<RegistrationStoreState>>,
+}
+
+struct RegistrationStoreState {
+    snapshot: RegistrySnapshot,
+    writes: usize,
+    before_mutation: Option<Box<dyn FnOnce() + Send>>,
+    error: Option<AppError>,
+}
+
+impl RegistrationStore {
+    fn new(profiles: Vec<ProjectProfile>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RegistrationStoreState {
+                snapshot: RegistrySnapshot {
+                    registry_revision: 0,
+                    profiles,
+                },
+                writes: 0,
+                before_mutation: None,
+                error: None,
+            })),
+        }
+    }
+
+    fn writes(&self) -> usize {
+        self.state.lock().unwrap().writes
+    }
+}
+
+impl ProfileReader for RegistrationStore {
+    fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
+        let snapshot = self.state.lock().unwrap().snapshot.clone();
+        Box::pin(async move { Ok(snapshot) })
+    }
+}
+
+impl ProfileStore for RegistrationStore {
+    fn mutate(&self, mutation: ProfileMutation) -> StoreFuture<'_, RegistrySnapshot> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            let mut state = state.lock().unwrap();
+            if let Some(error) = state.error.clone() {
+                return Err(error);
+            }
+            if let Some(before) = state.before_mutation.take() {
+                before();
+            }
+            let next = mutation(state.snapshot.clone())?;
+            state.snapshot = next.clone();
+            state.writes += 1;
+            Ok(next)
+        })
+    }
+}
+
+struct SequenceIds(Mutex<VecDeque<ProfileId>>);
+
+impl SequenceIds {
+    fn starting_at(first: u128) -> Self {
+        Self(Mutex::new(
+            (first..first + 64)
+                .map(|value| ProfileId::new(Uuid::from_u128(value)))
+                .collect(),
+        ))
+    }
+}
+
+impl IdGenerator for SequenceIds {
+    fn generate(&self) -> ProfileId {
+        self.0.lock().unwrap().pop_front().unwrap()
+    }
+}
+
+async fn registration_fixture() -> (
+    RegistrationInventory,
+    RegistrationStore,
+    DiscoverySession,
+    RegisterCandidateRequest,
+) {
+    let current = inventory(Some(session(9)), 3, &["compose.yml"]);
+    let state = DiscoverySession::new();
+    let candidates = state.observe_inventory(current.clone(), vec![]).await;
+    (
+        RegistrationInventory {
+            inventory: Mutex::new(current),
+            lease_valid: Arc::new(AtomicBool::new(true)),
+        },
+        RegistrationStore::new(vec![]),
+        state,
+        RegisterCandidateRequest::from(&candidates[0]),
+    )
+}
+
+#[tokio::test]
+async fn registration_rejects_disappeared_or_changed_candidate_without_write() {
+    let (inventory, store, _state, request) = registration_fixture().await;
+    inventory
+        .inventory
+        .lock()
+        .unwrap()
+        .compose_observation_groups
+        .clear();
+    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
+        .execute(request)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, AppErrorCode::CandidateStale);
+    assert_eq!(error.subject.unwrap().kind, AppErrorSubjectKind::Candidate);
+    assert_eq!(store.writes(), 0);
+}
+
+#[tokio::test]
+async fn locked_recheck_detects_reconnect_and_matching_profile_lost_races() {
+    let (inventory, store, _state, request) = registration_fixture().await;
+    let valid = inventory.lease_valid.clone();
+    store.state.lock().unwrap().before_mutation = Some(Box::new(move || {
+        valid.store(false, Ordering::SeqCst);
+    }));
+    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
+        .execute(request.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::CandidateStale);
+    assert_eq!(store.writes(), 0);
+
+    inventory.lease_valid.store(true, Ordering::SeqCst);
+    store.state.lock().unwrap().before_mutation = Some(Box::new(|| {}));
+    store.state.lock().unwrap().snapshot.profiles = vec![registered_profile()];
+    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(200))
+        .execute(request)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::ProfileAlreadyRegistered);
+    assert!(error
+        .details
+        .unwrap()
+        .contains("00000000-0000-0000-0000-000000000001"));
+    assert_eq!(store.writes(), 0);
+}
+
+#[tokio::test]
+async fn two_registrars_and_name_conflicts_never_update_existing_profiles() {
+    let (inventory, store, _state, request) = registration_fixture().await;
+    let first = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
+        .execute(request.clone())
+        .await
+        .unwrap();
+    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(200))
+        .execute(request.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::ProfileAlreadyRegistered);
+    assert_eq!(store.writes(), 1);
+    assert_eq!(store.state.lock().unwrap().snapshot.profiles[0], first);
+
+    store.state.lock().unwrap().snapshot.profiles[0].working_directory = "/other".into();
+    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(300))
+        .execute(request)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::DiscoveryConflict);
+    assert_eq!(store.writes(), 1);
+}
+
+#[tokio::test]
+async fn registration_uses_discovered_draft_and_bounds_id_collisions_at_sixteen() {
+    let (inventory, store, _state, request) = registration_fixture().await;
+    let colliding: Vec<_> = (1..=16)
+        .map(|value| {
+            ProjectProfile::from_draft(
+                ProfileId::new(Uuid::from_u128(value)),
+                ProfileDraft {
+                    display_name: format!("Other {value}").try_into().unwrap(),
+                    compose_project_name: format!("other-{value}").try_into().unwrap(),
+                    working_directory: format!("/other/{value}").into(),
+                    compose_files: vec!["compose.yml".into()],
+                    environment_files: vec![],
+                    registration_origin: RegistrationOrigin::Manual,
+                },
+            )
+            .unwrap()
+        })
+        .collect();
+    store.state.lock().unwrap().snapshot.profiles = colliding;
+    let ids = SequenceIds(Mutex::new(
+        (1..=16)
+            .map(|value| ProfileId::new(Uuid::from_u128(value)))
+            .collect(),
+    ));
+    let error = RegisterCandidate::new(&inventory, &store, &ids)
+        .execute(request)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::RegistryWriteFailed);
+    assert_eq!(store.writes(), 0);
+
+    let (inventory, store, _state, request) = registration_fixture().await;
+    let profile = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
+        .execute(request)
+        .await
+        .unwrap();
+    assert_eq!(profile.display_name.as_ref(), "demo");
+    assert_eq!(profile.compose_project_name.as_ref(), "demo");
+    assert_eq!(profile.working_directory.to_str(), Some("/work/demo"));
+    assert_eq!(
+        profile.compose_files[0].to_str(),
+        Some("/work/demo/compose.yml")
+    );
+    assert!(profile.environment_files.is_empty());
+    assert_eq!(profile.registration_origin, RegistrationOrigin::Discovered);
+}
+
+#[tokio::test]
+async fn registration_preserves_corrupt_locked_and_write_failed_registry_errors() {
+    for (code, retryable) in [
+        (AppErrorCode::RegistryCorrupt, false),
+        (AppErrorCode::RegistryLocked, true),
+        (AppErrorCode::RegistryWriteFailed, true),
+    ] {
+        let (inventory, store, _state, request) = registration_fixture().await;
+        store.state.lock().unwrap().error = Some(AppError::new(
+            code,
+            "registry_mutation",
+            None,
+            "excluded upstream detail",
+        ));
+
+        let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
+            .execute(request)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, code);
+        assert_eq!(error.retryable, retryable);
+        assert_eq!(
+            error.subject.as_ref().map(|subject| subject.kind),
+            Some(AppErrorSubjectKind::Registry)
+        );
+        assert_eq!(store.writes(), 0);
+    }
+}
+
+#[tokio::test]
+async fn auto_registration_retries_only_on_next_generation_and_manual_bypasses_dedup() {
+    let (inventory, store, state, request) = registration_fixture().await;
+    ConfigureAutoRegistration::new(&state).execute(true).await;
+    let schedule = ScheduleAutoRegistration::new(&store, &state)
+        .execute(inventory.inventory.lock().unwrap().clone())
+        .await
+        .unwrap()
+        .unwrap();
+    store.state.lock().unwrap().error = Some(AppError::new(
+        AppErrorCode::RegistryLocked,
+        "mutate",
+        None,
+        "locked",
+    ));
+    let results =
+        AutoRegisterCandidates::new(&inventory, &store, &SequenceIds::starting_at(100), &state)
+            .execute(schedule)
+            .await;
+    assert_eq!(
+        results[0].as_ref().unwrap_err().code,
+        AppErrorCode::RegistryLocked
+    );
+
+    store.state.lock().unwrap().error = None;
+    assert!(ScheduleAutoRegistration::new(&store, &state)
+        .execute(inventory.inventory.lock().unwrap().clone())
+        .await
+        .unwrap()
+        .is_none());
+    inventory.inventory.lock().unwrap().generation = 4;
+    let retry = ScheduleAutoRegistration::new(&store, &state)
+        .execute(inventory.inventory.lock().unwrap().clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(AutoRegisterCandidates::new(
+        &inventory,
+        &store,
+        &SequenceIds::starting_at(200),
+        &state,
+    )
+    .execute(retry)
+    .await[0]
+        .is_ok());
+
+    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(300))
+        .execute(RegisterCandidateRequest {
+            inventory_generation: 4,
+            ..request
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::ProfileAlreadyRegistered);
 }

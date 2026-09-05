@@ -28,6 +28,10 @@ pub trait IdGenerator: Send + Sync {
     fn generate(&self) -> ProfileId;
 }
 
+pub(crate) fn generate_profile_ids<G: IdGenerator + ?Sized>(ids: &G) -> Vec<ProfileId> {
+    (0..16).map(|_| ids.generate()).collect()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProfileValidation {
     pub valid: bool,
