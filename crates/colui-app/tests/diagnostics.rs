@@ -25,6 +25,7 @@ impl DiagnosticsSectionsReader for Sections {
                 registry: RegistryDiagnostics {
                     registry_path: PathBuf::from("/state/registry.json"),
                     backup_path: PathBuf::from("/state/registry.json.bak"),
+                    backup: RegistryBackupDiagnostics::default(),
                     revision: Some(7),
                     health: RegistryHealth {
                         state: RegistryHealthState::Healthy,
@@ -250,6 +251,7 @@ fn registry_diagnostics() -> RegistryDiagnostics {
     RegistryDiagnostics {
         registry_path: PathBuf::from("/state/registry.json"),
         backup_path: PathBuf::from("/state/registry.json.bak"),
+        backup: RegistryBackupDiagnostics::default(),
         revision: Some(7),
         health: RegistryHealth {
             state: RegistryHealthState::Healthy,

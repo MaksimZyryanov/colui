@@ -1,6 +1,28 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "PortBindingActionDto": {
+      "properties": {
+        "copy": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "copy"
+      ],
+      "type": "object"
+    }
+  },
   "properties": {
+    "action": {
+      "$ref": "#/definitions/PortBindingActionDto"
+    },
     "containerPort": {
       "format": "uint16",
       "minimum": 0.0,
@@ -25,6 +47,7 @@
     }
   },
   "required": [
+    "action",
     "containerPort",
     "protocol"
   ],

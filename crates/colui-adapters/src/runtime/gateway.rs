@@ -118,6 +118,13 @@ struct SessionClient {
     endpoint: DockerEndpoint,
     fingerprint: DaemonFingerprint,
     connected_at: Timestamp,
+    valid: Arc<AtomicBool>,
+}
+
+impl Drop for SessionClient {
+    fn drop(&mut self) {
+        self.valid.store(false, Ordering::Release);
+    }
 }
 struct Snapshot {
     generation: u64,
@@ -135,6 +142,34 @@ pub struct RuntimeGateway {
 }
 
 impl RuntimeGateway {
+    /// Read-only validity capability for synchronous locked registry closures.
+    /// The existing session client invalidates it when replaced or disconnected.
+    pub async fn api_session_validator(
+        &self,
+        expected: RuntimeSessionId,
+    ) -> Result<Box<dyn Fn() -> bool + Send + Sync>, AppError> {
+        let snapshot = self.snapshot.lock().await;
+        let valid = snapshot
+            .client
+            .as_ref()
+            .filter(|client| client.session_id == expected)
+            .filter(|_| {
+                matches!(
+                    snapshot.state,
+                    RuntimeSessionState::Ready(_) | RuntimeSessionState::ContextMismatch(_)
+                )
+            })
+            .map(|client| client.valid.clone())
+            .ok_or_else(|| {
+                error(
+                    AppErrorCode::RuntimeUnavailable,
+                    "discovery_session",
+                    "Runtime session changed",
+                )
+            })?;
+        Ok(Box::new(move || valid.load(Ordering::Acquire)))
+    }
+
     pub fn new_for_tests(docker: Box<dyn DockerControl>, runner: Box<dyn ComposeRunner>) -> Self {
         Self::with_factory(
             Arc::new(FixedFactory {
@@ -555,6 +590,7 @@ impl RuntimeGateway {
             endpoint: endpoint.clone(),
             fingerprint: api_fp.clone(),
             connected_at: connected_at.clone(),
+            valid: Arc::new(AtomicBool::new(true)),
         };
         let state = if cli_fp == api_fp {
             RuntimeSessionState::Ready(SessionContext {

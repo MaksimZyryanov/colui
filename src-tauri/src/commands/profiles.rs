@@ -75,15 +75,20 @@ pub async fn create_profile(
     draft: ProfileDraftDto,
     state: State<'_, AppState>,
 ) -> Result<ProfileSummaryDto, AppErrorDto> {
-    Ok(CreateProfile::new(
+    let profile = CreateProfile::new(
         state.profiles.as_ref(),
         state.ids.as_ref(),
         state.locks.as_ref(),
     )
     .execute(draft.into_domain().map_err(AppErrorDto::from)?)
     .await
-    .map_err(AppErrorDto::from)?
-    .into())
+    .map_err(AppErrorDto::from)?;
+    state.events.publish(&[
+        ApplicationStateScopeDto::Profiles,
+        ApplicationStateScopeDto::Discovery,
+        ApplicationStateScopeDto::Diagnostics,
+    ]);
+    Ok(profile.into())
 }
 #[tauri::command]
 pub async fn update_profile(
@@ -100,6 +105,12 @@ pub async fn update_profile(
         .await
         .map_err(AppErrorDto::from)?;
     state.definitions.invalidate(profile_id);
+    state.events.publish(&[
+        ApplicationStateScopeDto::Profiles,
+        ApplicationStateScopeDto::Discovery,
+        ApplicationStateScopeDto::Definitions,
+        ApplicationStateScopeDto::Diagnostics,
+    ]);
     Ok(updated.into())
 }
 #[tauri::command]
@@ -113,5 +124,11 @@ pub async fn remove_profile(
         .await
         .map_err(AppErrorDto::from)?;
     state.definitions.invalidate(profile_id);
+    state.events.publish(&[
+        ApplicationStateScopeDto::Profiles,
+        ApplicationStateScopeDto::Discovery,
+        ApplicationStateScopeDto::Definitions,
+        ApplicationStateScopeDto::Diagnostics,
+    ]);
     Ok(())
 }

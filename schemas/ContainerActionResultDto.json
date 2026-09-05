@@ -1,0 +1,431 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AppErrorCodeDto": {
+      "enum": [
+        "runtime_unavailable",
+        "runtime_connection_failed",
+        "runtime_context_mismatch",
+        "candidate_stale",
+        "discovery_conflict",
+        "profile_not_found",
+        "profile_already_registered",
+        "profile_revision_conflict",
+        "profile_invalid",
+        "definition_failed",
+        "compose_failed",
+        "container_operation_failed",
+        "operation_conflict",
+        "operation_timeout",
+        "registry_corrupt",
+        "registry_locked",
+        "registry_write_failed",
+        "recovery_conflict",
+        "permission_denied",
+        "protocol_mismatch"
+      ],
+      "type": "string"
+    },
+    "AppErrorDto": {
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/AppErrorCodeDto"
+        },
+        "details": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorSubjectDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "operation",
+        "retryable"
+      ],
+      "type": "object"
+    },
+    "AppErrorSubjectDto": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/AppErrorSubjectKindDto"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AppErrorSubjectKindDto": {
+      "enum": [
+        "profile",
+        "candidate",
+        "container",
+        "registry"
+      ],
+      "type": "string"
+    },
+    "ComposeObservationGroupDto": {
+      "properties": {
+        "composeProjectName": {
+          "type": "string"
+        },
+        "configFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "containerIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workingDirectory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "composeProjectName",
+        "configFiles",
+        "containerIds"
+      ],
+      "type": "object"
+    },
+    "ContainerActionDto": {
+      "enum": [
+        "start",
+        "stop",
+        "restart"
+      ],
+      "type": "string"
+    },
+    "ContainerActionObservationDto": {
+      "enum": [
+        "confirmed_in_session",
+        "indeterminate_after_session_change"
+      ],
+      "type": "string"
+    },
+    "ContainerInstanceDto": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "publishedPorts": {
+          "items": {
+            "$ref": "#/definitions/PortBindingDto"
+          },
+          "type": "array"
+        },
+        "serviceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/ContainerStateDto"
+        },
+        "statusText": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "image",
+        "name",
+        "publishedPorts",
+        "state",
+        "statusText"
+      ],
+      "type": "object"
+    },
+    "ContainerStateDto": {
+      "enum": [
+        "running",
+        "stopped",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "DaemonFingerprintDto": {
+      "properties": {
+        "architecture": {
+          "type": "string"
+        },
+        "daemonId": {
+          "type": "string"
+        },
+        "osType": {
+          "type": "string"
+        },
+        "serverVersion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "architecture",
+        "daemonId",
+        "osType",
+        "serverVersion"
+      ],
+      "type": "object"
+    },
+    "InventoryFreshnessDto": {
+      "enum": [
+        "fresh",
+        "stale",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "PortBindingActionDto": {
+      "properties": {
+        "copy": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "copy"
+      ],
+      "type": "object"
+    },
+    "PortBindingDto": {
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/PortBindingActionDto"
+        },
+        "containerPort": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "hostIp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hostPort": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "protocol": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "containerPort",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "ProjectRuntimeSnapshotDto": {
+      "properties": {
+        "composeProjectName": {
+          "type": "string"
+        },
+        "configFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "containers": {
+          "items": {
+            "$ref": "#/definitions/ContainerInstanceDto"
+          },
+          "type": "array"
+        },
+        "workingDirectory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "composeProjectName",
+        "configFiles",
+        "containers"
+      ],
+      "type": "object"
+    },
+    "Rfc3339Schema": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "RuntimeInventoryDto": {
+      "properties": {
+        "composeObservationGroups": {
+          "items": {
+            "$ref": "#/definitions/ComposeObservationGroupDto"
+          },
+          "type": "array"
+        },
+        "containers": {
+          "items": {
+            "$ref": "#/definitions/ContainerInstanceDto"
+          },
+          "type": "array"
+        },
+        "daemonFingerprint": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DaemonFingerprintDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "freshness": {
+          "$ref": "#/definitions/InventoryFreshnessDto"
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "hasSnapshot": {
+          "type": "boolean"
+        },
+        "lastSuccessfulObservedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projects": {
+          "items": {
+            "$ref": "#/definitions/ProjectRuntimeSnapshotDto"
+          },
+          "type": "array"
+        },
+        "runtimeSessionId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UuidSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "standaloneContainers": {
+          "items": {
+            "$ref": "#/definitions/ContainerInstanceDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "composeObservationGroups",
+        "containers",
+        "freshness",
+        "generation",
+        "hasSnapshot",
+        "projects",
+        "standaloneContainers"
+      ],
+      "type": "object"
+    },
+    "UuidSchema": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "action": {
+      "$ref": "#/definitions/ContainerActionDto"
+    },
+    "containerId": {
+      "type": "string"
+    },
+    "inventory": {
+      "$ref": "#/definitions/RuntimeInventoryDto"
+    },
+    "observation": {
+      "$ref": "#/definitions/ContainerActionObservationDto"
+    }
+  },
+  "required": [
+    "action",
+    "containerId",
+    "inventory",
+    "observation"
+  ],
+  "title": "ContainerActionResultDto",
+  "type": "object"
+}

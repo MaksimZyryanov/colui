@@ -1,4 +1,7 @@
+mod containers;
 mod definition;
+mod diagnostics;
+mod discovery;
 mod error;
 mod inventory;
 mod profile;
@@ -17,6 +20,22 @@ pub(crate) fn uuid_schema(generator: &mut SchemaGenerator) -> Schema {
     let mut schema: SchemaObject = <String>::json_schema(generator).into();
     schema.format = Some("uuid".to_owned());
     schema.into()
+}
+
+pub(crate) fn invalid_request() -> colui_domain::AppError {
+    colui_domain::AppError::new(
+        colui_domain::AppErrorCode::ProtocolMismatch,
+        "decode_request",
+        None,
+        "Invalid command request",
+    )
+}
+
+pub(crate) fn decode_session_id(
+    value: String,
+) -> Result<colui_domain::RuntimeSessionId, colui_domain::AppError> {
+    colui_domain::ProfileId::parse(&value).map_err(|_| invalid_request())?;
+    serde_json::from_value(serde_json::Value::String(value)).map_err(|_| invalid_request())
 }
 
 pub(crate) fn deserialize_canonical_uuid<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -75,7 +94,10 @@ impl JsonSchema for Rfc3339Schema {
     }
 }
 
+pub use containers::*;
 pub use definition::*;
+pub use diagnostics::*;
+pub use discovery::*;
 pub use error::*;
 pub use inventory::*;
 pub use profile::*;

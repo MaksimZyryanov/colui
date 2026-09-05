@@ -46,10 +46,10 @@
         "retryable": {
           "type": "boolean"
         },
-        "subjectId": {
+        "subject": {
           "anyOf": [
             {
-              "$ref": "#/definitions/UuidSchema"
+              "$ref": "#/definitions/AppErrorSubjectDto"
             },
             {
               "type": "null"
@@ -64,6 +64,31 @@
         "retryable"
       ],
       "type": "object"
+    },
+    "AppErrorSubjectDto": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/AppErrorSubjectKindDto"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AppErrorSubjectKindDto": {
+      "enum": [
+        "profile",
+        "candidate",
+        "container",
+        "registry"
+      ],
+      "type": "string"
     },
     "DefinitionStateDto": {
       "enum": [
@@ -306,10 +331,6 @@
         "name"
       ],
       "type": "object"
-    },
-    "UuidSchema": {
-      "format": "uuid",
-      "type": "string"
     }
   },
   "properties": {

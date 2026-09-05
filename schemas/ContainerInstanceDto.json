@@ -9,8 +9,28 @@
       ],
       "type": "string"
     },
+    "PortBindingActionDto": {
+      "properties": {
+        "copy": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "copy"
+      ],
+      "type": "object"
+    },
     "PortBindingDto": {
       "properties": {
+        "action": {
+          "$ref": "#/definitions/PortBindingActionDto"
+        },
         "containerPort": {
           "format": "uint16",
           "minimum": 0.0,
@@ -35,6 +55,7 @@
         }
       },
       "required": [
+        "action",
         "containerPort",
         "protocol"
       ],

@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ActiveOperationDto": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/definitions/ActiveOperationPhaseDto"
+        },
+        "startedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "subjectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "phase",
+        "startedAt",
+        "subjectId"
+      ],
+      "type": "object"
+    },
+    "ActiveOperationPhaseDto": {
+      "enum": [
+        "pending",
+        "active"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "active": {
+      "items": {
+        "$ref": "#/definitions/ActiveOperationDto"
+      },
+      "type": "array"
+    },
+    "generation": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "active",
+    "generation"
+  ],
+  "title": "OperationsDiagnosticsDto",
+  "type": "object"
+}

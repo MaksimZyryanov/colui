@@ -1,1 +1,1 @@
-{}
+{"main-events":{"identifier":"main-events","description":"Allow the main window to subscribe to backend invalidations; no frontend opener capability.","local":true,"windows":["main"],"permissions":["core:event:allow-listen","core:event:allow-unlisten"]}}

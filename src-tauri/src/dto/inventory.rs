@@ -21,6 +21,7 @@ pub struct PortBindingDto {
     pub host_port: Option<u16>,
     pub container_port: u16,
     pub protocol: String,
+    pub action: super::PortBindingActionDto,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -76,6 +77,7 @@ pub struct RuntimeInventoryDto {
     pub last_successful_observed_at: Option<String>,
     pub containers: Vec<ContainerInstanceDto>,
     pub projects: Vec<ProjectRuntimeSnapshotDto>,
+    pub compose_observation_groups: Vec<ComposeObservationGroupDto>,
     pub standalone_containers: Vec<ContainerInstanceDto>,
     pub error: Option<AppErrorDto>,
 }
@@ -94,10 +96,11 @@ impl RuntimeInventoryDto {
 impl From<PortBinding> for PortBindingDto {
     fn from(value: PortBinding) -> Self {
         Self {
+            action: colui_app::PortBindingAction::from(&value).into(),
             host_ip: value.host_ip,
             host_port: value.host_port,
             container_port: value.container_port,
-            protocol: value.protocol,
+            protocol: value.protocol.to_ascii_lowercase(),
         }
     }
 }
@@ -153,6 +156,16 @@ impl From<RuntimeInventory> for RuntimeInventoryDto {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            compose_observation_groups: value
+                .compose_observation_groups
+                .into_iter()
+                .map(|v| ComposeObservationGroupDto {
+                    compose_project_name: v.compose_project_name,
+                    working_directory: v.working_directory,
+                    config_files: v.config_files,
+                    container_ids: v.container_ids.into_iter().map(|id| id.0).collect(),
+                })
+                .collect(),
             standalone_containers: value
                 .standalone_containers
                 .into_iter()
@@ -161,6 +174,15 @@ impl From<RuntimeInventory> for RuntimeInventoryDto {
             error: value.error.map(Into::into),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeObservationGroupDto {
+    pub compose_project_name: String,
+    pub working_directory: Option<String>,
+    pub config_files: Vec<String>,
+    pub container_ids: Vec<String>,
 }
 
 #[cfg(test)]

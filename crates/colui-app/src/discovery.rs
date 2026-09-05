@@ -330,8 +330,8 @@ pub struct JournalEntry {
     pub runtime_session_id: Option<RuntimeSessionId>,
     pub kind: JournalEventKind,
     pub severity: JournalSeverity,
-    pub candidate_id: Option<CandidateId>,
-    pub stable_error_code: Option<String>,
+    pub subject: Option<AppErrorSubject>,
+    pub stable_error_code: Option<AppErrorCode>,
     pub message: String,
 }
 
@@ -398,6 +398,51 @@ impl DiscoverySession {
         Self::default()
     }
 
+    pub async fn observe_runtime_session(&self, session: Option<RuntimeSessionId>) {
+        let mut state = self.state.lock().expect("discovery state poisoned");
+        if let Some(session) = session {
+            synchronize_session(&mut state, session);
+        } else {
+            clear_session(&mut state);
+        }
+    }
+
+    pub async fn record_operation(
+        &self,
+        kind: JournalEventKind,
+        runtime_session_id: Option<RuntimeSessionId>,
+        subject: Option<AppErrorSubject>,
+        error: Option<&AppError>,
+    ) {
+        let subject = subject.filter(|subject| {
+            use colui_domain::AppErrorSubjectKind as K;
+            match subject.kind {
+                K::Profile => colui_domain::ProfileId::parse(&subject.id).is_ok(),
+                K::Candidate | K::Container => {
+                    subject.id.len() == 64
+                        && subject
+                            .id
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                }
+                K::Registry => subject.id == "registry",
+            }
+        });
+        let mut state = self.state.lock().expect("discovery state poisoned");
+        append_journal(
+            &mut state,
+            kind,
+            runtime_session_id,
+            None,
+            static_message(kind, 1, None),
+        );
+        let entry = state.journal.back_mut().expect("entry appended");
+        entry.subject = subject;
+        if entry.severity == JournalSeverity::Error {
+            entry.stable_error_code = error.map(|error| error.code);
+        }
+    }
+
     pub async fn observe_inventory(
         &self,
         inventory: RuntimeInventory,
@@ -405,12 +450,7 @@ impl DiscoverySession {
     ) -> Vec<DiscoveryCandidate> {
         let mut state = self.state.lock().expect("discovery state poisoned");
         let Some(runtime_session_id) = inventory.runtime_session_id else {
-            state.active_session = None;
-            state.generation = None;
-            state.candidates.clear();
-            state.ignored.clear();
-            state.auto.clear();
-            state.last_scheduled_generation = None;
+            clear_session(&mut state);
             return vec![];
         };
         synchronize_session(&mut state, runtime_session_id);
@@ -634,9 +674,33 @@ where
         let candidates = self.session.claim_schedule(&schedule).await;
         let mut results = Vec::with_capacity(candidates.len());
         for candidate in candidates {
+            if !self.session.auto_registration_enabled().await {
+                break;
+            }
+            let subject = Some(AppErrorSubject::candidate(&candidate.candidate_id));
+            self.session
+                .record_operation(
+                    JournalEventKind::AutoRegistrationStarted,
+                    Some(schedule.runtime_session_id),
+                    subject.clone(),
+                    None,
+                )
+                .await;
             let result = self
                 .registration
                 .execute(RegisterCandidateRequest::from(&candidate))
+                .await;
+            self.session
+                .record_operation(
+                    if result.is_ok() {
+                        JournalEventKind::AutoRegistrationSucceeded
+                    } else {
+                        JournalEventKind::AutoRegistrationFailed
+                    },
+                    Some(schedule.runtime_session_id),
+                    subject,
+                    result.as_ref().err(),
+                )
                 .await;
             let outcome = match &result {
                 Ok(_) => AutoRegistrationOutcome::Succeeded,
@@ -735,7 +799,12 @@ fn synchronize_session(state: &mut State, session: RuntimeSessionId) {
     if state.active_session == Some(session) {
         return;
     }
+    clear_session(state);
     state.active_session = Some(session);
+}
+
+fn clear_session(state: &mut State) {
+    state.active_session = None;
     state.generation = None;
     state.candidates.clear();
     state.ignored.clear();
@@ -815,7 +884,7 @@ fn append_journal(
         } else {
             JournalSeverity::Info
         },
-        candidate_id,
+        subject: candidate_id.map(AppErrorSubject::candidate),
         stable_error_code: None,
         message: message.chars().take(MESSAGE_LIMIT).collect(),
     });
@@ -861,6 +930,29 @@ fn static_message(kind: JournalEventKind, count: usize, candidate: Option<&Candi
         JournalEventKind::ConnectStarted => format!("Connection started for {count} target(s)"),
         JournalEventKind::ConnectSucceeded => format!("Connection succeeded for {count} target(s)"),
         JournalEventKind::ConnectFailed => format!("Connection failed for {count} target(s)"),
-        _ => format!("Application operation processed {count} item(s)"),
+        JournalEventKind::DisconnectStarted => "Disconnection started".into(),
+        JournalEventKind::DisconnectSucceeded => "Disconnection succeeded".into(),
+        JournalEventKind::DisconnectFailed => "Disconnection failed".into(),
+        JournalEventKind::ReconnectStarted => "Reconnection started".into(),
+        JournalEventKind::ReconnectSucceeded => "Reconnection succeeded".into(),
+        JournalEventKind::ReconnectFailed => "Reconnection failed".into(),
+        JournalEventKind::ManualRegistrationStarted => "Manual registration started".into(),
+        JournalEventKind::ManualRegistrationSucceeded => "Manual registration succeeded".into(),
+        JournalEventKind::ManualRegistrationFailed => "Manual registration failed".into(),
+        JournalEventKind::AutoRegistrationStarted => "Automatic registration started".into(),
+        JournalEventKind::AutoRegistrationSucceeded => "Automatic registration succeeded".into(),
+        JournalEventKind::AutoRegistrationFailed => "Automatic registration failed".into(),
+        JournalEventKind::BackupStarted => "Registry backup started".into(),
+        JournalEventKind::BackupSucceeded => "Registry backup succeeded".into(),
+        JournalEventKind::BackupFailed => "Registry backup failed".into(),
+        JournalEventKind::RestoreStarted => "Registry restore started".into(),
+        JournalEventKind::RestoreSucceeded => "Registry restore succeeded".into(),
+        JournalEventKind::RestoreFailed => "Registry restore failed".into(),
+        JournalEventKind::ProfileLifecycleStarted => "Profile lifecycle started".into(),
+        JournalEventKind::ProfileLifecycleSucceeded => "Profile lifecycle succeeded".into(),
+        JournalEventKind::ProfileLifecycleFailed => "Profile lifecycle failed".into(),
+        JournalEventKind::ContainerActionStarted => "Container action started".into(),
+        JournalEventKind::ContainerActionSucceeded => "Container action succeeded".into(),
+        JournalEventKind::ContainerActionFailed => "Container action failed".into(),
     }
 }

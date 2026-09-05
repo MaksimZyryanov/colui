@@ -46,10 +46,10 @@
         "retryable": {
           "type": "boolean"
         },
-        "subjectId": {
+        "subject": {
           "anyOf": [
             {
-              "$ref": "#/definitions/UuidSchema"
+              "$ref": "#/definitions/AppErrorSubjectDto"
             },
             {
               "type": "null"
@@ -62,6 +62,62 @@
         "message",
         "operation",
         "retryable"
+      ],
+      "type": "object"
+    },
+    "AppErrorSubjectDto": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/AppErrorSubjectKindDto"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AppErrorSubjectKindDto": {
+      "enum": [
+        "profile",
+        "candidate",
+        "container",
+        "registry"
+      ],
+      "type": "string"
+    },
+    "ComposeObservationGroupDto": {
+      "properties": {
+        "composeProjectName": {
+          "type": "string"
+        },
+        "configFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "containerIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workingDirectory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "composeProjectName",
+        "configFiles",
+        "containerIds"
       ],
       "type": "object"
     },
@@ -144,8 +200,28 @@
       ],
       "type": "string"
     },
+    "PortBindingActionDto": {
+      "properties": {
+        "copy": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "copy"
+      ],
+      "type": "object"
+    },
     "PortBindingDto": {
       "properties": {
+        "action": {
+          "$ref": "#/definitions/PortBindingActionDto"
+        },
         "containerPort": {
           "format": "uint16",
           "minimum": 0.0,
@@ -170,6 +246,7 @@
         }
       },
       "required": [
+        "action",
         "containerPort",
         "protocol"
       ],
@@ -216,6 +293,12 @@
     }
   },
   "properties": {
+    "composeObservationGroups": {
+      "items": {
+        "$ref": "#/definitions/ComposeObservationGroupDto"
+      },
+      "type": "array"
+    },
     "containers": {
       "items": {
         "$ref": "#/definitions/ContainerInstanceDto"
@@ -297,6 +380,7 @@
     }
   },
   "required": [
+    "composeObservationGroups",
     "containers",
     "freshness",
     "generation",

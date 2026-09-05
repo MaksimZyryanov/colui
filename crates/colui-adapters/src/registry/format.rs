@@ -324,9 +324,14 @@ impl RegistryDiagnosticsReader for JsonProfileRegistry {
     fn registry_diagnostics(&self) -> colui_app::DiagnosticsFuture<'_, RegistryDiagnostics> {
         Box::pin(async move {
             let health = self.registry_health().await?;
+            let path = backup_path(&self.config);
+            let backup = tokio::task::spawn_blocking(move || backup_diagnostics(&path))
+                .await
+                .map_err(|_| write_error("registry_diagnostics", "backup observation failed"))?;
             Ok(RegistryDiagnostics {
                 registry_path: self.config.canonical_path.clone(),
                 backup_path: backup_path(&self.config),
+                backup,
                 revision: health
                     .identity
                     .as_ref()
@@ -341,6 +346,32 @@ impl RegistryDiagnosticsReader for JsonProfileRegistry {
                     .clone(),
             })
         })
+    }
+}
+
+fn backup_diagnostics(path: &Path) -> colui_app::RegistryBackupDiagnostics {
+    use colui_app::{BackupValidationState as S, RegistryBackupDiagnostics};
+    let metadata = fs::metadata(path);
+    let modified_at = metadata
+        .as_ref()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|time| {
+            colui_domain::Timestamp(chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339())
+        });
+    let (state, error) = match fs::read(path) {
+        Ok(bytes) => match decode(&bytes) {
+            Ok(_) => (S::Valid, None),
+            Err(error) => (S::Corrupt, Some(error)),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (S::Missing, None),
+        Err(error) => (S::Unreadable, Some(io_error("read_registry_backup", error))),
+    };
+    RegistryBackupDiagnostics {
+        exists: metadata.is_ok() || matches!(state, S::Valid | S::Corrupt),
+        modified_at,
+        state,
+        error,
     }
 }
 

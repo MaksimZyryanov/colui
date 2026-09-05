@@ -1,4 +1,4 @@
-use colui_domain::{AppError, AppErrorCode};
+use colui_domain::{AppError, AppErrorCode, AppErrorSubject, AppErrorSubjectKind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -32,12 +32,40 @@ pub enum AppErrorCodeDto {
 pub struct AppErrorDto {
     pub code: AppErrorCodeDto,
     pub operation: String,
-    #[schemars(with = "Option<super::UuidSchema>")]
-    #[serde(deserialize_with = "super::deserialize_optional_canonical_uuid")]
-    pub subject_id: Option<String>,
+    pub subject: Option<AppErrorSubjectDto>,
     pub message: String,
     pub details: Option<String>,
     pub retryable: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AppErrorSubjectKindDto {
+    Profile,
+    Candidate,
+    Container,
+    Registry,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AppErrorSubjectDto {
+    pub kind: AppErrorSubjectKindDto,
+    pub id: String,
+}
+
+impl From<AppErrorSubject> for AppErrorSubjectDto {
+    fn from(value: AppErrorSubject) -> Self {
+        Self {
+            kind: match value.kind {
+                AppErrorSubjectKind::Profile => AppErrorSubjectKindDto::Profile,
+                AppErrorSubjectKind::Candidate => AppErrorSubjectKindDto::Candidate,
+                AppErrorSubjectKind::Container => AppErrorSubjectKindDto::Container,
+                AppErrorSubjectKind::Registry => AppErrorSubjectKindDto::Registry,
+            },
+            id: value.id,
+        }
+    }
 }
 
 impl From<AppErrorCode> for AppErrorCodeDto {
@@ -69,10 +97,20 @@ impl From<AppErrorCode> for AppErrorCodeDto {
 
 impl From<AppError> for AppErrorDto {
     fn from(error: AppError) -> Self {
+        let subject = error.subject.or_else(|| {
+            matches!(
+                error.code,
+                AppErrorCode::RegistryCorrupt
+                    | AppErrorCode::RegistryLocked
+                    | AppErrorCode::RegistryWriteFailed
+                    | AppErrorCode::RecoveryConflict
+            )
+            .then(|| AppErrorSubject::registry("registry"))
+        });
         Self {
             code: error.code.into(),
             operation: error.operation,
-            subject_id: error.subject_id.map(|id| id.to_string()),
+            subject: subject.map(Into::into),
             message: error.message,
             details: error.details,
             retryable: error.retryable,

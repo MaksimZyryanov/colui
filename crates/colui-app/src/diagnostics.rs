@@ -24,10 +24,28 @@ pub struct RuntimeDiagnostics {
 pub struct RegistryDiagnostics {
     pub registry_path: PathBuf,
     pub backup_path: PathBuf,
+    pub backup: RegistryBackupDiagnostics,
     pub revision: Option<u64>,
     pub health: RegistryHealth,
     pub lock_timeout: Duration,
     pub last_recovery_result: Option<Result<(), AppError>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BackupValidationState {
+    #[default]
+    Missing,
+    Valid,
+    Corrupt,
+    Unreadable,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RegistryBackupDiagnostics {
+    pub exists: bool,
+    pub modified_at: Option<Timestamp>,
+    pub state: BackupValidationState,
+    pub error: Option<AppError>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

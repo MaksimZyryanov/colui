@@ -1,0 +1,289 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AppErrorCodeDto": {
+      "enum": [
+        "runtime_unavailable",
+        "runtime_connection_failed",
+        "runtime_context_mismatch",
+        "candidate_stale",
+        "discovery_conflict",
+        "profile_not_found",
+        "profile_already_registered",
+        "profile_revision_conflict",
+        "profile_invalid",
+        "definition_failed",
+        "compose_failed",
+        "container_operation_failed",
+        "operation_conflict",
+        "operation_timeout",
+        "registry_corrupt",
+        "registry_locked",
+        "registry_write_failed",
+        "recovery_conflict",
+        "permission_denied",
+        "protocol_mismatch"
+      ],
+      "type": "string"
+    },
+    "AppErrorDto": {
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/AppErrorCodeDto"
+        },
+        "details": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorSubjectDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "operation",
+        "retryable"
+      ],
+      "type": "object"
+    },
+    "AppErrorSubjectDto": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/AppErrorSubjectKindDto"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AppErrorSubjectKindDto": {
+      "enum": [
+        "profile",
+        "candidate",
+        "container",
+        "registry"
+      ],
+      "type": "string"
+    },
+    "BackupValidationStateDto": {
+      "enum": [
+        "missing",
+        "valid",
+        "corrupt",
+        "unreadable"
+      ],
+      "type": "string"
+    },
+    "RecoveryResultDto": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "type": "object"
+    },
+    "RegistryBackupDiagnosticsDto": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "modifiedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/BackupValidationStateDto"
+        }
+      },
+      "required": [
+        "exists",
+        "state"
+      ],
+      "type": "object"
+    },
+    "RegistryHealthDto": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RegistrySnapshotIdentityDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastFailureAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastOperationAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/RegistryHealthStateDto"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "RegistryHealthStateDto": {
+      "enum": [
+        "healthy",
+        "missing",
+        "corrupt",
+        "unreadable",
+        "locked",
+        "write_failure"
+      ],
+      "type": "string"
+    },
+    "RegistrySnapshotIdentityDto": {
+      "properties": {
+        "canonicalContentSha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "registryRevision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "canonicalContentSha256",
+        "registryRevision"
+      ],
+      "type": "object"
+    },
+    "Rfc3339Schema": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "backup": {
+      "$ref": "#/definitions/RegistryBackupDiagnosticsDto"
+    },
+    "backupPath": {
+      "type": "string"
+    },
+    "health": {
+      "$ref": "#/definitions/RegistryHealthDto"
+    },
+    "lastRecoveryResult": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RecoveryResultDto"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lockTimeoutMs": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "registryPath": {
+      "type": "string"
+    },
+    "revision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "backup",
+    "backupPath",
+    "health",
+    "lockTimeoutMs",
+    "registryPath"
+  ],
+  "title": "RegistryDiagnosticsDto",
+  "type": "object"
+}

@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "DiscoveryConflictSourceDto": {
+      "enum": [
+        "runtime_observation",
+        "registered_profile"
+      ],
+      "type": "string"
+    },
+    "UuidSchema": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "configFiles": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "profileId": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/UuidSchema"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "$ref": "#/definitions/DiscoveryConflictSourceDto"
+    },
+    "workingDirectory": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "configFiles",
+    "source"
+  ],
+  "title": "DiscoveryConflictEvidenceDto",
+  "type": "object"
+}

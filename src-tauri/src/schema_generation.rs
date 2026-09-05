@@ -5,6 +5,134 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 
 pub fn generate_all_schemas() -> BTreeMap<String, Value> {
     [
+        ("AppErrorSubjectDto", schema_for!(AppErrorSubjectDto)),
+        (
+            "AppErrorSubjectKindDto",
+            schema_for!(AppErrorSubjectKindDto),
+        ),
+        ("DiscoveryCandidateDto", schema_for!(DiscoveryCandidateDto)),
+        (
+            "DiscoveryConflictEvidenceDto",
+            schema_for!(DiscoveryConflictEvidenceDto),
+        ),
+        (
+            "DiscoveryClassificationDto",
+            schema_for!(DiscoveryClassificationDto),
+        ),
+        (
+            "DiscoveryConflictSourceDto",
+            schema_for!(DiscoveryConflictSourceDto),
+        ),
+        ("DiscoveryListDto", schema_for!(DiscoveryListDto)),
+        (
+            "RegisterCandidateRequestDto",
+            schema_for!(RegisterCandidateRequestDto),
+        ),
+        (
+            "IgnoreCandidateRequestDto",
+            schema_for!(IgnoreCandidateRequestDto),
+        ),
+        (
+            "ConfigureAutoRegistrationRequestDto",
+            schema_for!(ConfigureAutoRegistrationRequestDto),
+        ),
+        (
+            "AutoRegistrationConfigurationDto",
+            schema_for!(AutoRegistrationConfigurationDto),
+        ),
+        (
+            "AutoRegistrationResultDto",
+            schema_for!(AutoRegistrationResultDto),
+        ),
+        (
+            "AutoRegistrationRequestDto",
+            schema_for!(AutoRegistrationRequestDto),
+        ),
+        (
+            "DiagnosticsSnapshotDto",
+            schema_for!(DiagnosticsSnapshotDto),
+        ),
+        (
+            "RegistrySnapshotIdentityDto",
+            schema_for!(RegistrySnapshotIdentityDto),
+        ),
+        ("RegistryHealthDto", schema_for!(RegistryHealthDto)),
+        (
+            "RegistryHealthStateDto",
+            schema_for!(RegistryHealthStateDto),
+        ),
+        (
+            "RegistryDiagnosticsDto",
+            schema_for!(RegistryDiagnosticsDto),
+        ),
+        (
+            "RegistryBackupDiagnosticsDto",
+            schema_for!(RegistryBackupDiagnosticsDto),
+        ),
+        (
+            "BackupValidationStateDto",
+            schema_for!(BackupValidationStateDto),
+        ),
+        ("RuntimeDiagnosticsDto", schema_for!(RuntimeDiagnosticsDto)),
+        ("ImportDiagnosticsDto", schema_for!(ImportDiagnosticsDto)),
+        ("RecoveryResultDto", schema_for!(RecoveryResultDto)),
+        (
+            "OperationsDiagnosticsDto",
+            schema_for!(OperationsDiagnosticsDto),
+        ),
+        ("ActiveOperationDto", schema_for!(ActiveOperationDto)),
+        (
+            "ActiveOperationPhaseDto",
+            schema_for!(ActiveOperationPhaseDto),
+        ),
+        (
+            "DefinitionsDiagnosticsDto",
+            schema_for!(DefinitionsDiagnosticsDto),
+        ),
+        (
+            "ProfileDefinitionDiagnosticsDto",
+            schema_for!(ProfileDefinitionDiagnosticsDto),
+        ),
+        ("JournalEntryDto", schema_for!(JournalEntryDto)),
+        ("JournalEventKindDto", schema_for!(JournalEventKindDto)),
+        ("JournalSeverityDto", schema_for!(JournalSeverityDto)),
+        ("SessionJournalDto", schema_for!(SessionJournalDto)),
+        (
+            "ApplicationStateChangedDto",
+            schema_for!(ApplicationStateChangedDto),
+        ),
+        (
+            "ApplicationStateScopeDto",
+            schema_for!(ApplicationStateScopeDto),
+        ),
+        ("ReconnectResultDto", schema_for!(ReconnectResultDto)),
+        (
+            "ContainerActionRequestDto",
+            schema_for!(ContainerActionRequestDto),
+        ),
+        (
+            "ContainerActionResultDto",
+            schema_for!(ContainerActionResultDto),
+        ),
+        ("ContainerActionDto", schema_for!(ContainerActionDto)),
+        (
+            "ContainerActionObservationDto",
+            schema_for!(ContainerActionObservationDto),
+        ),
+        (
+            "ContainerLogsRequestDto",
+            schema_for!(ContainerLogsRequestDto),
+        ),
+        ("ContainerLogsDto", schema_for!(ContainerLogsDto)),
+        (
+            "OpenContainerPortRequestDto",
+            schema_for!(OpenContainerPortRequestDto),
+        ),
+        ("PortBindingActionDto", schema_for!(PortBindingActionDto)),
+        (
+            "ComposeObservationGroupDto",
+            schema_for!(ComposeObservationGroupDto),
+        ),
         ("AppErrorCodeDto", schema_for!(AppErrorCodeDto)),
         ("AppErrorDto", schema_for!(AppErrorDto)),
         ("ContainerInstanceDto", schema_for!(ContainerInstanceDto)),
@@ -125,7 +253,7 @@ fn fixtures() -> Vec<(&'static str, Value)> {
         ),
         (
             "runtime_unavailable.json",
-            json!({"state":"failed","error":{"code":"runtime_unavailable","operation":"connect_runtime","subjectId":null,"message":"runtime unavailable","details":null,"retryable":false}}),
+            json!({"state":"failed","error":{"code":"runtime_unavailable","operation":"connect_runtime","subject":null,"message":"runtime unavailable","details":null,"retryable":false}}),
         ),
         (
             "runtime_context_mismatch.json",
@@ -137,7 +265,7 @@ fn fixtures() -> Vec<(&'static str, Value)> {
         ),
         (
             "lifecycle_result_valid.json",
-            json!({"profileId":"00000000-0000-0000-0000-000000000001","success":true,"inventoryGeneration":0,"inventory":{"generation":0,"hasSnapshot":false,"observedAt":null,"runtimeSessionId":null,"daemonFingerprint":null,"freshness":"unavailable","lastSuccessfulObservedAt":null,"containers":[],"projects":[],"standaloneContainers":[],"error":null}}),
+            json!({"profileId":"00000000-0000-0000-0000-000000000001","success":true,"inventoryGeneration":0,"inventory":{"generation":0,"hasSnapshot":false,"observedAt":null,"runtimeSessionId":null,"daemonFingerprint":null,"freshness":"unavailable","lastSuccessfulObservedAt":null,"containers":[],"projects":[],"composeObservationGroups":[],"standaloneContainers":[],"error":null}}),
         ),
         (
             "lifecycle_result_invalid_missing_success.json",
@@ -145,11 +273,11 @@ fn fixtures() -> Vec<(&'static str, Value)> {
         ),
         (
             "inventory_pre_observation_valid.json",
-            json!({"generation":0,"hasSnapshot":false,"observedAt":null,"runtimeSessionId":null,"daemonFingerprint":null,"freshness":"unavailable","lastSuccessfulObservedAt":null,"containers":[],"projects":[],"standaloneContainers":[],"error":null}),
+            json!({"generation":0,"hasSnapshot":false,"observedAt":null,"runtimeSessionId":null,"daemonFingerprint":null,"freshness":"unavailable","lastSuccessfulObservedAt":null,"containers":[],"projects":[],"composeObservationGroups":[],"standaloneContainers":[],"error":null}),
         ),
         (
             "inventory_pre_observation_invalid_snapshot.json",
-            json!({"generation":0,"hasSnapshot":true,"observedAt":null,"runtimeSessionId":null,"daemonFingerprint":null,"freshness":"unavailable","lastSuccessfulObservedAt":null,"containers":[],"projects":[],"standaloneContainers":[],"error":null}),
+            json!({"generation":0,"hasSnapshot":true,"observedAt":null,"runtimeSessionId":null,"daemonFingerprint":null,"freshness":"unavailable","lastSuccessfulObservedAt":null,"containers":[],"projects":[],"composeObservationGroups":[],"standaloneContainers":[],"error":null}),
         ),
         (
             "profile_validation_valid.json",
