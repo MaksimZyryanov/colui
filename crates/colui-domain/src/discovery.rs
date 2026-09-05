@@ -179,9 +179,13 @@ pub fn classify_candidates(
             .iter()
             .any(|other| other.config_files != representative.config_files);
 
-        let classification = if !representative.is_complete() {
+        let classification = if !representative.valid_name {
             DiscoveryClassification::IncompleteMetadata
-        } else if runtime_conflict || profile_conflict || identity_metadata_conflict {
+        } else if identity_metadata_conflict {
+            DiscoveryClassification::NameConflict
+        } else if !representative.is_complete() {
+            DiscoveryClassification::IncompleteMetadata
+        } else if runtime_conflict || profile_conflict {
             DiscoveryClassification::NameConflict
         } else if matching_profiles == 1 {
             DiscoveryClassification::AlreadyRegistered
@@ -192,18 +196,23 @@ pub fn classify_candidates(
         let mut conflicts = Vec::new();
         if classification == DiscoveryClassification::NameConflict {
             if identity_metadata_conflict {
-                conflicts.extend(
-                    identity_observations
-                        .iter()
-                        .map(NormalizedObservation::evidence),
-                );
-            } else if runtime_conflict {
-                conflicts.extend(
-                    same_name_observations
-                        .iter()
-                        .filter(|other| other.tuple() != representative.tuple())
-                        .map(|other| other.evidence()),
-                );
+                for observation in &identity_observations {
+                    let evidence = observation.evidence();
+                    if !conflicts.contains(&evidence) {
+                        conflicts.push(evidence);
+                    }
+                }
+            }
+            if runtime_conflict {
+                for observation in same_name_observations
+                    .iter()
+                    .filter(|other| other.tuple() != representative.tuple())
+                {
+                    let evidence = observation.evidence();
+                    if !conflicts.contains(&evidence) {
+                        conflicts.push(evidence);
+                    }
+                }
             }
             if profile_conflict {
                 conflicts.extend(same_name_profiles.iter().map(NormalizedProfile::evidence));

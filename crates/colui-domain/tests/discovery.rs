@@ -252,6 +252,87 @@ fn changed_config_files_keep_identity_but_collapse_to_conflict() {
 }
 
 #[test]
+fn complete_and_empty_config_same_identity_conflict_keeps_all_runtime_evidence() {
+    let observations = [
+        group("shop", Some("/srv/shop"), &[], 1),
+        group("shop", Some("/srv/shop"), &["compose.yml"], 1),
+        group("shop", Some("/opt/shop"), &["compose.yml"], 1),
+    ];
+    let candidates = classify_candidates(session(1), 9, &observations, &[]);
+    let reordered = classify_candidates(
+        session(1),
+        9,
+        &[
+            observations[2].clone(),
+            observations[1].clone(),
+            observations[0].clone(),
+        ],
+        &[],
+    );
+
+    assert_eq!(candidates, reordered);
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.working_directory.as_deref() == Some("/srv/shop"))
+        .unwrap();
+    assert_eq!(
+        candidate.classification,
+        DiscoveryClassification::NameConflict
+    );
+    assert_eq!(candidate.conflicts.len(), 3);
+    assert!(candidate
+        .conflicts
+        .iter()
+        .any(|evidence| evidence.working_directory.as_deref() == Some("/opt/shop")));
+}
+
+#[test]
+fn invalid_compose_name_precedes_identity_metadata_conflict() {
+    let candidates = classify_candidates(
+        session(1),
+        1,
+        &[
+            group("Shop", Some("/srv/shop"), &[], 1),
+            group("Shop", Some("/srv/shop"), &["compose.yml"], 1),
+        ],
+        &[],
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].classification,
+        DiscoveryClassification::IncompleteMetadata
+    );
+}
+
+#[test]
+fn registered_config_file_order_must_match_observation() {
+    let observation = group("shop", Some("/srv/shop"), &["compose.yml", "dev.yml"], 1);
+    let reversed = profile(
+        13,
+        "shop",
+        PathBuf::from("/srv/shop"),
+        vec![PathBuf::from("dev.yml"), PathBuf::from("compose.yml")],
+    );
+
+    let candidates = classify_candidates(session(1), 1, &[observation], &[reversed]);
+    assert_eq!(
+        candidates[0].classification,
+        DiscoveryClassification::NameConflict
+    );
+}
+
+#[test]
+fn absent_working_directory_has_exact_candidate_hash() {
+    let candidates = classify_candidates(session(1), 1, &[group("shop", None, &[], 1)], &[]);
+
+    assert_eq!(
+        candidates[0].candidate_id.as_ref(),
+        "fe4b653ca2927f02dab25dbef23f59275d8890147a9ba6a07e739630bdcadfcd"
+    );
+}
+
+#[test]
 fn candidate_order_and_ids_are_deterministic_but_session_scoped() {
     let observations = [
         group("zeta", Some("/srv/zeta"), &["compose.yml"], 1),
@@ -307,6 +388,12 @@ fn non_utf8_and_relative_profile_paths_are_name_conflicts() {
         ])),
         vec![PathBuf::from("compose.yml")],
     );
+    let non_utf8_compose_file = profile(
+        22,
+        "shop",
+        PathBuf::from("/srv/shop"),
+        vec![PathBuf::from(std::ffi::OsString::from_vec(vec![0xff]))],
+    );
 
     for registered in [relative, non_utf8] {
         let candidates = classify_candidates(
@@ -325,4 +412,20 @@ fn non_utf8_and_relative_profile_paths_are_name_conflicts() {
         );
         assert!(candidates[0].conflicts[0].working_directory.is_none());
     }
+
+    let candidates = classify_candidates(
+        session(1),
+        1,
+        std::slice::from_ref(&observation),
+        &[non_utf8_compose_file],
+    );
+    assert_eq!(
+        candidates[0].classification,
+        DiscoveryClassification::NameConflict
+    );
+    assert_eq!(
+        candidates[0].conflicts[0].working_directory.as_deref(),
+        Some("/srv/shop")
+    );
+    assert!(candidates[0].conflicts[0].config_files.is_empty());
 }
