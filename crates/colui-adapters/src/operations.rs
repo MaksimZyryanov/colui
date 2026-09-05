@@ -1,9 +1,13 @@
 use colui_app::{
-    DefinitionBusy, DefinitionLoadGuard, LifecycleOperationGuard, OperationFuture, OperationKind,
-    OperationLockManager as OperationLockManagerPort, OperationLockReader,
+    ContainerOperationGuard, DefinitionBusy, DefinitionLoadGuard, LifecycleOperationGuard,
+    OperationFuture, OperationKind, OperationLockManager as OperationLockManagerPort,
+    OperationLockReader, RegistryMutationGuard, RegistryRecoveryGuard,
 };
 use colui_domain::{AppError, AppErrorCode, ProfileId, Timestamp};
-use std::collections::HashMap;
+use fs2::FileExt;
+use std::collections::{HashMap, HashSet};
+use std::fs::{File, OpenOptions};
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex, MutexGuard,
@@ -16,7 +20,16 @@ pub struct OperationLockManager {
 
 struct LockState {
     profiles: Mutex<HashMap<ProfileId, ProfileState>>,
+    barrier: Mutex<BarrierState>,
+    recovery_path: Option<PathBuf>,
     next_token: AtomicU64,
+}
+
+#[derive(Default)]
+struct BarrierState {
+    shared: usize,
+    recovering: bool,
+    containers: HashSet<String>,
 }
 
 struct ProfileState {
@@ -49,6 +62,7 @@ struct LifecycleReservation {
     profile_id: ProfileId,
     token: u64,
     promoted: bool,
+    recovery_file: Option<File>,
 }
 
 impl OperationLockManager {
@@ -56,6 +70,19 @@ impl OperationLockManager {
         Self {
             state: Arc::new(LockState {
                 profiles: Mutex::new(HashMap::new()),
+                barrier: Mutex::new(BarrierState::default()),
+                recovery_path: None,
+                next_token: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    pub fn with_recovery_lock(path: PathBuf) -> Self {
+        Self {
+            state: Arc::new(LockState {
+                profiles: Mutex::new(HashMap::new()),
+                barrier: Mutex::new(BarrierState::default()),
+                recovery_path: Some(path),
                 next_token: AtomicU64::new(0),
             }),
         }
@@ -66,12 +93,14 @@ impl OperationLockManager {
         profile_id: ProfileId,
         kind: OperationKind,
     ) -> Result<LifecycleReservation, AppError> {
+        let recovery_file = acquire_shared(&self.state)?;
         let token = self.state.next_token.fetch_add(1, Ordering::Relaxed);
         let mut profiles = lock_profiles(&self.state);
         let profile = profiles
             .entry(profile_id.clone())
             .or_insert_with(ProfileState::new);
         if profile.lifecycle.is_some() {
+            release_shared(&self.state);
             return Err(AppError::new(
                 AppErrorCode::OperationConflict,
                 "acquire_lifecycle",
@@ -85,7 +114,66 @@ impl OperationLockManager {
             profile_id,
             token,
             promoted: false,
+            recovery_file,
         })
+    }
+
+    pub fn acquire_container(
+        &self,
+        container_id: &str,
+    ) -> Result<ContainerOperationGuard, AppError> {
+        let recovery_file = acquire_shared(&self.state)?;
+        let mut barrier = lock_barrier(&self.state);
+        if !barrier.containers.insert(container_id.to_owned()) {
+            barrier.shared -= 1;
+            return Err(conflict(
+                "acquire_container",
+                "container operation already in progress",
+            ));
+        }
+        drop(barrier);
+        let state = Arc::clone(&self.state);
+        let container_id = container_id.to_owned();
+        Ok(ContainerOperationGuard::new(move || {
+            let _file = recovery_file;
+            let mut barrier = lock_barrier(&state);
+            barrier.containers.remove(&container_id);
+            barrier.shared -= 1;
+        }))
+    }
+
+    pub fn acquire_mutation(&self) -> Result<RegistryMutationGuard, AppError> {
+        let recovery_file = acquire_shared(&self.state)?;
+        let state = Arc::clone(&self.state);
+        Ok(RegistryMutationGuard::new(move || {
+            let _file = recovery_file;
+            release_shared(&state);
+        }))
+    }
+
+    pub fn acquire_recovery(&self) -> Result<RegistryRecoveryGuard, AppError> {
+        {
+            let mut barrier = lock_barrier(&self.state);
+            if barrier.recovering || barrier.shared != 0 {
+                return Err(conflict(
+                    "acquire_recovery",
+                    "operation already in progress",
+                ));
+            }
+            barrier.recovering = true;
+        }
+        let recovery_file = match acquire_file(&self.state.recovery_path, true) {
+            Ok(file) => file,
+            Err(error) => {
+                lock_barrier(&self.state).recovering = false;
+                return Err(error);
+            }
+        };
+        let state = Arc::clone(&self.state);
+        Ok(RegistryRecoveryGuard::new(move || {
+            let _file = recovery_file;
+            lock_barrier(&state).recovering = false;
+        }))
     }
 }
 
@@ -121,23 +209,30 @@ impl OperationLockManagerPort for OperationLockManager {
         &self,
         profile_id: ProfileId,
     ) -> Result<DefinitionLoadGuard, DefinitionBusy> {
+        let recovery_file =
+            acquire_shared(&self.state).map_err(|_| DefinitionBusy::LifecyclePending)?;
         let token = self.state.next_token.fetch_add(1, Ordering::Relaxed);
         let mut profiles = lock_profiles(&self.state);
         let profile = profiles
             .entry(profile_id.clone())
             .or_insert_with(ProfileState::new);
         match profile.lifecycle.as_ref() {
-            Some(LifecycleLease::Pending { .. }) => return Err(DefinitionBusy::LifecyclePending),
+            Some(LifecycleLease::Pending { .. }) => {
+                release_shared(&self.state);
+                return Err(DefinitionBusy::LifecyclePending);
+            }
             Some(LifecycleLease::Active {
                 kind, started_at, ..
             }) => {
                 let _ = (kind, started_at);
+                release_shared(&self.state);
                 return Err(DefinitionBusy::LifecyclePending);
             }
             None => {}
         }
         if let Some(lease) = profile.definition.as_ref() {
             let _ = &lease.started_at;
+            release_shared(&self.state);
             return Err(DefinitionBusy::DefinitionActive);
         }
         profile.definition = Some(DefinitionLease {
@@ -146,8 +241,22 @@ impl OperationLockManagerPort for OperationLockManager {
         });
         let state = Arc::clone(&self.state);
         Ok(DefinitionLoadGuard::new(move || {
+            let _file = recovery_file;
             release_definition(&state, &profile_id, token);
+            release_shared(&state);
         }))
+    }
+
+    fn acquire_container(&self, container_id: &str) -> Result<ContainerOperationGuard, AppError> {
+        OperationLockManager::acquire_container(self, container_id)
+    }
+
+    fn acquire_mutation(&self) -> Result<RegistryMutationGuard, AppError> {
+        OperationLockManager::acquire_mutation(self)
+    }
+
+    fn acquire_recovery(&self) -> Result<RegistryRecoveryGuard, AppError> {
+        OperationLockManager::acquire_recovery(self)
     }
 }
 
@@ -155,6 +264,7 @@ impl Drop for LifecycleReservation {
     fn drop(&mut self) {
         if !self.promoted {
             release_pending(&self.state, &self.profile_id, self.token);
+            release_shared(&self.state);
         }
     }
 }
@@ -194,8 +304,11 @@ async fn wait_for_definition(
         let state = Arc::clone(&reservation.state);
         let profile_id = reservation.profile_id.clone();
         let token = reservation.token;
+        let recovery_file = reservation.recovery_file.take();
         return Ok(LifecycleOperationGuard::new(move || {
+            let _file = recovery_file;
             release_lifecycle(&state, &profile_id, token);
+            release_shared(&state);
         }));
     }
 }
@@ -283,6 +396,84 @@ fn lock_profiles<'a>(state: &'a LockState) -> MutexGuard<'a, HashMap<ProfileId, 
 
 fn now() -> Timestamp {
     Timestamp(chrono::Utc::now().to_rfc3339())
+}
+
+fn lock_barrier(state: &LockState) -> MutexGuard<'_, BarrierState> {
+    state
+        .barrier
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn acquire_shared(state: &Arc<LockState>) -> Result<Option<File>, AppError> {
+    {
+        let mut barrier = lock_barrier(state);
+        if barrier.recovering {
+            return Err(conflict(
+                "acquire_operation",
+                "registry recovery in progress",
+            ));
+        }
+        barrier.shared += 1;
+    }
+    match acquire_file(&state.recovery_path, false) {
+        Ok(file) => Ok(file),
+        Err(error) => {
+            release_shared(state);
+            Err(error)
+        }
+    }
+}
+
+fn release_shared(state: &LockState) {
+    let mut barrier = lock_barrier(state);
+    barrier.shared = barrier.shared.saturating_sub(1);
+}
+
+fn acquire_file(path: &Option<PathBuf>, exclusive: bool) -> Result<Option<File>, AppError> {
+    let Some(path) = path else { return Ok(None) };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(recovery_io)?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(recovery_io)?;
+    let result = if exclusive {
+        FileExt::try_lock_exclusive(&file)
+    } else {
+        FileExt::try_lock_shared(&file)
+    };
+    result.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            AppError::new(
+                AppErrorCode::RecoveryConflict,
+                "lock_registry_recovery",
+                None,
+                "registry recovery lock is busy",
+            )
+        } else {
+            recovery_io(error)
+        }
+    })?;
+    Ok(Some(file))
+}
+
+fn conflict(operation: &str, message: &str) -> AppError {
+    AppError::new(AppErrorCode::OperationConflict, operation, None, message)
+}
+
+fn recovery_io(error: std::io::Error) -> AppError {
+    AppError::new(
+        AppErrorCode::RegistryWriteFailed,
+        "lock_registry_recovery",
+        None,
+        "registry recovery lock failed",
+    )
+    .with_details(error.to_string())
 }
 
 impl ProfileState {

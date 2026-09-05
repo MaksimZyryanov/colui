@@ -1,7 +1,11 @@
-use colui_app::{ProfileMutation, ProfileReader, ProfileStore, RegistrySnapshot, StoreFuture};
+use colui_app::{
+    ProfileMutation, ProfileReader, ProfileStore, RegistryHealth, RegistryHealthState,
+    RegistryRecovery, RegistrySnapshot, RegistrySnapshotIdentity, StoreFuture,
+};
 use colui_domain::{validate_draft, AppError, AppErrorCode, ProfileDraft, ProjectProfile};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::io::Write;
@@ -213,6 +217,223 @@ impl ProfileStore for JsonProfileRegistry {
     }
 }
 
+impl RegistryRecovery for JsonProfileRegistry {
+    fn registry_health(&self) -> StoreFuture<'_, RegistryHealth> {
+        let config = self.config.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || registry_health(&config))
+                .await
+                .map_err(|error| write_error("read_registry_health", error))
+        })
+    }
+
+    fn create_registry_backup(&self) -> StoreFuture<'_, RegistrySnapshotIdentity> {
+        let config = self.config.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || create_backup(&config))
+                .await
+                .map_err(|error| write_error("create_registry_backup", error))?
+        })
+    }
+
+    fn restore_registry_backup(&self) -> StoreFuture<'_, RegistrySnapshot> {
+        let config = self.config.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || restore_backup(&config))
+                .await
+                .map_err(|error| write_error("restore_registry_backup", error))?
+        })
+    }
+}
+
+fn registry_health(config: &RegistryConfig) -> RegistryHealth {
+    match fs::read(&config.canonical_path) {
+        Ok(bytes) => match decode(&bytes) {
+            Ok(snapshot) => RegistryHealth {
+                state: RegistryHealthState::Healthy,
+                identity: Some(identity(&snapshot, &bytes)),
+                error: None,
+            },
+            Err(error) => RegistryHealth {
+                state: RegistryHealthState::Corrupt,
+                identity: None,
+                error: Some(error),
+            },
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => RegistryHealth {
+            state: RegistryHealthState::Missing,
+            identity: None,
+            error: None,
+        },
+        Err(error) => RegistryHealth {
+            state: RegistryHealthState::Unreadable,
+            identity: None,
+            error: Some(io_error("read_registry_health", error)),
+        },
+    }
+}
+
+fn create_backup(config: &RegistryConfig) -> Result<RegistrySnapshotIdentity, AppError> {
+    let registry = JsonProfileRegistry {
+        config: config.clone(),
+    };
+    let _lock = registry.lock()?;
+    let bytes = fs::read(&config.canonical_path)
+        .map_err(|error| io_error("read_registry_backup_source", error))?;
+    let snapshot = decode(&bytes)?;
+    atomic_write(&backup_path(config), &bytes)?;
+    Ok(identity(&snapshot, &bytes))
+}
+
+fn restore_backup(config: &RegistryConfig) -> Result<RegistrySnapshot, AppError> {
+    let backup_path = backup_path(config);
+    let initial_backup =
+        fs::read(&backup_path).map_err(|error| io_error("read_registry_backup", error))?;
+    let initial_hash = digest(&initial_backup);
+    let backup = decode(&initial_backup)?;
+    let registry = JsonProfileRegistry {
+        config: config.clone(),
+    };
+    let _lock = registry.lock()?;
+    let locked_backup =
+        fs::read(&backup_path).map_err(|error| io_error("reread_registry_backup", error))?;
+    if digest(&locked_backup) != initial_hash {
+        return Err(AppError::new(
+            AppErrorCode::RecoveryConflict,
+            "restore_registry_backup",
+            None,
+            "registry backup changed during restore",
+        ));
+    }
+    let canonical_bytes = match fs::read(&config.canonical_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(io_error("read_registry_for_restore", error)),
+    };
+    let canonical = canonical_bytes
+        .as_deref()
+        .and_then(|bytes| decode(bytes).ok());
+    let authority_revision = canonical
+        .as_ref()
+        .map(|value| value.registry_revision)
+        .unwrap_or(backup.registry_revision)
+        .max(backup.registry_revision);
+    let mut restored = backup;
+    restored.registry_revision = authority_revision
+        .checked_add(1)
+        .ok_or_else(|| write_error("restore_registry_backup", "registry revision exhausted"))?;
+    for profile in &mut restored.profiles {
+        let canonical_revision = canonical
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .profiles
+                    .iter()
+                    .find(|current| current.id == profile.id)
+            })
+            .map(|current| current.revision.value())
+            .unwrap_or(0);
+        profile.revision = colui_domain::Revision::new(
+            profile
+                .revision
+                .value()
+                .max(canonical_revision)
+                .checked_add(1)
+                .ok_or_else(|| {
+                    write_error("restore_registry_backup", "profile revision exhausted")
+                })?,
+        );
+    }
+    let artifact = canonical_bytes
+        .as_ref()
+        .map(|bytes| preserve_canonical(config, bytes))
+        .transpose()?;
+    let result = (|| {
+        atomic_write(&config.canonical_path, &encode(&restored)?)?;
+        let reread = registry.load_bytes()?;
+        if reread != restored {
+            return Err(write_error(
+                "verify_registry_restore",
+                "registry changed during restore",
+            ));
+        }
+        Ok(reread)
+    })();
+    if result.is_err() {
+        if let Some(path) = artifact {
+            let _ = fs::remove_file(path);
+        }
+    }
+    prune_artifacts(config)?;
+    result
+}
+
+fn backup_path(config: &RegistryConfig) -> PathBuf {
+    config.canonical_path.with_extension("json.bak")
+}
+
+fn identity(snapshot: &RegistrySnapshot, bytes: &[u8]) -> RegistrySnapshotIdentity {
+    RegistrySnapshotIdentity {
+        registry_revision: snapshot.registry_revision,
+        canonical_content_sha256: digest(bytes),
+    }
+}
+
+fn digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn preserve_canonical(config: &RegistryConfig, bytes: &[u8]) -> Result<PathBuf, AppError> {
+    let parent = config
+        .canonical_path
+        .parent()
+        .ok_or_else(|| write_error("preserve_registry", "registry path has no parent"))?;
+    let path = parent.join(format!(
+        "registry.pre-restore.{}.{}.json",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S%.fZ"),
+        Uuid::new_v4()
+    ));
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .map_err(|error| io_error("preserve_registry", error))?;
+    file.write_all(bytes)
+        .map_err(|error| io_error("preserve_registry", error))?;
+    file.sync_all()
+        .map_err(|error| io_error("fsync_preserved_registry", error))?;
+    Ok(path)
+}
+
+fn prune_artifacts(config: &RegistryConfig) -> Result<(), AppError> {
+    let parent = config
+        .canonical_path
+        .parent()
+        .ok_or_else(|| write_error("prune_registry_artifacts", "registry path has no parent"))?;
+    let mut artifacts = fs::read_dir(parent)
+        .map_err(|error| io_error("prune_registry_artifacts", error))?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("registry.pre-restore.")
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by_key(|entry| entry.file_name());
+    let remove_count = artifacts.len().saturating_sub(3);
+    for entry in artifacts.into_iter().take(remove_count) {
+        fs::remove_file(entry.path())
+            .map_err(|error| io_error("prune_registry_artifacts", error))?;
+    }
+    Ok(())
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
@@ -344,7 +565,16 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     fs::create_dir_all(parent).map_err(|error| io_error("create_registry_directory", error))?;
     let temp = parent.join(format!(".registry.{}.tmp", Uuid::new_v4()));
     let result = (|| {
-        let mut file = File::create(&temp).map_err(|error| io_error("write_registry", error))?;
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temp)
+            .map_err(|error| io_error("write_registry", error))?;
         io::Write::write_all(&mut file, bytes)
             .map_err(|error| io_error("write_registry", error))?;
         file.sync_all()

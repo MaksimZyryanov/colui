@@ -2,10 +2,12 @@ use colui_adapters::{
     registry::{import_v1, import_v1_if_needed},
     JsonProfileRegistry, RegistryConfig,
 };
-use colui_app::{IdGenerator, ProfileReader, ProfileStore};
+use colui_app::{IdGenerator, ProfileReader, ProfileStore, RegistryHealthState, RegistryRecovery};
 use colui_domain::{
     AppError, AppErrorCode, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin,
 };
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -568,4 +570,84 @@ async fn lock_expiration_returns_retryable_error() {
     assert_eq!(error.code, AppErrorCode::RegistryLocked);
     assert!(error.retryable);
     handle.join().unwrap();
+}
+
+#[tokio::test]
+async fn backup_is_explicit_exact_and_has_private_permissions() {
+    let (directory, registry) = test_registry();
+    registry
+        .mutate(Box::new(|mut snapshot| {
+            snapshot.profiles.push(profile_with_files(&["compose.yml"]));
+            Ok(snapshot)
+        }))
+        .await
+        .unwrap();
+    let canonical = directory.path().join("registry.json");
+    let backup = directory.path().join("registry.json.bak");
+    assert!(!backup.exists());
+    let identity = registry.create_registry_backup().await.unwrap();
+    assert_eq!(bytes(&backup), bytes(&canonical));
+    assert_eq!(identity.registry_revision, 1);
+    assert_eq!(identity.canonical_content_sha256.len(), 64);
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[tokio::test]
+async fn health_distinguishes_missing_corrupt_and_valid_identity() {
+    let (directory, registry) = test_registry();
+    let missing = registry.registry_health().await.unwrap();
+    assert_eq!(missing.state, RegistryHealthState::Missing);
+    assert!(missing.identity.is_none());
+
+    std::fs::write(directory.path().join("registry.json"), b"{broken").unwrap();
+    let corrupt = registry.registry_health().await.unwrap();
+    assert_eq!(corrupt.state, RegistryHealthState::Corrupt);
+    assert!(corrupt.identity.is_none());
+
+    std::fs::write(
+        directory.path().join("registry.json"),
+        br#"{"schemaVersion":2,"registryRevision":7,"profiles":[]}"#,
+    )
+    .unwrap();
+    let healthy = registry.registry_health().await.unwrap();
+    assert_eq!(healthy.state, RegistryHealthState::Healthy);
+    assert_eq!(healthy.identity.unwrap().registry_revision, 7);
+}
+
+#[tokio::test]
+async fn restore_replaces_corrupt_canonical_without_silent_read_repair() {
+    let (directory, registry) = test_registry();
+    let canonical = directory.path().join("registry.json");
+    std::fs::write(
+        &canonical,
+        br#"{"schemaVersion":2,"registryRevision":4,"profiles":[]}"#,
+    )
+    .unwrap();
+    registry.create_registry_backup().await.unwrap();
+    std::fs::write(&canonical, b"{broken").unwrap();
+    assert_eq!(
+        registry.load().await.unwrap_err().code,
+        AppErrorCode::RegistryCorrupt
+    );
+    assert_eq!(bytes(&canonical), b"{broken");
+
+    let restored = registry.restore_registry_backup().await.unwrap();
+    assert_eq!(restored.registry_revision, 5);
+    assert_eq!(registry.load().await.unwrap().registry_revision, 5);
+    let artifacts = std::fs::read_dir(directory.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("registry.pre-restore.")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(bytes(&artifacts[0].path()), b"{broken");
 }

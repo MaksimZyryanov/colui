@@ -56,6 +56,32 @@ pub struct DefinitionLoadGuard {
     _release: ReleaseOnce,
 }
 
+macro_rules! operation_guard {
+    ($name:ident) => {
+        pub struct $name {
+            _release: ReleaseOnce,
+        }
+
+        impl $name {
+            pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
+                Self {
+                    _release: ReleaseOnce::new(release),
+                }
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(concat!(stringify!($name), "(..)"))
+            }
+        }
+    };
+}
+
+operation_guard!(ContainerOperationGuard);
+operation_guard!(RegistryMutationGuard);
+operation_guard!(RegistryRecoveryGuard);
+
 impl DefinitionLoadGuard {
     pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
         Self {
@@ -92,4 +118,23 @@ pub trait OperationLockManager: OperationLockReader {
         &self,
         profile_id: ProfileId,
     ) -> Result<DefinitionLoadGuard, DefinitionBusy>;
+
+    fn acquire_container(&self, _container_id: &str) -> Result<ContainerOperationGuard, AppError> {
+        Err(unsupported_lease("acquire_container"))
+    }
+    fn acquire_mutation(&self) -> Result<RegistryMutationGuard, AppError> {
+        Err(unsupported_lease("acquire_mutation"))
+    }
+    fn acquire_recovery(&self) -> Result<RegistryRecoveryGuard, AppError> {
+        Err(unsupported_lease("acquire_recovery"))
+    }
+}
+
+fn unsupported_lease(operation: &str) -> AppError {
+    AppError::new(
+        colui_domain::AppErrorCode::OperationConflict,
+        operation,
+        None,
+        "operation lock manager does not support this lease",
+    )
 }

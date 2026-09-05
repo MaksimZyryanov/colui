@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
+use tempfile::TempDir;
 use uuid::Uuid;
 
 fn id(value: u128) -> ProfileId {
@@ -251,4 +252,58 @@ fn guard_release_callback_runs_once() {
     };
     drop(guard);
     assert_eq!(releases.load(Ordering::Acquire), 1);
+}
+
+fn recovery_locks() -> (TempDir, ConcreteOperationLockManager) {
+    let directory = tempfile::tempdir().unwrap();
+    let locks = ConcreteOperationLockManager::with_recovery_lock(
+        directory.path().join("registry.recovery.lock"),
+    );
+    (directory, locks)
+}
+
+#[test]
+fn container_actions_exclude_same_container_but_not_other_containers() {
+    let (_directory, locks) = recovery_locks();
+    let first = locks.acquire_container("container-a").unwrap();
+    assert_eq!(
+        locks.acquire_container("container-a").unwrap_err().code,
+        AppErrorCode::OperationConflict
+    );
+    let second = locks.acquire_container("container-b").unwrap();
+    drop((first, second));
+    assert!(locks.acquire_container("container-a").is_ok());
+}
+
+#[test]
+fn recovery_fails_fast_while_shared_operation_is_active() {
+    let (_directory, locks) = recovery_locks();
+    let mutation = locks.acquire_mutation().unwrap();
+    assert_eq!(
+        locks.acquire_recovery().unwrap_err().code,
+        AppErrorCode::OperationConflict
+    );
+    drop(mutation);
+    let recovery = locks.acquire_recovery().unwrap();
+    assert_eq!(
+        locks.acquire_mutation().unwrap_err().code,
+        AppErrorCode::OperationConflict
+    );
+    drop(recovery);
+    assert!(locks.acquire_mutation().is_ok());
+}
+
+#[test]
+fn recovery_file_lease_excludes_another_manager() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("registry.recovery.lock");
+    let first = ConcreteOperationLockManager::with_recovery_lock(path.clone());
+    let second = ConcreteOperationLockManager::with_recovery_lock(path);
+    let operation = first.acquire_mutation().unwrap();
+    assert_eq!(
+        second.acquire_recovery().unwrap_err().code,
+        AppErrorCode::RecoveryConflict
+    );
+    drop(operation);
+    assert!(second.acquire_recovery().is_ok());
 }
