@@ -113,12 +113,7 @@ pub trait RuntimeConnector: Send + Sync {
     fn reconnect_runtime(
         &self,
         preference: Option<DockerEndpoint>,
-    ) -> RuntimeFuture<'_, RuntimeSessionState> {
-        Box::pin(async move {
-            self.disconnect_runtime().await?;
-            self.connect_runtime(preference).await
-        })
-    }
+    ) -> RuntimeFuture<'_, RuntimeSessionState>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

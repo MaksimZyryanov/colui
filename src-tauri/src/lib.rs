@@ -74,6 +74,12 @@ impl RuntimeConnector for RuntimeFacade {
     fn disconnect_runtime(&self) -> colui_app::RuntimeFuture<'_, ()> {
         self.gateway.disconnect_runtime()
     }
+    fn reconnect_runtime(
+        &self,
+        preference: Option<colui_domain::DockerEndpoint>,
+    ) -> colui_app::RuntimeFuture<'_, colui_domain::RuntimeSessionState> {
+        self.gateway.reconnect_runtime(preference)
+    }
 }
 impl RuntimeStateReader for RuntimeFacade {
     fn session_state(&self) -> colui_app::RuntimeFuture<'_, colui_domain::RuntimeSessionState> {

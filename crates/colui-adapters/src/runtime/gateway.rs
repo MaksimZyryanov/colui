@@ -12,11 +12,34 @@ use colui_domain::{
     SessionContext, Timestamp,
 };
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{watch, Mutex, Semaphore};
+
+type TransitionResult = Result<RuntimeSessionState, AppError>;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TransitionKind {
+    Connect,
+    Disconnect,
+    Reconnect,
+}
+
+struct ActiveTransition {
+    id: u64,
+    kind: TransitionKind,
+    cancelled: Arc<AtomicBool>,
+    completed: watch::Sender<Option<TransitionResult>>,
+    reconnect_takeover: Option<watch::Sender<Option<TransitionResult>>>,
+}
+
+#[derive(Default)]
+struct TransitionState {
+    next_id: u64,
+    active: Option<ActiveTransition>,
+}
 
 pub struct ComposeExecutionGate(Semaphore);
 
@@ -101,7 +124,7 @@ pub struct RuntimeGateway {
     factory: Arc<dyn DockerFactory>,
     runner: Mutex<Arc<dyn ComposeRunner>>,
     snapshot: Mutex<Snapshot>,
-    transition: Mutex<()>,
+    transition: Mutex<TransitionState>,
     gate: Arc<ComposeExecutionGate>,
     created: AtomicUsize,
 }
@@ -145,7 +168,7 @@ impl RuntimeGateway {
                 state: RuntimeSessionState::Disconnected,
                 client: None,
             }),
-            transition: Mutex::new(()),
+            transition: Mutex::new(TransitionState::default()),
             gate,
             created: AtomicUsize::new(0),
         }
@@ -269,175 +292,376 @@ fn timestamp() -> Timestamp {
     Timestamp(chrono::Utc::now().to_rfc3339())
 }
 
+enum TransitionDecision {
+    Join(watch::Receiver<Option<TransitionResult>>),
+    Wait(watch::Receiver<Option<TransitionResult>>),
+    Own { id: u64 },
+}
+
+fn install_transition(state: &mut TransitionState, kind: TransitionKind) -> TransitionDecision {
+    state.next_id = state.next_id.wrapping_add(1);
+    let id = state.next_id;
+    let (completed, _) = watch::channel(None);
+    state.active = Some(ActiveTransition {
+        id,
+        kind,
+        cancelled: Arc::new(AtomicBool::new(false)),
+        completed,
+        reconnect_takeover: None,
+    });
+    TransitionDecision::Own { id }
+}
+
+async fn wait_transition(
+    mut completed: watch::Receiver<Option<TransitionResult>>,
+) -> TransitionResult {
+    loop {
+        if let Some(result) = completed.borrow().clone() {
+            return result;
+        }
+        completed.changed().await.map_err(|_| {
+            error(
+                AppErrorCode::RuntimeUnavailable,
+                "runtime_transition",
+                "runtime transition cancelled",
+            )
+        })?;
+    }
+}
+
 impl RuntimeConnector for RuntimeGateway {
     fn connect_runtime(
         &self,
         preference: Option<DockerEndpoint>,
     ) -> RuntimeFuture<'_, RuntimeSessionState> {
-        Box::pin(async move {
-            let _transition = self.transition.lock().await;
-            if let RuntimeSessionState::Ready(context) = self.snapshot.lock().await.state.clone() {
-                return Ok(RuntimeSessionState::Ready(context));
-            }
-            let _permit = self.gate.acquire().await.map_err(|_| {
-                error(
-                    AppErrorCode::RuntimeUnavailable,
-                    "connect_runtime",
-                    "runtime operation gate closed",
-                )
-            })?;
-            let endpoint = match resolve_endpoint(
-                preference.as_ref().map(DockerEndpoint::as_str),
-                std::env::var("DOCKER_HOST").ok().as_deref(),
-            ) {
-                Ok(endpoint) => endpoint,
-                Err(e) => {
-                    let terminal = RuntimeSessionState::Failed(error(
-                        AppErrorCode::RuntimeConnectionFailed,
-                        "connect_runtime",
-                        e,
-                    ));
-                    let mut snapshot = self.snapshot.lock().await;
-                    snapshot.generation += 1;
-                    snapshot.client = None;
-                    snapshot.state = terminal.clone();
-                    return Ok(terminal);
-                }
-            };
-            let generation = {
-                let mut snapshot = self.snapshot.lock().await;
-                snapshot.generation += 1;
-                snapshot.client = None;
-                snapshot.state = RuntimeSessionState::Connecting;
-                snapshot.generation
-            };
-            let (terminal, client) = match self.factory.connect(&endpoint) {
-                Err(e) => (RuntimeSessionState::Failed(e), None),
-                Ok(api_client) => {
-                    self.created.fetch_add(1, Ordering::Relaxed);
-                    match api_client.info().await {
-                        Err(e) => (
-                            RuntimeSessionState::Failed(error(
-                                AppErrorCode::RuntimeConnectionFailed,
-                                "connect_runtime",
-                                &e.message,
-                            )),
-                            None,
-                        ),
-                        Ok(api_fp) => {
-                            let runner = self.runner.lock().await.clone();
-                            let cli = runner
-                                .invoke(ComposeInvocation {
-                                    executable: "docker".into(),
-                                    args: vec!["info".into()],
-                                    working_directory: std::env::current_dir()
-                                        .unwrap_or_else(|_| ".".into()),
-                                    environment: build_cli_environment(
-                                        endpoint.as_str(),
-                                        std::env::vars().collect(),
-                                    ),
-                                    deadline: Instant::now() + Duration::from_secs(30),
-                                })
-                                .await;
-                            let cli_fp = match cli {
-                                Err(e) => Err(error(
-                                    AppErrorCode::RuntimeConnectionFailed,
-                                    "connect_runtime",
-                                    &e.message,
-                                )),
-                                Ok(result)
-                                    if result.timed_out() || result.exit_code() != Some(0) =>
-                                {
-                                    Err(error(
-                                        AppErrorCode::RuntimeConnectionFailed,
-                                        "connect_runtime",
-                                        "docker info failed",
-                                    ))
-                                }
-                                Ok(result) => super::parse_cli_fingerprint(result.stdout())
-                                    .map_err(|e| {
-                                        error(
-                                            AppErrorCode::RuntimeConnectionFailed,
-                                            "connect_runtime",
-                                            e,
-                                        )
-                                    }),
-                            };
-                            match cli_fp {
-                                Err(e) => (RuntimeSessionState::Failed(e), None),
-                                Ok(cli_fp) if cli_fp != api_fp => {
-                                    let id = RuntimeSessionId::new(uuid::Uuid::new_v4());
-                                    let connected_at = timestamp();
-                                    let state =
-                                        RuntimeSessionState::ContextMismatch(MismatchDetails::new(
-                                            endpoint.clone(),
-                                            api_fp.clone(),
-                                            cli_fp,
-                                        ));
-                                    (
-                                        state,
-                                        Some(SessionClient {
-                                            client: api_client,
-                                            session_id: id,
-                                            endpoint,
-                                            fingerprint: api_fp,
-                                            connected_at,
-                                        }),
-                                    )
-                                }
-                                Ok(api_fp) => {
-                                    let id = RuntimeSessionId::new(uuid::Uuid::new_v4());
-                                    let connected_at = timestamp();
-                                    let state = RuntimeSessionState::Ready(SessionContext {
-                                        session_id: id,
-                                        endpoint: endpoint.clone(),
-                                        daemon_fingerprint: api_fp.clone(),
-                                        connected_at: connected_at.clone(),
-                                    });
-                                    (
-                                        state,
-                                        Some(SessionClient {
-                                            client: api_client,
-                                            session_id: id,
-                                            endpoint,
-                                            fingerprint: api_fp,
-                                            connected_at,
-                                        }),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            };
-            let mut snapshot = self.snapshot.lock().await;
-            if snapshot.generation == generation {
-                snapshot.state = terminal.clone();
-                snapshot.client = client;
-            }
-            Ok(terminal)
-        })
+        Box::pin(async move { self.connect(preference).await })
     }
     fn disconnect_runtime(&self) -> RuntimeFuture<'_, ()> {
-        Box::pin(async {
-            let _transition = self.transition.lock().await;
-            let _permit = self.gate.acquire().await.map_err(|_| {
-                error(
-                    AppErrorCode::RuntimeUnavailable,
-                    "disconnect_runtime",
-                    "runtime operation gate closed",
-                )
-            })?;
-            let mut snapshot = self.snapshot.lock().await;
-            snapshot.generation += 1;
-            snapshot.client = None;
-            snapshot.state = RuntimeSessionState::Disconnected;
-            Ok(())
-        })
+        Box::pin(async move { self.disconnect().await })
+    }
+    fn reconnect_runtime(
+        &self,
+        preference: Option<DockerEndpoint>,
+    ) -> RuntimeFuture<'_, RuntimeSessionState> {
+        Box::pin(async move { self.reconnect(preference).await })
     }
 }
 
 impl RuntimeGateway {
+    async fn connect(&self, preference: Option<DockerEndpoint>) -> TransitionResult {
+        loop {
+            let decision = {
+                let mut transitions = self.transition.lock().await;
+                match transitions.active.as_ref() {
+                    Some(active) if active.kind == TransitionKind::Connect => {
+                        TransitionDecision::Join(
+                            active
+                                .reconnect_takeover
+                                .as_ref()
+                                .unwrap_or(&active.completed)
+                                .subscribe(),
+                        )
+                    }
+                    Some(active) if active.kind == TransitionKind::Reconnect => {
+                        TransitionDecision::Join(active.completed.subscribe())
+                    }
+                    Some(active) => TransitionDecision::Wait(active.completed.subscribe()),
+                    None => {
+                        if let RuntimeSessionState::Ready(context) =
+                            self.snapshot.lock().await.state.clone()
+                        {
+                            return Ok(RuntimeSessionState::Ready(context));
+                        }
+                        install_transition(&mut transitions, TransitionKind::Connect)
+                    }
+                }
+            };
+            match decision {
+                TransitionDecision::Join(receiver) => return wait_transition(receiver).await,
+                TransitionDecision::Wait(receiver) => {
+                    let _ = wait_transition(receiver).await;
+                }
+                TransitionDecision::Own { id, .. } => {
+                    let established = self.establish(preference.clone(), false).await;
+                    return self.finish_connect(id, preference, established).await;
+                }
+            }
+        }
+    }
+
+    async fn disconnect(&self) -> Result<(), AppError> {
+        let decision = {
+            let mut transitions = self.transition.lock().await;
+            match transitions.active.as_ref() {
+                Some(active)
+                    if active.kind == TransitionKind::Connect
+                        && active.reconnect_takeover.is_none() =>
+                {
+                    active.cancelled.store(true, Ordering::Release);
+                    TransitionDecision::Join(active.completed.subscribe())
+                }
+                Some(active) if active.kind == TransitionKind::Disconnect => {
+                    TransitionDecision::Join(active.completed.subscribe())
+                }
+                Some(_) => {
+                    return Err(error(
+                        AppErrorCode::OperationConflict,
+                        "disconnect_runtime",
+                        "reconnect is in progress",
+                    ))
+                }
+                None => install_transition(&mut transitions, TransitionKind::Disconnect),
+            }
+        };
+        match decision {
+            TransitionDecision::Join(receiver) | TransitionDecision::Wait(receiver) => {
+                wait_transition(receiver).await?;
+            }
+            TransitionDecision::Own { id, .. } => {
+                let result = self
+                    .gate
+                    .acquire()
+                    .await
+                    .map(|_permit| RuntimeSessionState::Disconnected);
+                self.finish_transition(id, result, None).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn reconnect(&self, preference: Option<DockerEndpoint>) -> TransitionResult {
+        loop {
+            let decision = {
+                let mut transitions = self.transition.lock().await;
+                match transitions.active.as_mut() {
+                    Some(active) if active.kind == TransitionKind::Connect => {
+                        if let Some(takeover) = &active.reconnect_takeover {
+                            TransitionDecision::Join(takeover.subscribe())
+                        } else {
+                            active.cancelled.store(true, Ordering::Release);
+                            let (takeover, receiver) = watch::channel(None);
+                            active.reconnect_takeover = Some(takeover);
+                            TransitionDecision::Join(receiver)
+                        }
+                    }
+                    Some(active) if active.kind == TransitionKind::Disconnect => {
+                        TransitionDecision::Wait(active.completed.subscribe())
+                    }
+                    Some(active) => TransitionDecision::Join(active.completed.subscribe()),
+                    None => install_transition(&mut transitions, TransitionKind::Reconnect),
+                }
+            };
+            match decision {
+                TransitionDecision::Join(receiver) => return wait_transition(receiver).await,
+                TransitionDecision::Wait(receiver) => {
+                    let _ = wait_transition(receiver).await;
+                }
+                TransitionDecision::Own { id, .. } => {
+                    let established = self.establish(preference, true).await;
+                    return self.finish_establish(id, established).await;
+                }
+            }
+        }
+    }
+
+    async fn establish(
+        &self,
+        preference: Option<DockerEndpoint>,
+        invalidate_current: bool,
+    ) -> Result<(RuntimeSessionState, Option<SessionClient>), AppError> {
+        let _permit = self.gate.acquire().await.map_err(|_| {
+            error(
+                AppErrorCode::RuntimeUnavailable,
+                "connect_runtime",
+                "runtime operation gate closed",
+            )
+        })?;
+        if invalidate_current {
+            let mut snapshot = self.snapshot.lock().await;
+            snapshot.generation += 1;
+            snapshot.client = None;
+        }
+        let endpoint = match resolve_endpoint(
+            preference.as_ref().map(DockerEndpoint::as_str),
+            std::env::var("DOCKER_HOST").ok().as_deref(),
+        ) {
+            Ok(endpoint) => endpoint,
+            Err(message) => {
+                return Ok((
+                    RuntimeSessionState::Failed(error(
+                        AppErrorCode::RuntimeConnectionFailed,
+                        "connect_runtime",
+                        message,
+                    )),
+                    None,
+                ))
+            }
+        };
+        let api_client = match self.factory.connect(&endpoint) {
+            Ok(client) => client,
+            Err(error) => return Ok((RuntimeSessionState::Failed(error), None)),
+        };
+        self.created.fetch_add(1, Ordering::Relaxed);
+        let api_fp = match api_client.info().await {
+            Ok(fingerprint) => fingerprint,
+            Err(source) => {
+                return Ok((
+                    RuntimeSessionState::Failed(error(
+                        AppErrorCode::RuntimeConnectionFailed,
+                        "connect_runtime",
+                        &source.message,
+                    )),
+                    None,
+                ))
+            }
+        };
+        let runner = self.runner.lock().await.clone();
+        let cli = runner
+            .invoke(ComposeInvocation {
+                executable: "docker".into(),
+                args: vec!["info".into()],
+                working_directory: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+                environment: build_cli_environment(endpoint.as_str(), std::env::vars().collect()),
+                deadline: Instant::now() + Duration::from_secs(30),
+            })
+            .await;
+        let cli_fp = match cli {
+            Err(source) => Err(error(
+                AppErrorCode::RuntimeConnectionFailed,
+                "connect_runtime",
+                &source.message,
+            )),
+            Ok(result) if result.timed_out() || result.exit_code() != Some(0) => Err(error(
+                AppErrorCode::RuntimeConnectionFailed,
+                "connect_runtime",
+                "docker info failed",
+            )),
+            Ok(result) => super::parse_cli_fingerprint(result.stdout()).map_err(|message| {
+                error(
+                    AppErrorCode::RuntimeConnectionFailed,
+                    "connect_runtime",
+                    message,
+                )
+            }),
+        };
+        let cli_fp = match cli_fp {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => return Ok((RuntimeSessionState::Failed(error), None)),
+        };
+        let session_id = RuntimeSessionId::new(uuid::Uuid::new_v4());
+        let connected_at = timestamp();
+        let client = SessionClient {
+            client: api_client,
+            session_id,
+            endpoint: endpoint.clone(),
+            fingerprint: api_fp.clone(),
+            connected_at: connected_at.clone(),
+        };
+        let state = if cli_fp == api_fp {
+            RuntimeSessionState::Ready(SessionContext {
+                session_id,
+                endpoint,
+                daemon_fingerprint: api_fp,
+                connected_at,
+            })
+        } else {
+            RuntimeSessionState::ContextMismatch(MismatchDetails::new(endpoint, api_fp, cli_fp))
+        };
+        Ok((state, Some(client)))
+    }
+
+    async fn finish_connect(
+        &self,
+        id: u64,
+        preference: Option<DockerEndpoint>,
+        established: Result<(RuntimeSessionState, Option<SessionClient>), AppError>,
+    ) -> TransitionResult {
+        let takeover = {
+            let mut transitions = self.transition.lock().await;
+            let active = transitions
+                .active
+                .as_mut()
+                .filter(|active| active.id == id)
+                .expect("connect owner must retain active transition");
+            if active.cancelled.load(Ordering::Acquire) {
+                if let Some(takeover) = active.reconnect_takeover.take() {
+                    active
+                        .completed
+                        .send_replace(Some(Ok(RuntimeSessionState::Disconnected)));
+                    active.kind = TransitionKind::Reconnect;
+                    active.cancelled.store(false, Ordering::Release);
+                    active.completed = takeover;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+        if takeover {
+            drop(established);
+            let fresh = self.establish(preference, true).await;
+            let _ = self.finish_establish(id, fresh).await;
+            Ok(RuntimeSessionState::Disconnected)
+        } else {
+            self.finish_establish(id, established).await
+        }
+    }
+
+    async fn finish_establish(
+        &self,
+        id: u64,
+        established: Result<(RuntimeSessionState, Option<SessionClient>), AppError>,
+    ) -> TransitionResult {
+        let cancelled = self
+            .transition
+            .lock()
+            .await
+            .active
+            .as_ref()
+            .is_some_and(|active| active.id == id && active.cancelled.load(Ordering::Acquire));
+        if cancelled {
+            self.finish_transition(id, Ok(RuntimeSessionState::Disconnected), None)
+                .await
+        } else {
+            match established {
+                Ok((state, client)) => self.finish_transition(id, Ok(state), client).await,
+                Err(error) => self.finish_transition(id, Err(error), None).await,
+            }
+        }
+    }
+
+    async fn finish_transition(
+        &self,
+        id: u64,
+        mut result: TransitionResult,
+        mut client: Option<SessionClient>,
+    ) -> TransitionResult {
+        let mut transitions = self.transition.lock().await;
+        if transitions.active.as_ref().is_some_and(|active| {
+            active.id == id
+                && active.kind == TransitionKind::Connect
+                && active.cancelled.load(Ordering::Acquire)
+        }) {
+            result = Ok(RuntimeSessionState::Disconnected);
+            client = None;
+        }
+        let active = transitions
+            .active
+            .take()
+            .filter(|active| active.id == id)
+            .expect("transition owner must finish its active transition");
+        if let Ok(state) = &result {
+            let mut snapshot = self.snapshot.lock().await;
+            snapshot.generation += 1;
+            snapshot.state = state.clone();
+            snapshot.client = client;
+        }
+        active.completed.send_replace(Some(result.clone()));
+        result
+    }
+
     async fn current_client(&self) -> Result<(Arc<dyn DockerControl>, u64), AppError> {
         let snapshot = self.snapshot.lock().await;
         snapshot
