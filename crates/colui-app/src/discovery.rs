@@ -574,6 +574,12 @@ impl DiscoverySession {
     }
 }
 
+impl crate::JournalReader for DiscoverySession {
+    fn journal(&self) -> crate::DiagnosticsFuture<'_, SessionJournal> {
+        Box::pin(async move { Ok(DiscoverySession::journal(self).await) })
+    }
+}
+
 pub struct ScheduleAutoRegistration<'a, P: ?Sized> {
     profiles: &'a P,
     session: &'a DiscoverySession,

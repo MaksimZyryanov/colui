@@ -354,13 +354,7 @@ impl RuntimeGateway {
                 let mut transitions = self.transition.lock().await;
                 match transitions.active.as_ref() {
                     Some(active) if active.kind == TransitionKind::Connect => {
-                        TransitionDecision::Join(
-                            active
-                                .reconnect_takeover
-                                .as_ref()
-                                .unwrap_or(&active.completed)
-                                .subscribe(),
-                        )
+                        TransitionDecision::Join(active.completed.subscribe())
                     }
                     Some(active) if active.kind == TransitionKind::Reconnect => {
                         TransitionDecision::Join(active.completed.subscribe())

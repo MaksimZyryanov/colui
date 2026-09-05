@@ -1,10 +1,10 @@
 use colui_adapters::{
-    registry::{import_v1, import_v1_if_needed},
+    registry::{import_v1, import_v1_if_needed, RetainedImportResult},
     JsonProfileRegistry, RegistryConfig, RegistryRecoveryIo,
 };
 use colui_app::{
-    DefinitionInvalidator, IdGenerator, ProfileReader, ProfileStore, RegistryHealthState,
-    RegistryRecovery, RestoreRegistryBackup,
+    DefinitionInvalidator, IdGenerator, ImportDiagnosticsReader, ProfileReader, ProfileStore,
+    RegistryHealthState, RegistryRecovery, RestoreRegistryBackup,
 };
 use colui_domain::{
     AppError, AppErrorCode, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin,
@@ -14,6 +14,25 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use uuid::Uuid;
+
+#[tokio::test]
+async fn retained_import_result_supplies_startup_output_to_diagnostics() {
+    let retained = RetainedImportResult::default();
+    retained.retain(colui_app::ImportDiagnostics {
+        source_path: PathBuf::from("/state/projects.json"),
+        imported_count: 2,
+        source_preserved: true,
+        error: None,
+    });
+
+    let diagnostics = retained.import_diagnostics().await.unwrap();
+
+    assert_eq!(diagnostics.imported_count, 2);
+    assert_eq!(
+        diagnostics.source_path,
+        PathBuf::from("/state/projects.json")
+    );
+}
 
 #[derive(Default)]
 struct FailingRecoveryIo {
@@ -174,7 +193,7 @@ async fn first_start_imports_once_and_backs_up_legacy_bytes() {
     let diagnostics = import_v1_if_needed(&registry, &legacy, &backup, &deterministic_ids())
         .await
         .unwrap();
-    assert_eq!(diagnostics.imported_profiles, 1);
+    assert_eq!(diagnostics.imported_count, 1);
     assert_eq!(bytes(&legacy), source);
     assert_eq!(bytes(&backup), source);
     assert_eq!(registry.load().await.unwrap().profiles.len(), 1);
@@ -182,7 +201,7 @@ async fn first_start_imports_once_and_backs_up_legacy_bytes() {
     let second = import_v1_if_needed(&registry, &legacy, &backup, &deterministic_ids())
         .await
         .unwrap();
-    assert_eq!(second.imported_profiles, 0);
+    assert_eq!(second.imported_count, 0);
 }
 
 #[tokio::test]
@@ -198,7 +217,7 @@ async fn malformed_first_start_creates_empty_v2_and_reports_diagnostic() {
     let diagnostics = import_v1_if_needed(&registry, &legacy, &backup, &deterministic_ids())
         .await
         .unwrap();
-    assert_eq!(diagnostics.imported_profiles, 0);
+    assert_eq!(diagnostics.imported_count, 0);
     assert_eq!(
         diagnostics.error.unwrap().code,
         AppErrorCode::RegistryCorrupt
@@ -233,7 +252,7 @@ async fn concurrent_first_start_imports_only_once() {
     });
     let first = first.await.unwrap().unwrap();
     let second = second.await.unwrap().unwrap();
-    assert_eq!(first.imported_profiles + second.imported_profiles, 1);
+    assert_eq!(first.imported_count + second.imported_count, 1);
     assert_eq!(registry.load().await.unwrap().profiles.len(), 1);
 }
 
@@ -730,6 +749,25 @@ async fn restore_missing_canonical_advances_from_backup_only() {
     registry.create_registry_backup().await.unwrap();
     std::fs::remove_file(&canonical).unwrap();
     assert_eq!(restore(&directory, &registry).await.registry_revision, 10);
+}
+
+#[tokio::test]
+async fn registry_diagnostics_projects_retained_recovery_result() {
+    use colui_app::RegistryDiagnosticsReader;
+    let (directory, registry) = test_registry();
+    std::fs::write(
+        directory.path().join("registry.json.bak"),
+        br#"{"schemaVersion":2,"registryRevision":9,"profiles":[]}"#,
+    )
+    .unwrap();
+    restore(&directory, &registry).await;
+    let snapshot = registry.registry_diagnostics().await.unwrap();
+    assert_eq!(snapshot.revision, Some(10));
+    assert_eq!(snapshot.last_recovery_result, Some(Ok(())));
+    assert_eq!(
+        snapshot.backup_path,
+        directory.path().join("registry.json.bak")
+    );
 }
 
 #[tokio::test]

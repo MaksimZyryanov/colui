@@ -1,4 +1,4 @@
-use colui_app::{IdGenerator, ImportDiagnostics};
+use colui_app::{IdGenerator, ImportDiagnostics, ImportDiagnosticsReader};
 use colui_domain::{
     AppError, AppErrorCode, ComposeProjectName, DisplayName, ProfileDraft, ProjectProfile,
     RegistrationOrigin,
@@ -68,6 +68,22 @@ impl RetainedImportResult {
     }
 }
 
+impl ImportDiagnosticsReader for RetainedImportResult {
+    fn import_diagnostics(&self) -> colui_app::DiagnosticsFuture<'_, ImportDiagnostics> {
+        let result = self.current();
+        Box::pin(async move {
+            result.ok_or_else(|| {
+                AppError::new(
+                    AppErrorCode::RegistryCorrupt,
+                    "import_diagnostics",
+                    None,
+                    "startup import result unavailable",
+                )
+            })
+        })
+    }
+}
+
 pub async fn import_v1_if_needed<G: IdGenerator + Clone + Send + Sync + 'static>(
     registry: &crate::registry::format::JsonProfileRegistry,
     legacy_path: &std::path::Path,
@@ -97,21 +113,18 @@ pub async fn import_v1_if_needed<G: IdGenerator + Clone + Send + Sync + 'static>
         crate::registry::format::ImportResult::Skipped => Ok(ImportDiagnostics {
             source_path,
             imported_count: 0,
-            imported_profiles: 0,
             source_preserved,
             error: None,
         }),
         crate::registry::format::ImportResult::Imported(count) => Ok(ImportDiagnostics {
             source_path,
             imported_count: count,
-            imported_profiles: count,
             source_preserved: true,
             error: None,
         }),
         crate::registry::format::ImportResult::Malformed(error) => Ok(ImportDiagnostics {
             source_path,
             imported_count: 0,
-            imported_profiles: 0,
             source_preserved: true,
             error: Some(error),
         }),

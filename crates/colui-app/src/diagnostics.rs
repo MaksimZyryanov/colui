@@ -34,7 +34,6 @@ pub struct RegistryDiagnostics {
 pub struct ImportDiagnostics {
     pub source_path: PathBuf,
     pub imported_count: usize,
-    pub imported_profiles: usize,
     pub source_preserved: bool,
     pub error: Option<AppError>,
 }
@@ -93,8 +92,72 @@ pub trait RuntimeDiagnosticsReader: Send + Sync {
     fn runtime_diagnostics(&self) -> DiagnosticsFuture<'_, RuntimeDiagnostics>;
 }
 
+pub trait RegistryDiagnosticsReader: Send + Sync {
+    fn registry_diagnostics(&self) -> DiagnosticsFuture<'_, RegistryDiagnostics>;
+}
+
+pub trait ImportDiagnosticsReader: Send + Sync {
+    fn import_diagnostics(&self) -> DiagnosticsFuture<'_, ImportDiagnostics>;
+}
+
+pub trait DefinitionDiagnosticsReader: Send + Sync {
+    fn definition_diagnostics(&self) -> DiagnosticsFuture<'_, DefinitionsDiagnostics>;
+}
+
+pub trait JournalReader: Send + Sync {
+    fn journal(&self) -> DiagnosticsFuture<'_, SessionJournal>;
+}
+
 pub trait DiagnosticsReader: Send + Sync {
     fn read(&self) -> DiagnosticsFuture<'_, DiagnosticsSnapshot>;
+}
+
+pub struct DiagnosticsAssembler<'a> {
+    runtime: &'a dyn RuntimeDiagnosticsReader,
+    registry: &'a dyn RegistryDiagnosticsReader,
+    import: &'a dyn ImportDiagnosticsReader,
+    operations: &'a dyn crate::OperationProjectionReader,
+    inventory: &'a dyn crate::InventoryReader,
+    definitions: &'a dyn DefinitionDiagnosticsReader,
+    journal: &'a dyn JournalReader,
+}
+
+impl<'a> DiagnosticsAssembler<'a> {
+    pub fn new(
+        runtime: &'a dyn RuntimeDiagnosticsReader,
+        registry: &'a dyn RegistryDiagnosticsReader,
+        import: &'a dyn ImportDiagnosticsReader,
+        operations: &'a dyn crate::OperationProjectionReader,
+        inventory: &'a dyn crate::InventoryReader,
+        definitions: &'a dyn DefinitionDiagnosticsReader,
+        journal: &'a dyn JournalReader,
+    ) -> Self {
+        Self {
+            runtime,
+            registry,
+            import,
+            operations,
+            inventory,
+            definitions,
+            journal,
+        }
+    }
+}
+
+impl DiagnosticsReader for DiagnosticsAssembler<'_> {
+    fn read(&self) -> DiagnosticsFuture<'_, DiagnosticsSnapshot> {
+        Box::pin(async move {
+            Ok(DiagnosticsSnapshot {
+                runtime: self.runtime.runtime_diagnostics().await?,
+                registry: self.registry.registry_diagnostics().await?,
+                import: self.import.import_diagnostics().await?,
+                operations: self.operations.operation_projection().await?,
+                inventory: self.inventory.current_inventory().await?,
+                definitions: self.definitions.definition_diagnostics().await?,
+                journal: self.journal.journal().await?,
+            })
+        })
+    }
 }
 
 pub struct DiagnosticsQuery<'a, R: ?Sized> {

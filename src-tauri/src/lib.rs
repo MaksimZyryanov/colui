@@ -3,6 +3,7 @@ pub mod dto;
 pub mod schema_generation;
 
 use colui_adapters::{
+    registry::{import_v1_if_needed, RetainedImportResult},
     runtime::{ComposeExecutionGate, ComposeProcessRunner, RuntimeGateway},
     DefinitionCache, InventoryCoordinator, JsonProfileRegistry, OperationLockManager,
     RegistryConfig, UuidGenerator,
@@ -30,6 +31,88 @@ pub struct AppState {
     pub locks: Arc<OperationLockManager>,
     pub inventory: Arc<InventoryCoordinator>,
     pub definitions: Arc<DefinitionCache>,
+    pub retained_import: Arc<RetainedImportResult>,
+    registry_diagnostics: Arc<JsonProfileRegistry>,
+    gateway: Arc<RuntimeGateway>,
+    pub discovery: Arc<colui_app::DiscoverySession>,
+}
+
+impl AppState {
+    async fn initialize(directory: std::path::PathBuf) -> Result<Self, colui_domain::AppError> {
+        let recovery_lock = directory.join("registry.recovery.lock");
+        let legacy_path = directory.join("projects.json");
+        let legacy_backup_path = directory.join("projects.json.v1.bak");
+        let profiles = Arc::new(JsonProfileRegistry::new(RegistryConfig::in_directory(
+            directory,
+        ))?);
+        let runner = Arc::new(ComposeProcessRunner::default());
+        let compose_gate = Arc::new(ComposeExecutionGate::new());
+        let gateway = Arc::new(RuntimeGateway::with_runner_and_gate(
+            runner.clone(),
+            compose_gate.clone(),
+        ));
+        let inventory = Arc::new(InventoryCoordinator::new(
+            gateway.clone(),
+            Arc::new(SystemClock(std::time::Instant::now())),
+        ));
+        let locks = Arc::new(OperationLockManager::new(recovery_lock));
+        let retained_import = Arc::new(RetainedImportResult::default());
+        let import = import_v1_if_needed(
+            profiles.as_ref(),
+            &legacy_path,
+            &legacy_backup_path,
+            &UuidGenerator,
+        )
+        .await
+        .unwrap_or_else(|error| colui_app::ImportDiagnostics {
+            source_preserved: legacy_path.exists(),
+            source_path: legacy_path,
+            imported_count: 0,
+            error: Some(error),
+        });
+        retained_import.retain(import);
+        let definitions = Arc::new(DefinitionCache::new(
+            runner,
+            gateway.clone(),
+            Arc::new(SystemClock(std::time::Instant::now())),
+            locks.clone(),
+            compose_gate,
+        ));
+        let runtime = Arc::new(RuntimeFacade::new(
+            gateway.clone(),
+            inventory.clone(),
+            definitions.clone(),
+        ));
+        Ok(Self {
+            registry_diagnostics: profiles.clone(),
+            profiles,
+            ids: Arc::new(UuidGenerator),
+            runtime,
+            locks,
+            inventory,
+            definitions,
+            retained_import,
+            gateway,
+            discovery: Arc::new(colui_app::DiscoverySession::new()),
+        })
+    }
+
+    pub async fn diagnostics(
+        &self,
+    ) -> Result<colui_app::DiagnosticsSnapshot, colui_domain::AppError> {
+        use colui_app::DiagnosticsReader;
+        colui_app::DiagnosticsAssembler::new(
+            self.gateway.as_ref(),
+            self.registry_diagnostics.as_ref(),
+            self.retained_import.as_ref(),
+            self.locks.as_ref(),
+            self.inventory.as_ref(),
+            self.definitions.as_ref(),
+            self.discovery.as_ref(),
+        )
+        .read()
+        .await
+    }
 }
 
 pub struct RuntimeFacade {
@@ -126,45 +209,9 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let directory = tauri::Manager::path(app).app_data_dir()?;
-            let recovery_lock = directory.join("registry.recovery.lock");
-            let profiles = Arc::new(
-                JsonProfileRegistry::new(RegistryConfig::in_directory(directory))
-                    .map_err(|error| std::io::Error::other(error.message))?,
-            );
-            let runner = Arc::new(ComposeProcessRunner::default());
-            let compose_gate = Arc::new(ComposeExecutionGate::new());
-            let gateway = Arc::new(RuntimeGateway::with_runner_and_gate(
-                runner.clone(),
-                compose_gate.clone(),
-            ));
-            let inventory = Arc::new(InventoryCoordinator::new(
-                gateway.clone(),
-                Arc::new(SystemClock(std::time::Instant::now())),
-            ));
-            let locks = Arc::new(OperationLockManager::new(recovery_lock));
-            let definitions = Arc::new(DefinitionCache::new(
-                runner,
-                gateway.clone(),
-                Arc::new(SystemClock(std::time::Instant::now())),
-                locks.clone(),
-                compose_gate,
-            ));
-            let runtime: Arc<dyn RuntimePort> = Arc::new(RuntimeFacade::new(
-                gateway,
-                inventory.clone(),
-                definitions.clone(),
-            ));
-            tauri::Manager::manage(
-                app,
-                AppState {
-                    profiles,
-                    ids: Arc::new(UuidGenerator),
-                    runtime,
-                    locks,
-                    inventory,
-                    definitions,
-                },
-            );
+            let state = tauri::async_runtime::block_on(AppState::initialize(directory))
+                .map_err(|error| std::io::Error::other(error.message))?;
+            tauri::Manager::manage(app, state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -188,4 +235,52 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn startup_import_is_retained_in_real_application_diagnostics() {
+        let directory = std::env::temp_dir().join(format!(
+            "colui-diagnostics-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let legacy = directory.join("projects.json");
+        std::fs::write(
+            &legacy,
+            br#"[{"name":"demo","working_dir":"/workspace","config_files":["compose.yml"]}]"#,
+        )
+        .unwrap();
+        tauri::async_runtime::block_on(async {
+            let state = AppState::initialize(directory.clone()).await.unwrap();
+            let canonical = std::fs::read(directory.join("registry.json")).unwrap();
+            let first = state.diagnostics().await.unwrap();
+            assert_eq!(first.import.imported_count, 1);
+            assert_eq!(first.import.source_path, legacy);
+            assert!(first.import.source_preserved);
+            assert!(first.definitions.profiles.is_empty());
+            assert_eq!(first.inventory.generation, 0);
+            assert!(first.operations.active.is_empty());
+            assert_eq!(
+                first.runtime.state,
+                colui_domain::RuntimeSessionState::Disconnected
+            );
+            std::fs::write(&legacy, b"changed after startup").unwrap();
+            let second = state.diagnostics().await.unwrap();
+            assert_eq!(second.import, first.import);
+            assert_eq!(
+                std::fs::read(directory.join("registry.json")).unwrap(),
+                canonical
+            );
+            assert!(!directory.join("registry.recovery.lock").exists());
+        });
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

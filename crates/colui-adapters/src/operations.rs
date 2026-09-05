@@ -266,7 +266,9 @@ impl OperationProjectionReader for OperationLockManager {
     fn operation_projection(&self) -> colui_app::DiagnosticsFuture<'_, OperationsDiagnostics> {
         Box::pin(async move {
             let mut active = Vec::new();
-            for (profile_id, profile) in lock_profiles(&self.state).iter() {
+            let profiles = lock_profiles(&self.state);
+            let barrier = lock_barrier(&self.state);
+            for (profile_id, profile) in profiles.iter() {
                 if let Some(lease) = &profile.lifecycle {
                     let (kind, started_at, phase) = match lease {
                         LifecycleLease::Pending {
@@ -292,7 +294,7 @@ impl OperationProjectionReader for OperationLockManager {
                     });
                 }
             }
-            for (container_id, started_at) in &lock_barrier(&self.state).containers {
+            for (container_id, started_at) in &barrier.containers {
                 active.push(ActiveOperation {
                     kind: "container".into(),
                     subject_id: container_id.clone(),
@@ -305,10 +307,13 @@ impl OperationProjectionReader for OperationLockManager {
                     .cmp(&right.subject_id)
                     .then(left.kind.cmp(&right.kind))
             });
-            Ok(OperationsDiagnostics {
+            let projection = OperationsDiagnostics {
                 generation: self.state.projection_generation.load(Ordering::Relaxed),
                 active,
-            })
+            };
+            drop(profiles);
+            drop(barrier);
+            Ok(projection)
         })
     }
 }
@@ -352,6 +357,10 @@ async fn wait_for_definition(
                             kind: *kind,
                             started_at: now(),
                         });
+                        reservation
+                            .state
+                            .projection_generation
+                            .fetch_add(1, Ordering::Relaxed);
                         reservation.promoted = true;
                         None
                     }

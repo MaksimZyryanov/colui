@@ -39,7 +39,6 @@ impl DiagnosticsSectionsReader for Sections {
                 import: ImportDiagnostics {
                     source_path: PathBuf::from("/state/projects.json"),
                     imported_count: 3,
-                    imported_profiles: 3,
                     source_preserved: true,
                     error: None,
                 },
@@ -71,6 +70,220 @@ async fn diagnostics_is_one_read_only_projection_with_independent_versions() {
     assert_eq!(snapshot.inventory.generation, 0);
     assert_eq!(snapshot.import.imported_count, 3);
     assert_eq!(sections.reads.load(Ordering::SeqCst), 1);
+}
+
+struct ReadOnlyOwners {
+    reads: AtomicUsize,
+    docker_calls: AtomicUsize,
+    registry_writes: AtomicUsize,
+    definition_refreshes: AtomicUsize,
+    operation_leases: AtomicUsize,
+}
+
+impl RuntimeDiagnosticsReader for ReadOnlyOwners {
+    fn runtime_diagnostics(&self) -> DiagnosticsFuture<'_, RuntimeDiagnostics> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(RuntimeDiagnostics {
+                state: RuntimeSessionState::Disconnected,
+                resolved_endpoint: None,
+                api_fingerprint: None,
+                cli_fingerprint: None,
+                session_id: None,
+                connected_at: None,
+            })
+        })
+    }
+}
+
+impl RegistryDiagnosticsReader for ReadOnlyOwners {
+    fn registry_diagnostics(&self) -> DiagnosticsFuture<'_, RegistryDiagnostics> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(registry_diagnostics()) })
+    }
+}
+
+impl ImportDiagnosticsReader for ReadOnlyOwners {
+    fn import_diagnostics(&self) -> DiagnosticsFuture<'_, ImportDiagnostics> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(ImportDiagnostics {
+                source_path: PathBuf::from("/state/projects.json"),
+                imported_count: 3,
+                source_preserved: true,
+                error: None,
+            })
+        })
+    }
+}
+
+impl OperationProjectionReader for ReadOnlyOwners {
+    fn operation_projection(&self) -> DiagnosticsFuture<'_, OperationsDiagnostics> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(OperationsDiagnostics {
+                generation: 4,
+                active: vec![],
+            })
+        })
+    }
+}
+
+impl InventoryReader for ReadOnlyOwners {
+    fn current_inventory(&self) -> InventoryFuture<'_, RuntimeInventory> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(RuntimeInventory::unavailable()) })
+    }
+}
+
+impl DefinitionDiagnosticsReader for ReadOnlyOwners {
+    fn definition_diagnostics(&self) -> DiagnosticsFuture<'_, DefinitionsDiagnostics> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(DefinitionsDiagnostics {
+                generation: 5,
+                profiles: vec![],
+            })
+        })
+    }
+}
+
+impl JournalReader for ReadOnlyOwners {
+    fn journal(&self) -> DiagnosticsFuture<'_, SessionJournal> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(SessionJournal::default()) })
+    }
+}
+
+impl DockerApi for ReadOnlyOwners {
+    fn list_containers(&self) -> RuntimeFuture<'_, Vec<colui_domain::ContainerObservation>> {
+        self.docker_calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { unreachable!() })
+    }
+
+    fn inspect_container(
+        &self,
+        _: &colui_domain::ContainerId,
+    ) -> RuntimeFuture<'_, colui_domain::ContainerDetails> {
+        self.docker_calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { unreachable!() })
+    }
+}
+
+impl ProfileReader for ReadOnlyOwners {
+    fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
+        Box::pin(async { unreachable!() })
+    }
+}
+
+impl ProfileStore for ReadOnlyOwners {
+    fn mutate(&self, _: ProfileMutation) -> StoreFuture<'_, RegistrySnapshot> {
+        self.registry_writes.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { unreachable!() })
+    }
+}
+
+impl DefinitionReader for ReadOnlyOwners {
+    fn definition(
+        &self,
+        _: colui_domain::ProjectProfile,
+    ) -> DefinitionFuture<'_, DefinitionProjection> {
+        Box::pin(async { unreachable!() })
+    }
+}
+
+impl DefinitionRefresher for ReadOnlyOwners {
+    fn refresh_definition(
+        &self,
+        _: colui_domain::ProjectProfile,
+    ) -> DefinitionFuture<'_, DefinitionProjection> {
+        self.definition_refreshes.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { unreachable!() })
+    }
+
+    fn invalidate(&self, _: colui_domain::ProfileId) {
+        self.definition_refreshes.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl OperationLockReader for ReadOnlyOwners {
+    fn is_busy(&self, _: &colui_domain::ProfileId) -> bool {
+        false
+    }
+}
+
+impl OperationLockManager for ReadOnlyOwners {
+    fn acquire_lifecycle(
+        &self,
+        _: colui_domain::ProfileId,
+        _: OperationKind,
+    ) -> OperationFuture<'_, LifecycleOperationGuard> {
+        self.operation_leases.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { unreachable!() })
+    }
+
+    fn acquire_definition(
+        &self,
+        _: colui_domain::ProfileId,
+    ) -> Result<DefinitionLoadGuard, DefinitionBusy> {
+        self.operation_leases.fetch_add(1, Ordering::SeqCst);
+        Err(DefinitionBusy::DefinitionActive)
+    }
+
+    fn acquire_container(&self, _: &str) -> Result<ContainerOperationGuard, AppError> {
+        self.operation_leases.fetch_add(1, Ordering::SeqCst);
+        unreachable!()
+    }
+
+    fn acquire_mutation(&self) -> Result<RegistryMutationGuard, AppError> {
+        self.operation_leases.fetch_add(1, Ordering::SeqCst);
+        unreachable!()
+    }
+
+    fn acquire_recovery(&self) -> Result<RegistryRecoveryGuard, AppError> {
+        self.operation_leases.fetch_add(1, Ordering::SeqCst);
+        unreachable!()
+    }
+}
+
+fn registry_diagnostics() -> RegistryDiagnostics {
+    RegistryDiagnostics {
+        registry_path: PathBuf::from("/state/registry.json"),
+        backup_path: PathBuf::from("/state/registry.json.bak"),
+        revision: Some(7),
+        health: RegistryHealth {
+            state: RegistryHealthState::Healthy,
+            identity: None,
+            error: None,
+            last_operation_at: None,
+            last_failure_at: None,
+        },
+        lock_timeout: std::time::Duration::from_secs(5),
+        last_recovery_result: None,
+    }
+}
+
+#[tokio::test]
+async fn concrete_diagnostics_assembler_only_reads_existing_owners() {
+    let owners = ReadOnlyOwners {
+        reads: AtomicUsize::new(0),
+        docker_calls: AtomicUsize::new(0),
+        registry_writes: AtomicUsize::new(0),
+        definition_refreshes: AtomicUsize::new(0),
+        operation_leases: AtomicUsize::new(0),
+    };
+    let diagnostics = DiagnosticsAssembler::new(
+        &owners, &owners, &owners, &owners, &owners, &owners, &owners,
+    );
+
+    let snapshot = diagnostics.read().await.unwrap();
+
+    assert_eq!(snapshot.import.imported_count, 3);
+    assert_eq!(owners.reads.load(Ordering::SeqCst), 7);
+    assert_eq!(owners.docker_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(owners.registry_writes.load(Ordering::SeqCst), 0);
+    assert_eq!(owners.definition_refreshes.load(Ordering::SeqCst), 0);
+    assert_eq!(owners.operation_leases.load(Ordering::SeqCst), 0);
 }
 
 struct Connector {

@@ -9,6 +9,7 @@ pub use inventory::InventoryCoordinator;
 pub use operations::OperationLockManager;
 pub use registry::{JsonProfileRegistry, RegistryConfig, RegistryRecoveryIo};
 
+#[derive(Clone, Copy)]
 pub struct UuidGenerator;
 
 impl colui_app::IdGenerator for UuidGenerator {

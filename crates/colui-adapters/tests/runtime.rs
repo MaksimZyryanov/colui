@@ -656,6 +656,50 @@ async fn reconnect_cancels_active_connect_then_owns_one_fresh_connect() {
 }
 
 #[tokio::test]
+async fn late_connect_during_reconnect_takeover_joins_cancelled_connect_result() {
+    let runner = Arc::new(BlockingInfoRunner::default());
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(BlockingInfoRunner {
+            started: runner.started.clone(),
+            release: runner.release.clone(),
+            calls: runner.calls.clone(),
+        }),
+    ));
+    let connect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
+    let reconnect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.reconnect_runtime(None).await }
+    });
+    tokio::task::yield_now().await;
+    let late_connect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::task::yield_now().await;
+    runner.release.notify_one();
+
+    assert_eq!(
+        connect.await.unwrap().unwrap(),
+        RuntimeSessionState::Disconnected
+    );
+    assert_eq!(
+        late_connect.await.unwrap().unwrap(),
+        RuntimeSessionState::Disconnected
+    );
+    assert!(matches!(
+        reconnect.await.unwrap().unwrap(),
+        RuntimeSessionState::Ready(_)
+    ));
+}
+
+#[tokio::test]
 async fn reconnect_active_joins_connect_and_reconnect_but_rejects_disconnect() {
     let gateway = Arc::new(RuntimeGateway::new_for_tests(
         Box::new(FakeDocker::new("same")),

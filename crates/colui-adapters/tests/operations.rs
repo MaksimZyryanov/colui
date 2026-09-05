@@ -34,6 +34,44 @@ async fn operation_projection_reports_active_work_without_acquiring_a_lease() {
         .active
         .is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn operation_generation_identifies_one_consistent_active_snapshot() {
+    let locks = Arc::new(locks());
+    let writer = tokio::spawn({
+        let locks = locks.clone();
+        async move {
+            for _ in 0..20_000 {
+                let guard = locks.acquire_container("container-race").unwrap();
+                tokio::task::yield_now().await;
+                drop(guard);
+            }
+        }
+    });
+    let mut generations = std::collections::HashMap::new();
+    while !writer.is_finished() {
+        let snapshot = locks.operation_projection().await.unwrap();
+        let active = snapshot
+            .active
+            .iter()
+            .map(|operation| {
+                (
+                    operation.kind.clone(),
+                    operation.subject_id.clone(),
+                    operation.phase,
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(previous) = generations.insert(snapshot.generation, active.clone()) {
+            assert_eq!(
+                previous, active,
+                "one generation exposed two operation states"
+            );
+        }
+        tokio::task::yield_now().await;
+    }
+    writer.await.unwrap();
+}
 use colui_domain::{AppErrorCode, ProfileId};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
@@ -50,6 +88,21 @@ fn locks() -> ConcreteOperationLockManager {
     ConcreteOperationLockManager::new(
         std::env::temp_dir().join(format!("colui-{}.recovery.lock", Uuid::new_v4())),
     )
+}
+
+#[tokio::test]
+async fn lifecycle_promotion_advances_projection_generation() {
+    let locks = locks();
+    let definition = locks.acquire_definition(id(90)).unwrap();
+    let pending = locks.acquire_lifecycle(id(90), OperationKind::Stop);
+    drop(definition);
+    let before = locks.operation_projection().await.unwrap();
+    assert_eq!(before.active[0].phase, OperationPhase::Pending);
+    let guard = pending.await.unwrap();
+    let after = locks.operation_projection().await.unwrap();
+    assert_eq!(after.active[0].phase, OperationPhase::Active);
+    assert!(after.generation > before.generation);
+    drop(guard);
 }
 
 #[tokio::test]

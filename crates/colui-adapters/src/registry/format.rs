@@ -1,6 +1,7 @@
 use colui_app::{
-    ProfileMutation, ProfileReader, ProfileStore, RegistryHealth, RegistryHealthState,
-    RegistryRecovery, RegistrySnapshot, RegistrySnapshotIdentity, StoreFuture,
+    ProfileMutation, ProfileReader, ProfileStore, RegistryDiagnostics, RegistryDiagnosticsReader,
+    RegistryHealth, RegistryHealthState, RegistryRecovery, RegistrySnapshot,
+    RegistrySnapshotIdentity, StoreFuture,
 };
 use colui_domain::{validate_draft, AppError, AppErrorCode, ProfileDraft, ProjectProfile};
 use fs2::FileExt;
@@ -73,6 +74,7 @@ struct RegistryHistory {
     last_operation_at: Option<colui_domain::Timestamp>,
     last_failure_at: Option<colui_domain::Timestamp>,
     latest_failure: Option<AppError>,
+    last_recovery_result: Option<Result<(), AppError>>,
 }
 
 pub(crate) enum ImportResult {
@@ -309,7 +311,35 @@ impl RegistryRecovery for JsonProfileRegistry {
                     .await
                     .map_err(|error| write_error("restore_registry_backup", error))?;
             record_result(&history, &result);
+            history
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .last_recovery_result = Some(result.as_ref().map(|_| ()).map_err(Clone::clone));
             result
+        })
+    }
+}
+
+impl RegistryDiagnosticsReader for JsonProfileRegistry {
+    fn registry_diagnostics(&self) -> colui_app::DiagnosticsFuture<'_, RegistryDiagnostics> {
+        Box::pin(async move {
+            let health = self.registry_health().await?;
+            Ok(RegistryDiagnostics {
+                registry_path: self.config.canonical_path.clone(),
+                backup_path: backup_path(&self.config),
+                revision: health
+                    .identity
+                    .as_ref()
+                    .map(|value| value.registry_revision),
+                health,
+                lock_timeout: self.config.lock_timeout,
+                last_recovery_result: self
+                    .history
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .last_recovery_result
+                    .clone(),
+            })
         })
     }
 }

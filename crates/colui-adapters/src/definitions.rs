@@ -31,6 +31,7 @@ struct State {
     entries: HashMap<colui_domain::ProfileId, CachedDefinition>,
     epoch: HashMap<colui_domain::ProfileId, u64>,
     revisions: HashMap<colui_domain::ProfileId, colui_domain::Revision>,
+    generation: u64,
 }
 
 pub struct DefinitionCache {
@@ -60,6 +61,7 @@ impl DefinitionCache {
                 entries: HashMap::new(),
                 epoch: HashMap::new(),
                 revisions: HashMap::new(),
+                generation: 0,
             })),
         }
     }
@@ -75,7 +77,9 @@ impl DefinitionCache {
             let mut state = lock(&self.state);
             let previous_revision = state.revisions.insert(id.clone(), profile.revision);
             if previous_revision.is_some_and(|revision| revision != profile.revision) {
-                state.entries.remove(&id);
+                if state.entries.remove(&id).is_some() {
+                    state.generation = state.generation.wrapping_add(1);
+                }
             }
             state.entries.get(&id).cloned()
         };
@@ -120,6 +124,7 @@ impl DefinitionCache {
                     };
                     let output = to_projection(&id, entry.clone());
                     state.entries.insert(id, entry);
+                    state.generation = state.generation.wrapping_add(1);
                     drop(guard);
                     Ok(output)
                 }
@@ -127,6 +132,7 @@ impl DefinitionCache {
                     if let Some(entry) = state.entries.get_mut(&id) {
                         entry.state = DefinitionState::Stale;
                         entry.load_error = Some(error.clone());
+                        state.generation = state.generation.wrapping_add(1);
                     }
                     let output = retained(&id, state.entries.get(&id).cloned(), Some(error));
                     drop(guard);
@@ -358,7 +364,9 @@ impl DefinitionRefresher for DefinitionCache {
     fn invalidate(&self, profile_id: colui_domain::ProfileId) {
         let mut state = lock(&self.state);
         *state.epoch.entry(profile_id.clone()).or_default() += 1;
-        state.entries.remove(&profile_id);
+        if state.entries.remove(&profile_id).is_some() {
+            state.generation = state.generation.wrapping_add(1);
+        }
     }
 }
 impl colui_app::DefinitionInvalidator for DefinitionCache {
@@ -369,6 +377,37 @@ impl colui_app::DefinitionInvalidator for DefinitionCache {
         }
         state.entries.clear();
         state.revisions.clear();
+        state.generation = state.generation.wrapping_add(1);
+    }
+}
+
+impl colui_app::DefinitionDiagnosticsReader for DefinitionCache {
+    fn definition_diagnostics(
+        &self,
+    ) -> colui_app::DiagnosticsFuture<'_, colui_app::DefinitionsDiagnostics> {
+        Box::pin(async move {
+            let state = lock(&self.state);
+            let mut profiles = state
+                .entries
+                .iter()
+                .map(
+                    |(profile_id, entry)| colui_app::ProfileDefinitionDiagnostics {
+                        profile_id: profile_id.clone(),
+                        definition: Some(to_definition(profile_id, entry.clone())),
+                        error: entry.load_error.clone(),
+                    },
+                )
+                .collect::<Vec<_>>();
+            profiles.sort_by(|left, right| {
+                left.profile_id
+                    .to_string()
+                    .cmp(&right.profile_id.to_string())
+            });
+            Ok(colui_app::DefinitionsDiagnostics {
+                generation: state.generation,
+                profiles,
+            })
+        })
     }
 }
 
