@@ -54,6 +54,15 @@ impl InventoryReader for CountingInventory {
 }
 
 impl InventoryRefresher for CountingInventory {
+    fn observation_marker(&self) -> colui_app::ObservationOrder {
+        panic!("discovery never mutates containers")
+    }
+    fn refresh_after(
+        &self,
+        _: colui_app::ObservationOrder,
+    ) -> colui_app::InventoryFuture<'_, colui_domain::RuntimeInventory> {
+        panic!("discovery never mutates containers")
+    }
     fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
         panic!("pure discovery query must not refresh inventory")
     }

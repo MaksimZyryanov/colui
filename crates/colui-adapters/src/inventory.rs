@@ -1,7 +1,7 @@
 use colui_app::{
     AutoRegistrationSchedule, CandidateLease, Clock, DiscoveryFuture, DiscoveryReader,
-    DiscoverySession, InventoryFuture, InventoryReader, InventoryRefresher, ProfileReader,
-    RuntimeInventorySource, ScheduleAutoRegistration,
+    DiscoverySession, InventoryFuture, InventoryReader, InventoryRefresher, ObservationOrder,
+    ProfileReader, RuntimeInventorySource, ScheduleAutoRegistration,
 };
 use colui_domain::{
     AppError, AppErrorCode, ComposeObservationGroup, ContainerObservation, InventoryFreshness,
@@ -9,13 +9,17 @@ use colui_domain::{
 };
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, watch, Mutex, RwLock};
 
 type RefreshResult = Result<RuntimeInventory, AppError>;
 
 struct InFlight {
+    start_order: ObservationOrder,
     completed: watch::Sender<Option<RefreshResult>>,
 }
 
@@ -34,6 +38,7 @@ pub struct InventoryCoordinator {
     publication_gate: Arc<RwLock<()>>,
     subscribers: broadcast::Sender<RuntimeInventory>,
     joins: broadcast::Sender<()>,
+    observation_order: AtomicU64,
 }
 
 impl InventoryCoordinator {
@@ -53,6 +58,7 @@ impl InventoryCoordinator {
             publication_gate: Arc::new(RwLock::new(())),
             subscribers,
             joins,
+            observation_order: AtomicU64::new(0),
         }
     }
 
@@ -61,11 +67,26 @@ impl InventoryCoordinator {
     }
 
     pub fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
-        Box::pin(self.refresh_inner(false))
+        Box::pin(self.refresh_inner(false, None))
     }
 
     pub fn refresh_automatic(&self) -> InventoryFuture<'_, RuntimeInventory> {
-        Box::pin(self.refresh_inner(true))
+        Box::pin(self.refresh_inner(true, None))
+    }
+
+    pub fn observation_marker(&self) -> ObservationOrder {
+        ObservationOrder(
+            self.observation_order
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |order| {
+                    order.checked_add(1)
+                })
+                .expect("inventory observation order exhausted")
+                + 1,
+        )
+    }
+
+    pub fn refresh_after(&self, marker: ObservationOrder) -> InventoryFuture<'_, RuntimeInventory> {
+        Box::pin(self.refresh_inner(false, Some(marker)))
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<RuntimeInventory> {
@@ -105,49 +126,69 @@ impl InventoryCoordinator {
         receiver
     }
 
-    async fn refresh_inner(&self, automatic: bool) -> RefreshResult {
-        let (creator, mut completed) = {
-            let mut state = self.state.lock().await;
-            if automatic
-                && state
-                    .retry_at
-                    .is_some_and(|deadline| self.clock.monotonic() < deadline)
-            {
-                return Err(state
-                    .current
-                    .error
-                    .clone()
-                    .expect("automatic backoff follows a retained refresh error"));
-            }
-            if let Some(in_flight) = &state.in_flight {
-                let _ = self.joins.send(());
-                (false, in_flight.completed.subscribe())
-            } else {
-                let (sender, receiver) = watch::channel(None);
-                state.in_flight = Some(InFlight { completed: sender });
-                (true, receiver)
-            }
-        };
+    async fn refresh_inner(
+        &self,
+        automatic: bool,
+        after: Option<ObservationOrder>,
+    ) -> RefreshResult {
+        loop {
+            let (creator, eligible, mut completed) = {
+                let mut state = self.state.lock().await;
+                if automatic
+                    && state
+                        .retry_at
+                        .is_some_and(|deadline| self.clock.monotonic() < deadline)
+                {
+                    return Err(state
+                        .current
+                        .error
+                        .clone()
+                        .expect("automatic backoff follows a retained refresh error"));
+                }
+                if let Some(in_flight) = &state.in_flight {
+                    let _ = self.joins.send(());
+                    (
+                        false,
+                        after.is_none_or(|marker| in_flight.start_order > marker),
+                        in_flight.completed.subscribe(),
+                    )
+                } else {
+                    let (sender, receiver) = watch::channel(None);
+                    // Reserve order before any Docker work; a marker after reservation
+                    // conservatively requires another list even if this worker is delayed.
+                    let start_order = self.observation_marker();
+                    state.in_flight = Some(InFlight {
+                        start_order,
+                        completed: sender,
+                    });
+                    (true, true, receiver)
+                }
+            };
 
-        if creator {
-            let api = self.api.clone();
-            let clock = self.clock.clone();
-            let state = self.state.clone();
-            let publication_gate = self.publication_gate.clone();
-            let subscribers = self.subscribers.clone();
-            tokio::spawn(async move {
-                let observed = observe(&api).await;
-                let _publication = publication_gate.write().await;
-                let mut state = state.lock().await;
-                let result = complete_refresh(&clock, &subscribers, &mut state, observed);
-                let in_flight = state
-                    .in_flight
-                    .take()
-                    .expect("refresh worker owns installed in-flight state");
-                in_flight.completed.send_replace(Some(result));
-            });
+            if creator {
+                let api = self.api.clone();
+                let clock = self.clock.clone();
+                let state = self.state.clone();
+                let publication_gate = self.publication_gate.clone();
+                let subscribers = self.subscribers.clone();
+                tokio::spawn(async move {
+                    let observed = observe(&api).await;
+                    let _publication = publication_gate.write().await;
+                    let mut state = state.lock().await;
+                    let result = complete_refresh(&clock, &subscribers, &mut state, observed);
+                    let in_flight = state
+                        .in_flight
+                        .take()
+                        .expect("refresh worker owns installed in-flight state");
+                    in_flight.completed.send_replace(Some(result));
+                });
+            }
+            let result = wait_for_result(&mut completed).await;
+            if eligible {
+                return result;
+            }
+            // An older request's success or failure cannot satisfy causal refresh.
         }
-        wait_for_result(&mut completed).await
     }
 }
 
@@ -373,6 +414,12 @@ impl InventoryReader for InventoryCoordinator {
 impl InventoryRefresher for InventoryCoordinator {
     fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
         self.refresh()
+    }
+    fn observation_marker(&self) -> ObservationOrder {
+        self.observation_marker()
+    }
+    fn refresh_after(&self, marker: ObservationOrder) -> InventoryFuture<'_, RuntimeInventory> {
+        self.refresh_after(marker)
     }
 }
 

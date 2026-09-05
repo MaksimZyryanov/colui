@@ -740,6 +740,9 @@ impl CountingDocker {
 }
 
 impl DockerControl for CountingDocker {
+    fn action(&self, _: ContainerId, _: colui_app::ContainerAction) -> RuntimeFuture<'_, ()> {
+        panic!("inventory never mutates containers")
+    }
     fn info(&self) -> RuntimeFuture<'_, DaemonFingerprint> {
         Box::pin(async { Ok(DaemonFingerprint::new("same", "1", "linux", "x86_64")) })
     }

@@ -163,6 +163,15 @@ impl InventoryReader for FakeInventory {
 }
 
 impl InventoryRefresher for FakeInventory {
+    fn observation_marker(&self) -> colui_app::ObservationOrder {
+        panic!("lifecycle uses ordinary refresh")
+    }
+    fn refresh_after(
+        &self,
+        _: colui_app::ObservationOrder,
+    ) -> colui_app::InventoryFuture<'_, colui_domain::RuntimeInventory> {
+        panic!("lifecycle uses ordinary refresh")
+    }
     fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
         *self.calls.lock().unwrap() += 1;
         self.events.lock().unwrap().push("refresh");

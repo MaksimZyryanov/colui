@@ -1226,6 +1226,13 @@ impl FakeDocker {
     }
 }
 impl colui_adapters::runtime::DockerControl for FakeDocker {
+    fn action(
+        &self,
+        _: colui_domain::ContainerId,
+        _: colui_app::ContainerAction,
+    ) -> colui_app::RuntimeFuture<'_, ()> {
+        panic!("not a container action test")
+    }
     fn info(&self) -> colui_app::RuntimeFuture<'_, DaemonFingerprint> {
         let fp = self.fingerprint.clone();
         Box::pin(async move { Ok(fp_for(&fp)) })
@@ -1246,6 +1253,13 @@ impl colui_adapters::runtime::DockerControl for FakeDocker {
 }
 
 impl colui_adapters::runtime::DockerControl for StaleDocker {
+    fn action(
+        &self,
+        _: colui_domain::ContainerId,
+        _: colui_app::ContainerAction,
+    ) -> colui_app::RuntimeFuture<'_, ()> {
+        panic!("not a container action test")
+    }
     fn info(&self) -> colui_app::RuntimeFuture<'_, DaemonFingerprint> {
         Box::pin(async { Ok(fp_for("same")) })
     }

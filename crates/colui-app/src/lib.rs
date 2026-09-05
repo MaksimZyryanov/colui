@@ -1,3 +1,4 @@
+mod containers;
 mod definitions;
 mod diagnostics;
 mod discovery;
@@ -9,6 +10,7 @@ mod recovery;
 mod runtime;
 mod status;
 
+pub use containers::*;
 pub use definitions::*;
 pub use diagnostics::*;
 pub use discovery::*;

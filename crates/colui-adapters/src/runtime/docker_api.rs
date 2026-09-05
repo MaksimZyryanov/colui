@@ -1,8 +1,11 @@
 use crate::runtime::bollard_fingerprint;
-use bollard::container::{InspectContainerOptions, ListContainersOptions};
+use bollard::container::{
+    InspectContainerOptions, ListContainersOptions, RestartContainerOptions, StartContainerOptions,
+    StopContainerOptions,
+};
 use bollard::models::{ContainerInspectResponse, ContainerSummary};
 use bollard::Docker;
-use colui_app::RuntimeFuture;
+use colui_app::{container_operation_error, ContainerAction, RuntimeFuture};
 use colui_domain::{
     AppError, AppErrorCode, ComposeContainerMetadata, ContainerDetails, ContainerId,
     ContainerInstance, ContainerObservation, ContainerState, DaemonFingerprint, PortBinding,
@@ -13,6 +16,7 @@ pub trait DockerControl: Send + Sync {
     fn info(&self) -> RuntimeFuture<'_, DaemonFingerprint>;
     fn list(&self) -> RuntimeFuture<'_, Vec<ContainerObservation>>;
     fn inspect(&self, id: &ContainerId) -> RuntimeFuture<'_, ContainerDetails>;
+    fn action(&self, id: ContainerId, action: ContainerAction) -> RuntimeFuture<'_, ()>;
 }
 
 pub struct DockerApiAdapter {
@@ -29,6 +33,28 @@ impl DockerApiAdapter {
 }
 
 impl DockerControl for DockerApiAdapter {
+    fn action(&self, id: ContainerId, action: ContainerAction) -> RuntimeFuture<'_, ()> {
+        Box::pin(async move {
+            let result = match action {
+                ContainerAction::Start => {
+                    self.docker
+                        .start_container(&id.0, None::<StartContainerOptions<String>>)
+                        .await
+                }
+                ContainerAction::Stop => {
+                    self.docker
+                        .stop_container(&id.0, None::<StopContainerOptions>)
+                        .await
+                }
+                ContainerAction::Restart => {
+                    self.docker
+                        .restart_container(&id.0, None::<RestartContainerOptions>)
+                        .await
+                }
+            };
+            result.map_err(|_| container_operation_error(&id, "container operation failed"))
+        })
+    }
     fn info(&self) -> RuntimeFuture<'_, DaemonFingerprint> {
         Box::pin(async move {
             self.docker

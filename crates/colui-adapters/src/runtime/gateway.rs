@@ -2,8 +2,9 @@ use super::ComposeOperation;
 use super::{build_cli_environment, resolve_endpoint, DockerControl};
 use bollard::Docker;
 use colui_app::{
-    ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleFuture,
-    LifecycleOperation, LifecycleResult, LifecycleRuntime, RuntimeConnector, RuntimeDiagnostics,
+    container_operation_error, ComposeInvocation, ComposeProcessResult, ComposeRunner,
+    ContainerAction, ContainerRuntime, DockerApi, LifecycleFuture, LifecycleOperation,
+    LifecycleResult, LifecycleRuntime, RuntimeConnector, RuntimeDiagnostics,
     RuntimeDiagnosticsReader, RuntimeFuture, RuntimeStateReader,
 };
 use colui_domain::{
@@ -736,6 +737,34 @@ impl RuntimeDiagnosticsReader for RuntimeGateway {
         })
     }
 }
+impl ContainerRuntime for RuntimeGateway {
+    fn run_container(
+        &self,
+        id: ContainerId,
+        action: ContainerAction,
+        expected_session: RuntimeSessionId,
+    ) -> RuntimeFuture<'_, ()> {
+        Box::pin(async move {
+            let client = {
+                let snapshot = self.snapshot.lock().await;
+                snapshot
+                    .client
+                    .as_ref()
+                    .filter(|client| client.session_id == expected_session)
+                    .map(|client| client.client.clone())
+                    .ok_or_else(|| {
+                        container_operation_error(&id, "runtime session changed or unavailable")
+                    })?
+            };
+            // Unlike reads, an acknowledged mutation stays successful after a transition.
+            client
+                .action(id.clone(), action)
+                .await
+                .map_err(|_| container_operation_error(&id, "container operation failed"))
+        })
+    }
+}
+
 impl DockerApi for RuntimeGateway {
     fn list_containers(&self) -> RuntimeFuture<'_, Vec<ContainerObservation>> {
         Box::pin(async {

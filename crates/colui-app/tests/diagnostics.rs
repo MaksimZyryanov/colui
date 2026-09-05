@@ -326,6 +326,15 @@ impl InventoryReader for Inventory {
 }
 
 impl InventoryRefresher for Inventory {
+    fn observation_marker(&self) -> colui_app::ObservationOrder {
+        panic!("reconnect uses ordinary refresh")
+    }
+    fn refresh_after(
+        &self,
+        _: colui_app::ObservationOrder,
+    ) -> colui_app::InventoryFuture<'_, colui_domain::RuntimeInventory> {
+        panic!("reconnect uses ordinary refresh")
+    }
     fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
         Box::pin(async move {
             self.refreshes.fetch_add(1, Ordering::SeqCst);
