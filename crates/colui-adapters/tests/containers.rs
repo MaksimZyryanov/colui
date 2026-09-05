@@ -10,10 +10,28 @@ use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
 
 async fn wire_logs(body: Vec<u8>, status: &str) -> (Result<ContainerLogs, AppError>, String) {
+    let kind = if body.first().is_some_and(|b| *b <= 2) {
+        "multiplexed"
+    } else {
+        "raw"
+    };
+    wire_logs_response(body, status, kind, Some("1.47")).await
+}
+
+async fn wire_logs_response(
+    body: Vec<u8>,
+    status: &str,
+    kind: &str,
+    api_version: Option<&str>,
+) -> (Result<ContainerLogs, AppError>, String) {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let status = status.to_owned();
+    let kind = kind.to_owned();
+    let api_header = api_version
+        .map(|v| format!("API-Version: {v}\r\n"))
+        .unwrap_or_default();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         stream
@@ -25,12 +43,7 @@ async fn wire_logs(body: Vec<u8>, status: &str) -> (Result<ContainerLogs, AppErr
             stream.read_exact(&mut byte).unwrap();
             request.push(byte[0]);
         }
-        let kind = if body.first().is_some_and(|b| *b <= 2) {
-            "multiplexed"
-        } else {
-            "raw"
-        };
-        write!(stream,"HTTP/1.1 {status}\r\nContent-Type: application/vnd.docker.{kind}-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
+        write!(stream,"HTTP/1.1 {status}\r\n{api_header}Content-Type: application/vnd.docker.{kind}-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
         let _ = stream.write_all(&body);
         String::from_utf8(request).unwrap()
     });
@@ -53,6 +66,111 @@ fn frame(stream: u8, bytes: &[u8]) -> Vec<u8> {
     result.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
     result.extend_from_slice(bytes);
     result
+}
+
+#[tokio::test]
+async fn logs_compatibility_lower_api_daemons_support_existing_reads_and_both_log_modes() {
+    use std::io::{Read, Write};
+    for max_minor in [42, 43, 46] {
+        for tty in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let mut requests = Vec::new();
+                for _ in 0..3 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte).unwrap();
+                        request.push(byte[0]);
+                    }
+                    let request = String::from_utf8(request).unwrap();
+                    let target = request.split_whitespace().nth(1).unwrap();
+                    let (minor, target) = if let Some(versioned) = target.strip_prefix("/v1.") {
+                        let (minor, path) = versioned.split_once('/').unwrap();
+                        (minor.parse::<u32>().unwrap(), format!("/{path}"))
+                    } else {
+                        (max_minor, target.to_owned())
+                    };
+                    let (status, kind, body) = if minor > max_minor {
+                        (
+                            "400 Bad Request",
+                            "application/json",
+                            br#"{"message":"client version too new"}"#.to_vec(),
+                        )
+                    } else {
+                        match target.split('?').next().unwrap() {
+                            "/info" => ("200 OK", "application/json", br#"{"ID":"same","ServerVersion":"24.0.9","OSType":"linux","Architecture":"x86_64"}"#.to_vec()),
+                            "/containers/json" => ("200 OK", "application/json", b"[]".to_vec()),
+                            "/containers/abc/logs" if tty => ("200 OK", "application/vnd.docker.raw-stream", b"\x01\0\0\0raw\xe2\x82".to_vec()),
+                            "/containers/abc/logs" => {
+                                let mut body = frame(1,b"out"); body.extend(frame(2,b"err"));
+                                ("200 OK", "application/vnd.docker.multiplexed-stream", body)
+                            }
+                            _ => ("404 Not Found", "application/json", b"{}".to_vec()),
+                        }
+                    };
+                    write!(stream,"HTTP/1.1 {status}\r\nAPI-Version: 1.{max_minor}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
+                    stream.write_all(&body).unwrap();
+                    requests.push(request);
+                }
+                requests
+            });
+            let endpoint = DockerEndpoint::try_from(format!("http://{address}").as_str()).unwrap();
+            let docker = bollard::Docker::connect_with_http(
+                endpoint.as_str(),
+                5,
+                bollard::API_DEFAULT_VERSION,
+            )
+            .unwrap();
+            let adapter = DockerApiAdapter::new(docker, endpoint);
+            adapter.info().await.unwrap();
+            assert!(adapter.list().await.unwrap().is_empty());
+            let result = adapter.logs(ContainerId("abc".into())).await;
+            let requests = server.join().unwrap();
+            let logs = result.expect("logs must work on daemon already serving existing API reads");
+            assert_eq!(
+                logs.text,
+                if tty {
+                    "\u{1}\0\0\0raw\u{fffd}"
+                } else {
+                    "outerr"
+                }
+            );
+            assert_eq!(logs.retained_bytes, if tty { 9 } else { 6 });
+            assert!(requests[2].starts_with("GET /containers/abc/logs?"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn logs_compatibility_rejects_unproven_media_distinction_without_sniffing() {
+    for version in [
+        None,
+        Some("1.41"),
+        Some("1.9"),
+        Some("invalid"),
+        Some("1.42.0"),
+    ] {
+        for kind in ["raw", "multiplexed"] {
+            let error = wire_logs_response(frame(1, b"SECRET"), "200 OK", kind, version)
+                .await
+                .0
+                .unwrap_err();
+            assert_eq!(error.code, AppErrorCode::ContainerOperationFailed);
+            assert!(!error.retryable);
+            assert!(!format!("{error:?}").contains("SECRET"));
+        }
+    }
+    let error = wire_logs_response(b"SECRET".to_vec(), "200 OK", "unknown", Some("1.43"))
+        .await
+        .0
+        .unwrap_err();
+    assert!(!error.retryable);
 }
 #[tokio::test]
 async fn logs_raw_http_options_framing_order_tty_and_retention() {
@@ -77,10 +195,7 @@ async fn logs_raw_http_options_framing_order_tty_and_retention() {
             assert_eq!(logs.retained_bytes as usize, size.min(262_144));
             assert_eq!(logs.truncated, size > 262_144);
             let line = request.lines().next().unwrap();
-            assert!(
-                line.starts_with("GET /v1.47/containers/abc/logs?"),
-                "{line}"
-            );
+            assert!(line.starts_with("GET /containers/abc/logs?"), "{line}");
             for option in [
                 "stdout=true",
                 "stderr=true",
@@ -134,7 +249,7 @@ async fn logs_transfer_cap_applies_before_large_multiplexed_frame_finishes() {
         while !request.ends_with(b"\r\n\r\n") {
             request.push(stream.read_u8().await.unwrap());
         }
-        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.multiplexed-stream\r\nContent-Length: 4294967303\r\n\r\n\x01\0\0\0\xff\xff\xff\xff").await.unwrap();
+        stream.write_all(b"HTTP/1.1 200 OK\r\nAPI-Version: 1.47\r\nContent-Type: application/vnd.docker.multiplexed-stream\r\nContent-Length: 4294967303\r\n\r\n\x01\0\0\0\xff\xff\xff\xff").await.unwrap();
         let chunk = [b'x'; 8192];
         for _ in 0..1024 {
             if stream.write_all(&chunk).await.is_err() {
@@ -180,7 +295,7 @@ async fn logs_unix_transport_preserves_tty_control_bytes_and_unterminated_utf8()
                 request.push(stream.read_u8().await.unwrap());
             }
             let kind = if multiplexed { "multiplexed" } else { "raw" };
-            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.{kind}-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nAPI-Version: 1.43\r\nContent-Type: application/vnd.docker.{kind}-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
             let payload = [0, 1, 2, b'x', 0xe2, 0x82];
             let bytes = if multiplexed {
                 let mut bytes = frame(1, &payload[..3]);
@@ -266,7 +381,7 @@ async fn stalled_log_request(
             request.push(stream.read_u8().await.unwrap());
         }
         if send_body {
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\nContent-Length: 1000\r\n\r\nSECRET").await.unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nAPI-Version: 1.47\r\nContent-Type: application/vnd.docker.raw-stream\r\nContent-Length: 1000\r\n\r\nSECRET").await.unwrap();
         }
         started.send(()).unwrap();
         match stream.read(&mut [0]).await {

@@ -48,7 +48,7 @@ impl DockerControl for DockerApiAdapter {
                 if id.0.is_empty() || !id.0.bytes().all(|b| b.is_ascii_alphanumeric()) {
                     return Err(container_logs_error(&id, false));
                 }
-                let path = format!("/v1.47/containers/{}/logs?stdout=true&stderr=true&follow=false&timestamps=false&since=0&until=0&tail=4096", id.0);
+                let path = format!("/containers/{}/logs?stdout=true&stderr=true&follow=false&timestamps=false&since=0&until=0&tail=4096", id.0);
                 let builder = hyper_util::client::legacy::Client::builder(
                     hyper_util::rt::TokioExecutor::new(),
                 );
@@ -74,7 +74,18 @@ impl DockerControl for DockerApiAdapter {
                         response.status().is_server_error(),
                     ));
                 }
-                // API >= 1.42 distinguishes raw TTY from multiplexed logs by media type.
+                // Unversioned requests use the daemon default advertised in API-Version.
+                // Before 1.42, raw-stream can also mean multiplexed; never sniff payloads.
+                let distinct_media_types = response
+                    .headers()
+                    .get("api-version")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.strip_prefix("1."))
+                    .and_then(|minor| minor.parse::<u32>().ok())
+                    .is_some_and(|minor| minor >= 42);
+                if !distinct_media_types {
+                    return Err(container_logs_error(&id, false));
+                }
                 // Bypass Bollard's line/full-frame decoder so limits apply before buffering.
                 let multiplexed = match response
                     .headers()
