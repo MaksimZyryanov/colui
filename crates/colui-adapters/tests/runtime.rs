@@ -551,6 +551,37 @@ async fn gateway_profile_lookup_waits_for_connect_operation_gate() {
     assert!(invoke.await.unwrap().is_ok());
 }
 
+#[tokio::test]
+async fn concurrent_connect_joins_one_transition_and_one_session() {
+    let runner = Arc::new(BlockingInfoRunner::default());
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(BlockingInfoRunner {
+            started: runner.started.clone(),
+            release: runner.release.clone(),
+            calls: runner.calls.clone(),
+        }),
+    ));
+    let first = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
+    let second = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::task::yield_now().await;
+    runner.release.notify_one();
+
+    let first = first.await.unwrap().unwrap();
+    let second = second.await.unwrap().unwrap();
+    assert_eq!(first, second);
+    assert_eq!(gateway.created_client_count(), 1);
+}
+
 fn test_profile() -> ProjectProfile {
     ProjectProfile::from_draft(
         ProfileId::new(uuid::Uuid::from_u128(3)),
@@ -790,7 +821,7 @@ async fn reconnect_invalidates_old_api_observation() {
     tokio::time::timeout(Duration::from_secs(1), docker.started.notified())
         .await
         .unwrap();
-    gateway.connect_runtime(None).await.unwrap();
+    gateway.reconnect_runtime(None).await.unwrap();
     let new_session = ready_session_id(&gateway).await;
     docker.release.notify_one();
 

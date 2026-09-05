@@ -1,3 +1,4 @@
+use crate::{DiagnosticsFuture, OperationsDiagnostics};
 use colui_domain::{AppError, ProfileId};
 use std::fmt;
 use std::future::Future;
@@ -104,6 +105,10 @@ pub enum DefinitionBusy {
 
 pub trait OperationLockReader: Send + Sync {
     fn is_busy(&self, profile_id: &ProfileId) -> bool;
+}
+
+pub trait OperationProjectionReader: Send + Sync {
+    fn operation_projection(&self) -> DiagnosticsFuture<'_, OperationsDiagnostics>;
 }
 
 /// Manages exclusive locks for profile lifecycle operations and definition loads.

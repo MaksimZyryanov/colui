@@ -1,8 +1,39 @@
 use colui_adapters::OperationLockManager as ConcreteOperationLockManager;
 use colui_app::{
     DefinitionBusy, OperationKind, OperationLockManager as OperationLockManagerPort,
-    OperationLockReader,
+    OperationLockReader, OperationPhase, OperationProjectionReader,
 };
+
+#[tokio::test]
+async fn operation_projection_reports_active_work_without_acquiring_a_lease() {
+    let locks = locks();
+    let lifecycle = locks
+        .acquire_lifecycle(id(1), OperationKind::Restart)
+        .await
+        .unwrap();
+    let container = locks.acquire_container("container-7").unwrap();
+
+    let snapshot = locks.operation_projection().await.unwrap();
+
+    assert_eq!(snapshot.active.len(), 2);
+    assert!(snapshot.active.iter().any(|item| {
+        item.kind == "restart"
+            && item.subject_id == id(1).to_string()
+            && item.phase == OperationPhase::Active
+    }));
+    assert!(snapshot.active.iter().any(|item| {
+        item.kind == "container"
+            && item.subject_id == "container-7"
+            && item.phase == OperationPhase::Active
+    }));
+    drop((lifecycle, container));
+    assert!(locks
+        .operation_projection()
+        .await
+        .unwrap()
+        .active
+        .is_empty());
+}
 use colui_domain::{AppErrorCode, ProfileId};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};

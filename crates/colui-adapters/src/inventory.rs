@@ -5,7 +5,7 @@ use colui_app::{
 };
 use colui_domain::{
     AppError, AppErrorCode, ComposeObservationGroup, ContainerObservation, InventoryFreshness,
-    ProjectRuntimeSnapshot, RuntimeInventory, RuntimeSessionState, SessionContext, Timestamp,
+    ProjectRuntimeSnapshot, RuntimeInventory, SessionContext, Timestamp,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -201,9 +201,9 @@ fn complete_refresh(
 async fn observe(
     api: &Arc<dyn RuntimeInventorySource>,
 ) -> Result<(SessionContext, Vec<ContainerObservation>), AppError> {
-    let captured = ready_context(api.session_state().await?, "runtime unavailable")?;
+    let captured = api.api_read_context().await?;
     let observations = api.list_containers().await?;
-    let after = ready_context(api.session_state().await?, "runtime session changed")?;
+    let after = api.api_read_context().await?;
     if captured.session_id != after.session_id
         || captured.daemon_fingerprint != after.daemon_fingerprint
     {
@@ -280,18 +280,6 @@ fn normalize(
         compose_observation_groups,
         standalone_containers: standalone,
         error: None,
-    }
-}
-
-fn ready_context(state: RuntimeSessionState, message: &str) -> Result<SessionContext, AppError> {
-    match state {
-        RuntimeSessionState::Ready(context) => Ok(context),
-        _ => Err(AppError::new(
-            AppErrorCode::RuntimeUnavailable,
-            "inventory",
-            None,
-            message,
-        )),
     }
 }
 

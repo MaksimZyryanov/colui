@@ -84,6 +84,13 @@ impl RuntimeConnector for FakeRuntime {
     ) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
+
+    fn reconnect_runtime(
+        &self,
+        _preference: Option<DockerEndpoint>,
+    ) -> Pin<Box<dyn Future<Output = Result<RuntimeSessionState, AppError>> + Send + '_>> {
+        Box::pin(async { Ok(RuntimeSessionState::Disconnected) })
+    }
 }
 
 impl RuntimeStateReader for FakeRuntime {

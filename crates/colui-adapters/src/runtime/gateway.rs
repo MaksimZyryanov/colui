@@ -3,8 +3,8 @@ use super::{build_cli_environment, resolve_endpoint, DockerControl};
 use bollard::Docker;
 use colui_app::{
     ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, LifecycleFuture,
-    LifecycleOperation, LifecycleResult, LifecycleRuntime, RuntimeConnector, RuntimeFuture,
-    RuntimeStateReader,
+    LifecycleOperation, LifecycleResult, LifecycleRuntime, RuntimeConnector, RuntimeDiagnostics,
+    RuntimeDiagnosticsReader, RuntimeFuture, RuntimeStateReader,
 };
 use colui_domain::{
     AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerObservation, DaemonFingerprint,
@@ -89,6 +89,7 @@ struct SessionClient {
     session_id: RuntimeSessionId,
     endpoint: DockerEndpoint,
     fingerprint: DaemonFingerprint,
+    connected_at: Timestamp,
 }
 struct Snapshot {
     generation: u64,
@@ -100,6 +101,7 @@ pub struct RuntimeGateway {
     factory: Arc<dyn DockerFactory>,
     runner: Mutex<Arc<dyn ComposeRunner>>,
     snapshot: Mutex<Snapshot>,
+    transition: Mutex<()>,
     gate: Arc<ComposeExecutionGate>,
     created: AtomicUsize,
 }
@@ -143,6 +145,7 @@ impl RuntimeGateway {
                 state: RuntimeSessionState::Disconnected,
                 client: None,
             }),
+            transition: Mutex::new(()),
             gate,
             created: AtomicUsize::new(0),
         }
@@ -272,6 +275,10 @@ impl RuntimeConnector for RuntimeGateway {
         preference: Option<DockerEndpoint>,
     ) -> RuntimeFuture<'_, RuntimeSessionState> {
         Box::pin(async move {
+            let _transition = self.transition.lock().await;
+            if let RuntimeSessionState::Ready(context) = self.snapshot.lock().await.state.clone() {
+                return Ok(RuntimeSessionState::Ready(context));
+            }
             let _permit = self.gate.acquire().await.map_err(|_| {
                 error(
                     AppErrorCode::RuntimeUnavailable,
@@ -360,6 +367,7 @@ impl RuntimeConnector for RuntimeGateway {
                                 Err(e) => (RuntimeSessionState::Failed(e), None),
                                 Ok(cli_fp) if cli_fp != api_fp => {
                                     let id = RuntimeSessionId::new(uuid::Uuid::new_v4());
+                                    let connected_at = timestamp();
                                     let state =
                                         RuntimeSessionState::ContextMismatch(MismatchDetails::new(
                                             endpoint.clone(),
@@ -373,16 +381,18 @@ impl RuntimeConnector for RuntimeGateway {
                                             session_id: id,
                                             endpoint,
                                             fingerprint: api_fp,
+                                            connected_at,
                                         }),
                                     )
                                 }
                                 Ok(api_fp) => {
                                     let id = RuntimeSessionId::new(uuid::Uuid::new_v4());
+                                    let connected_at = timestamp();
                                     let state = RuntimeSessionState::Ready(SessionContext {
                                         session_id: id,
                                         endpoint: endpoint.clone(),
                                         daemon_fingerprint: api_fp.clone(),
-                                        connected_at: timestamp(),
+                                        connected_at: connected_at.clone(),
                                     });
                                     (
                                         state,
@@ -391,6 +401,7 @@ impl RuntimeConnector for RuntimeGateway {
                                             session_id: id,
                                             endpoint,
                                             fingerprint: api_fp,
+                                            connected_at,
                                         }),
                                     )
                                 }
@@ -409,6 +420,7 @@ impl RuntimeConnector for RuntimeGateway {
     }
     fn disconnect_runtime(&self) -> RuntimeFuture<'_, ()> {
         Box::pin(async {
+            let _transition = self.transition.lock().await;
             let _permit = self.gate.acquire().await.map_err(|_| {
                 error(
                     AppErrorCode::RuntimeUnavailable,
@@ -463,6 +475,47 @@ impl RuntimeGateway {
 impl RuntimeStateReader for RuntimeGateway {
     fn session_state(&self) -> RuntimeFuture<'_, RuntimeSessionState> {
         Box::pin(async { Ok(self.snapshot.lock().await.state.clone()) })
+    }
+    fn api_read_context(&self) -> RuntimeFuture<'_, SessionContext> {
+        Box::pin(async {
+            let snapshot = self.snapshot.lock().await;
+            let client = snapshot.client.as_ref().ok_or_else(|| {
+                error(
+                    AppErrorCode::RuntimeUnavailable,
+                    "runtime_read",
+                    "runtime unavailable",
+                )
+            })?;
+            Ok(SessionContext {
+                session_id: client.session_id,
+                endpoint: client.endpoint.clone(),
+                daemon_fingerprint: client.fingerprint.clone(),
+                connected_at: client.connected_at.clone(),
+            })
+        })
+    }
+}
+impl RuntimeDiagnosticsReader for RuntimeGateway {
+    fn runtime_diagnostics(&self) -> colui_app::DiagnosticsFuture<'_, RuntimeDiagnostics> {
+        Box::pin(async {
+            let snapshot = self.snapshot.lock().await;
+            let client = snapshot.client.as_ref();
+            let cli_fingerprint = match &snapshot.state {
+                RuntimeSessionState::ContextMismatch(details) => {
+                    Some(details.cli_fingerprint.clone())
+                }
+                RuntimeSessionState::Ready(context) => Some(context.daemon_fingerprint.clone()),
+                _ => None,
+            };
+            Ok(RuntimeDiagnostics {
+                state: snapshot.state.clone(),
+                resolved_endpoint: client.map(|value| value.endpoint.clone()),
+                api_fingerprint: client.map(|value| value.fingerprint.clone()),
+                cli_fingerprint,
+                session_id: client.map(|value| value.session_id),
+                connected_at: client.map(|value| value.connected_at.clone()),
+            })
+        })
     }
 }
 impl DockerApi for RuntimeGateway {

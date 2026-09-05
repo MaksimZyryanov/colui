@@ -1,11 +1,12 @@
 use colui_app::{
-    ContainerOperationGuard, DefinitionBusy, DefinitionLoadGuard, LifecycleOperationGuard,
-    OperationFuture, OperationKind, OperationLockManager as OperationLockManagerPort,
-    OperationLockReader, RegistryMutationGuard, RegistryRecoveryGuard,
+    ActiveOperation, ContainerOperationGuard, DefinitionBusy, DefinitionLoadGuard,
+    LifecycleOperationGuard, OperationFuture, OperationKind,
+    OperationLockManager as OperationLockManagerPort, OperationLockReader, OperationPhase,
+    OperationProjectionReader, OperationsDiagnostics, RegistryMutationGuard, RegistryRecoveryGuard,
 };
 use colui_domain::{AppError, AppErrorCode, ProfileId, Timestamp};
 use fs2::FileExt;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 use std::sync::{
@@ -23,13 +24,14 @@ struct LockState {
     barrier: Mutex<BarrierState>,
     recovery_path: PathBuf,
     next_token: AtomicU64,
+    projection_generation: AtomicU64,
 }
 
 #[derive(Default)]
 struct BarrierState {
     shared: usize,
     recovering: bool,
-    containers: HashSet<String>,
+    containers: HashMap<String, Timestamp>,
 }
 
 struct ProfileState {
@@ -43,6 +45,7 @@ enum LifecycleLease {
     Pending {
         token: u64,
         kind: OperationKind,
+        started_at: Timestamp,
     },
     Active {
         token: u64,
@@ -73,6 +76,7 @@ impl OperationLockManager {
                 barrier: Mutex::new(BarrierState::default()),
                 recovery_path: path,
                 next_token: AtomicU64::new(0),
+                projection_generation: AtomicU64::new(0),
             }),
         }
     }
@@ -97,7 +101,14 @@ impl OperationLockManager {
                 "operation already in progress",
             ));
         }
-        profile.lifecycle = Some(LifecycleLease::Pending { token, kind });
+        profile.lifecycle = Some(LifecycleLease::Pending {
+            token,
+            kind,
+            started_at: now(),
+        });
+        self.state
+            .projection_generation
+            .fetch_add(1, Ordering::Relaxed);
         Ok(LifecycleReservation {
             state: Arc::clone(&self.state),
             profile_id,
@@ -113,13 +124,17 @@ impl OperationLockManager {
     ) -> Result<ContainerOperationGuard, AppError> {
         let recovery_file = acquire_shared(&self.state)?;
         let mut barrier = lock_barrier(&self.state);
-        if !barrier.containers.insert(container_id.to_owned()) {
+        if barrier.containers.contains_key(container_id) {
             barrier.shared -= 1;
             return Err(conflict(
                 "acquire_container",
                 "container operation already in progress",
             ));
         }
+        barrier.containers.insert(container_id.to_owned(), now());
+        self.state
+            .projection_generation
+            .fetch_add(1, Ordering::Relaxed);
         drop(barrier);
         let state = Arc::clone(&self.state);
         let container_id = container_id.to_owned();
@@ -128,6 +143,7 @@ impl OperationLockManager {
             let mut barrier = lock_barrier(&state);
             barrier.containers.remove(&container_id);
             barrier.shared -= 1;
+            state.projection_generation.fetch_add(1, Ordering::Relaxed);
         }))
     }
 
@@ -222,6 +238,9 @@ impl OperationLockManagerPort for OperationLockManager {
             token,
             started_at: now(),
         });
+        self.state
+            .projection_generation
+            .fetch_add(1, Ordering::Relaxed);
         let state = Arc::clone(&self.state);
         Ok(DefinitionLoadGuard::new(move || {
             let _file = recovery_file;
@@ -240,6 +259,66 @@ impl OperationLockManagerPort for OperationLockManager {
 
     fn acquire_recovery(&self) -> Result<RegistryRecoveryGuard, AppError> {
         OperationLockManager::acquire_recovery(self)
+    }
+}
+
+impl OperationProjectionReader for OperationLockManager {
+    fn operation_projection(&self) -> colui_app::DiagnosticsFuture<'_, OperationsDiagnostics> {
+        Box::pin(async move {
+            let mut active = Vec::new();
+            for (profile_id, profile) in lock_profiles(&self.state).iter() {
+                if let Some(lease) = &profile.lifecycle {
+                    let (kind, started_at, phase) = match lease {
+                        LifecycleLease::Pending {
+                            kind, started_at, ..
+                        } => (*kind, started_at.clone(), OperationPhase::Pending),
+                        LifecycleLease::Active {
+                            kind, started_at, ..
+                        } => (*kind, started_at.clone(), OperationPhase::Active),
+                    };
+                    active.push(ActiveOperation {
+                        kind: operation_name(kind).into(),
+                        subject_id: profile_id.to_string(),
+                        started_at,
+                        phase,
+                    });
+                }
+                if let Some(lease) = &profile.definition {
+                    active.push(ActiveOperation {
+                        kind: "definition".into(),
+                        subject_id: profile_id.to_string(),
+                        started_at: lease.started_at.clone(),
+                        phase: OperationPhase::Active,
+                    });
+                }
+            }
+            for (container_id, started_at) in &lock_barrier(&self.state).containers {
+                active.push(ActiveOperation {
+                    kind: "container".into(),
+                    subject_id: container_id.clone(),
+                    started_at: started_at.clone(),
+                    phase: OperationPhase::Active,
+                });
+            }
+            active.sort_by(|left, right| {
+                left.subject_id
+                    .cmp(&right.subject_id)
+                    .then(left.kind.cmp(&right.kind))
+            });
+            Ok(OperationsDiagnostics {
+                generation: self.state.projection_generation.load(Ordering::Relaxed),
+                active,
+            })
+        })
+    }
+}
+
+fn operation_name(kind: OperationKind) -> &'static str {
+    match kind {
+        OperationKind::Apply => "apply",
+        OperationKind::Stop => "stop",
+        OperationKind::TearDown => "tear_down",
+        OperationKind::Restart => "restart",
     }
 }
 
@@ -262,7 +341,9 @@ async fn wait_for_definition(
                 .get_mut(&reservation.profile_id)
                 .expect("lifecycle reservation must have a profile state");
             match profile.lifecycle.as_ref() {
-                Some(LifecycleLease::Pending { token, kind }) if *token == reservation.token => {
+                Some(LifecycleLease::Pending { token, kind, .. })
+                    if *token == reservation.token =>
+                {
                     if profile.definition.is_some() {
                         Some(Arc::clone(&profile.notify))
                     } else {
@@ -325,6 +406,7 @@ fn release_pending(state: &LockState, profile_id: &ProfileId, token: u64) {
             remove_if_idle(&mut profiles, profile_id);
         }
     }
+    state.projection_generation.fetch_add(1, Ordering::Relaxed);
 }
 
 fn release_lifecycle(state: &LockState, profile_id: &ProfileId, token: u64) {
@@ -342,6 +424,7 @@ fn release_lifecycle(state: &LockState, profile_id: &ProfileId, token: u64) {
             remove_if_idle(&mut profiles, profile_id);
         }
     }
+    state.projection_generation.fetch_add(1, Ordering::Relaxed);
 }
 
 fn release_definition(state: &LockState, profile_id: &ProfileId, token: u64) {
@@ -358,6 +441,7 @@ fn release_definition(state: &LockState, profile_id: &ProfileId, token: u64) {
             remove_if_idle(&mut profiles, profile_id);
         }
     }
+    state.projection_generation.fetch_add(1, Ordering::Relaxed);
 }
 
 fn remove_if_idle(profiles: &mut HashMap<ProfileId, ProfileState>, profile_id: &ProfileId) {
