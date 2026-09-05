@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -10,6 +10,7 @@ import { mockBackend } from '../../../ipc/mock-backend';
 import { useInventory } from '../../runtime/hooks/useInventory';
 import type { ReactNode } from 'react';
 import { AppShell } from '../../../app/AppShell';
+import { projectKeys } from '../query-keys';
 
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 function TestShell({ children }: { children: ReactNode }) { useInventory(); return children; }
@@ -79,6 +80,35 @@ describe('ProjectsView', () => {
     await waitFor(() => expect(screen.getByText('One')).toBeVisible());
     expect(mockBackend.getInvocations().filter(invocation => invocation.command === 'get_inventory')).toHaveLength(1);
     expect(addEventListener.mock.calls.filter(([type]) => type === 'visibilitychange')).toHaveLength(1);
+  });
+
+  it('keeps valid profile visible beside invalid definition in same projection', async () => {
+    const acceptanceClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const invalidId = '00000000-0000-0000-0000-000000000001';
+    const validId = '00000000-0000-0000-0000-000000000002';
+    const profiles = [
+      { id: invalidId, revision: 1, displayName: 'Invalid Project', composeProjectName: 'invalid', workingDirectory: '/tmp/invalid', registrationOrigin: 'manual' as const },
+      { id: validId, revision: 1, displayName: 'Valid Project', composeProjectName: 'valid', workingDirectory: '/tmp/valid', registrationOrigin: 'manual' as const },
+    ];
+    mockBackend.setResponseOverride('list_profiles', profiles);
+    mockBackend.setResponseOverride('get_inventory', {
+      generation: 1, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [], composeObservationGroups: [], standaloneContainers: [], error: null,
+      projects: profiles.map(profile => ({ composeProjectName: profile.composeProjectName, workingDirectory: profile.workingDirectory, configFiles: ['compose.yml'], containers: [{ id: `${profile.composeProjectName}-web`, name: `${profile.composeProjectName}-web-1`, image: 'nginx', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }] })),
+    });
+    for (const [profile, state] of [[profiles[0], 'invalid'], [profiles[1], 'valid']] as const) {
+      acceptanceClient.setQueryData(projectKeys.definition(profile.id), {
+        profile: { profile, composeFiles: ['compose.yml'], environmentFiles: [] },
+        definition: { profileId: profile.id, definitionRevision: `${state}-revision`, loadedAt: '2026-09-02T00:00:00.000Z', state, services: state === 'valid' ? [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }] : [], issues: state === 'invalid' ? [{ field: 'services.web', message: 'invalid service' }] : [], error: null },
+        runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: '2026-09-02T00:00:00.000Z' },
+      });
+    }
+
+    render(<QueryClientProvider client={acceptanceClient}><TestShell><ProjectsView /></TestShell></QueryClientProvider>);
+
+    const invalidCard = (await screen.findByRole('heading', { name: 'Invalid Project' })).closest('section')!;
+    const validCard = screen.getByRole('heading', { name: 'Valid Project' }).closest('section')!;
+    expect(within(invalidCard).getByLabelText('Project status')).toHaveTextContent('Invalid definition');
+    expect(within(validCard).getByLabelText('Project status')).toHaveTextContent('Running');
   });
 
   it('shows query errors without collapsing project route', async () => {
