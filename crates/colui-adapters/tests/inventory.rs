@@ -214,6 +214,7 @@ async fn compose_observation_groups_preserve_equal_names_with_distinct_tuples() 
     let snapshot = coordinator.refresh().await.unwrap();
 
     assert_eq!(source.calls.load(Ordering::Acquire), 1);
+    assert_eq!(source.inspect_calls.load(Ordering::Acquire), 0);
     assert_eq!(snapshot.compose_observation_groups.len(), 2);
     assert_eq!(
         snapshot.compose_observation_groups[0]
@@ -454,6 +455,7 @@ struct QueuedSource {
     values:
         std::sync::Mutex<std::collections::VecDeque<Result<Vec<ContainerObservation>, AppError>>>,
     calls: AtomicUsize,
+    inspect_calls: AtomicUsize,
     context: colui_domain::SessionContext,
 }
 
@@ -559,6 +561,7 @@ impl QueuedSource {
         Self {
             values: std::sync::Mutex::new(values.into()),
             calls: AtomicUsize::new(0),
+            inspect_calls: AtomicUsize::new(0),
             context: session_context(),
         }
     }
@@ -581,7 +584,8 @@ impl DockerApi for QueuedSource {
     }
 
     fn inspect_container(&self, _: &ContainerId) -> RuntimeFuture<'_, ContainerDetails> {
-        panic!("inventory refresh must not inspect")
+        self.inspect_calls.fetch_add(1, Ordering::AcqRel);
+        Box::pin(async { panic!("inventory refresh must not inspect") })
     }
 }
 

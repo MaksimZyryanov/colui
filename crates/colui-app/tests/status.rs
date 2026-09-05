@@ -44,7 +44,11 @@ fn successful_inventory_without_matching_project_has_no_observation_timestamp() 
 struct StatusPort(Mutex<Option<ProfileId>>);
 
 impl ProjectStatusReader for StatusPort {
-    fn project_status(&self, profile: ProjectProfile) -> ProjectStatusFuture<'_> {
+    fn project_status(
+        &self,
+        profile: ProjectProfile,
+        _: RegistrySnapshot,
+    ) -> ProjectStatusFuture<'_> {
         *self.0.lock().unwrap() = Some(profile.id.clone());
         Box::pin(async move {
             Ok(ProjectStatus {
@@ -150,6 +154,51 @@ fn ambiguous_runtime_full_tuple_match_projects_only_matching_containers() {
     assert_eq!(status.runtime.presence, RuntimePresence::Present);
     assert_eq!(status.runtime.container_count, 1);
     assert!(status.issues.is_empty());
+}
+
+#[test]
+fn ambiguous_runtime_same_name_distinct_tuple_projects_unique_full_tuple_match() {
+    let profile = profile();
+    let registry = RegistrySnapshot {
+        registry_revision: 1,
+        profiles: vec![profile.clone()],
+    };
+    let inventory = grouped_inventory(vec![
+        group("demo", "/tmp/other", &["compose.yml"], &["other"]),
+        group("demo", "/tmp/demo", &["compose.yml"], &["matching"]),
+    ]);
+
+    let status =
+        project_status_from_registry_inventory_and_definition(&profile, &registry, inventory, None);
+
+    assert_eq!(status.runtime.presence, RuntimePresence::Present);
+    assert_eq!(status.runtime.container_count, 1);
+    assert!(status.issues.is_empty());
+}
+
+#[test]
+fn ambiguous_runtime_zero_matching_full_tuple_projects_no_containers_and_reports_issue() {
+    let profile = profile();
+    let registry = RegistrySnapshot {
+        registry_revision: 1,
+        profiles: vec![profile.clone()],
+    };
+    let inventory = grouped_inventory(vec![group(
+        "demo",
+        "/tmp/other",
+        &["compose.yml"],
+        &["other"],
+    )]);
+
+    let status =
+        project_status_from_registry_inventory_and_definition(&profile, &registry, inventory, None);
+
+    assert_eq!(status.runtime.presence, RuntimePresence::Absent);
+    assert_eq!(status.runtime.container_count, 0);
+    assert_eq!(
+        status.issues[0].field.as_deref(),
+        Some(IssueCode::AmbiguousRuntimeAssociation.as_str())
+    );
 }
 
 #[test]

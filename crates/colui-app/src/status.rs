@@ -100,7 +100,7 @@ type AssociationTuple = (String, String, Vec<String>);
 struct RuntimeAssociationContext {
     profile_counts: BTreeMap<AssociationTuple, usize>,
     profile_tuples: HashMap<ProfileId, Option<AssociationTuple>>,
-    observation_counts_by_name: BTreeMap<String, usize>,
+    observation_counts: BTreeMap<AssociationTuple, usize>,
 }
 
 impl RuntimeAssociationContext {
@@ -114,34 +114,37 @@ impl RuntimeAssociationContext {
             }
             profile_tuples.insert(profile.id.clone(), tuple);
         }
-        let mut observation_counts_by_name = BTreeMap::new();
+        let mut observation_counts = BTreeMap::new();
         for group in &inventory.compose_observation_groups {
-            *observation_counts_by_name
-                .entry(group.compose_project_name.clone())
-                .or_insert(0) += 1;
+            if let Some(working_directory) = &group.working_directory {
+                *observation_counts
+                    .entry((
+                        group.compose_project_name.clone(),
+                        working_directory.clone(),
+                        group.config_files.clone(),
+                    ))
+                    .or_insert(0) += 1;
+            }
         }
         Self {
             profile_counts,
             profile_tuples,
-            observation_counts_by_name,
+            observation_counts,
         }
     }
 
-    fn is_ambiguous(&self, profile: &ProjectProfile) -> bool {
-        let Some(tuple) = self
-            .profile_tuples
+    fn profile_tuple(&self, profile: &ProjectProfile) -> Option<&AssociationTuple> {
+        self.profile_tuples
             .get(&profile.id)
             .and_then(Option::as_ref)
-        else {
+    }
+
+    fn is_ambiguous(&self, profile: &ProjectProfile) -> bool {
+        let Some(tuple) = self.profile_tuple(profile) else {
             return true;
         };
         self.profile_counts.get(tuple).copied().unwrap_or(0) != 1
-            || self
-                .observation_counts_by_name
-                .get(&tuple.0)
-                .copied()
-                .unwrap_or(0)
-                > 1
+            || self.observation_counts.get(tuple).copied().unwrap_or(0) != 1
     }
 }
 
@@ -150,9 +153,11 @@ fn project_status_from_associations(
     inventory: &colui_domain::RuntimeInventory,
     associations: &RuntimeAssociationContext,
 ) -> ProjectStatus {
-    let containers = profile_tuple(profile)
+    let containers = associations
+        .profile_tuple(profile)
         .filter(|tuple| {
-            !associations.is_ambiguous(profile) && associations.profile_counts[tuple] == 1
+            associations.profile_counts.get(*tuple) == Some(&1)
+                && associations.observation_counts.get(*tuple) == Some(&1)
         })
         .and_then(|tuple| {
             inventory.compose_observation_groups.iter().find(|group| {
@@ -283,7 +288,11 @@ pub struct ProjectStatus {
 }
 
 pub trait ProjectStatusReader: Send + Sync {
-    fn project_status(&self, profile: ProjectProfile) -> ProjectStatusFuture<'_>;
+    fn project_status(
+        &self,
+        profile: ProjectProfile,
+        registry: crate::RegistrySnapshot,
+    ) -> ProjectStatusFuture<'_>;
 }
 
 pub struct GetProjectStatus<'a, R: ?Sized, S: ?Sized> {
@@ -297,13 +306,12 @@ impl<'a, R: ProfileReader + ?Sized, S: ProjectStatusReader + ?Sized> GetProjectS
     }
 
     pub async fn execute(&self, id: ProfileId) -> Result<ProjectStatus, AppError> {
-        let profile = self
+        let registry = self.profiles.load().await?;
+        let profile = registry
             .profiles
-            .load()
-            .await?
-            .profiles
-            .into_iter()
+            .iter()
             .find(|profile| profile.id == id)
+            .cloned()
             .ok_or_else(|| {
                 AppError::new(
                     AppErrorCode::ProfileNotFound,
@@ -312,6 +320,6 @@ impl<'a, R: ProfileReader + ?Sized, S: ProjectStatusReader + ?Sized> GetProjectS
                     "profile not found",
                 )
             })?;
-        self.status.project_status(profile).await
+        self.status.project_status(profile, registry).await
     }
 }

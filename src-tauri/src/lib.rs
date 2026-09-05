@@ -81,7 +81,11 @@ impl RuntimeStateReader for RuntimeFacade {
     }
 }
 impl ProjectStatusReader for RuntimeFacade {
-    fn project_status(&self, profile: colui_domain::ProjectProfile) -> ProjectStatusFuture<'_> {
+    fn project_status(
+        &self,
+        profile: colui_domain::ProjectProfile,
+        registry: colui_app::RegistrySnapshot,
+    ) -> ProjectStatusFuture<'_> {
         let inventory = self.inventory.clone();
         let definitions = self.definitions.clone();
         Box::pin(async move {
@@ -91,11 +95,14 @@ impl ProjectStatusReader for RuntimeFacade {
             } else {
                 None
             };
-            Ok(colui_app::project_status_from_inventory_and_definition(
-                &profile,
-                inventory_snapshot,
-                definition,
-            ))
+            Ok(
+                colui_app::project_status_from_registry_inventory_and_definition(
+                    &profile,
+                    &registry,
+                    inventory_snapshot,
+                    definition,
+                ),
+            )
         })
     }
 }
