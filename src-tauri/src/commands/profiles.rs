@@ -75,13 +75,15 @@ pub async fn create_profile(
     draft: ProfileDraftDto,
     state: State<'_, AppState>,
 ) -> Result<ProfileSummaryDto, AppErrorDto> {
-    Ok(
-        CreateProfile::new(state.profiles.as_ref(), state.ids.as_ref())
-            .execute(draft.into_domain().map_err(AppErrorDto::from)?)
-            .await
-            .map_err(AppErrorDto::from)?
-            .into(),
+    Ok(CreateProfile::new(
+        state.profiles.as_ref(),
+        state.ids.as_ref(),
+        state.locks.as_ref(),
     )
+    .execute(draft.into_domain().map_err(AppErrorDto::from)?)
+    .await
+    .map_err(AppErrorDto::from)?
+    .into())
 }
 #[tauri::command]
 pub async fn update_profile(
@@ -89,7 +91,7 @@ pub async fn update_profile(
     state: State<'_, AppState>,
 ) -> Result<ProfileSummaryDto, AppErrorDto> {
     let profile_id = id(request.profile_id, "update_profile")?;
-    let updated = UpdateProfile::new(state.profiles.as_ref())
+    let updated = UpdateProfile::new(state.profiles.as_ref(), state.locks.as_ref())
         .execute(
             profile_id.clone(),
             request.expected_revision,
@@ -106,7 +108,7 @@ pub async fn remove_profile(
     state: State<'_, AppState>,
 ) -> Result<(), AppErrorDto> {
     let profile_id = id(request.profile_id, "remove_profile")?;
-    RemoveProfile::new(state.profiles.as_ref())
+    RemoveProfile::new(state.profiles.as_ref(), state.locks.as_ref())
         .execute(profile_id.clone(), request.expected_revision)
         .await
         .map_err(AppErrorDto::from)?;

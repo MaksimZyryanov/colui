@@ -108,7 +108,9 @@ async fn fixture_labels_feed_inventory_and_profile_change_updates_definition_rev
         Arc::new(ComposeProcessRunner::default()),
         gateway.clone(),
         Arc::new(WallClock),
-        Arc::new(OperationLockManager::new()),
+        Arc::new(OperationLockManager::new(
+            std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+        )),
         Arc::new(ComposeExecutionGate::new()),
     );
     let before = cache

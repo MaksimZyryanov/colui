@@ -10,6 +10,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -46,6 +47,14 @@ impl RegistryConfig {
 
 pub struct JsonProfileRegistry {
     config: RegistryConfig,
+    history: Arc<Mutex<RegistryHistory>>,
+}
+
+#[derive(Default)]
+struct RegistryHistory {
+    last_operation_at: Option<colui_domain::Timestamp>,
+    last_failure_at: Option<colui_domain::Timestamp>,
+    latest_failure: Option<AppError>,
 }
 
 pub(crate) enum ImportResult {
@@ -56,7 +65,10 @@ pub(crate) enum ImportResult {
 
 impl JsonProfileRegistry {
     pub fn new(config: RegistryConfig) -> Result<Self, AppError> {
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            history: Arc::new(Mutex::new(RegistryHistory::default())),
+        })
     }
 
     pub fn config(&self) -> &RegistryConfig {
@@ -163,9 +175,12 @@ impl ProfileReader for JsonProfileRegistry {
     fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
         let config = self.config.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || JsonProfileRegistry { config }.load_bytes())
-                .await
-                .map_err(|error| write_error("load_registry", error))?
+            let history = self.history.clone();
+            tokio::task::spawn_blocking(move || {
+                JsonProfileRegistry { config, history }.load_bytes()
+            })
+            .await
+            .map_err(|error| write_error("load_registry", error))?
         })
     }
 }
@@ -173,9 +188,14 @@ impl ProfileReader for JsonProfileRegistry {
 impl ProfileStore for JsonProfileRegistry {
     fn mutate(&self, mutation: ProfileMutation) -> StoreFuture<'_, RegistrySnapshot> {
         let config = self.config.clone();
+        let history = self.history.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                let registry = JsonProfileRegistry { config };
+            let task_history = history.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let registry = JsonProfileRegistry {
+                    config,
+                    history: task_history,
+                };
                 let lock = registry.lock()?;
                 let before = registry.load_bytes()?;
                 let persisted_revision = before.registry_revision;
@@ -212,7 +232,9 @@ impl ProfileStore for JsonProfileRegistry {
                 Ok(after)
             })
             .await
-            .map_err(|error| write_error("mutate_registry", error))?
+            .map_err(|error| write_error("mutate_registry", error))?;
+            record_result(&history, &result);
+            result
         })
     }
 }
@@ -220,8 +242,9 @@ impl ProfileStore for JsonProfileRegistry {
 impl RegistryRecovery for JsonProfileRegistry {
     fn registry_health(&self) -> StoreFuture<'_, RegistryHealth> {
         let config = self.config.clone();
+        let history = self.history.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || registry_health(&config))
+            tokio::task::spawn_blocking(move || registry_health(&config, &history))
                 .await
                 .map_err(|error| write_error("read_registry_health", error))
         })
@@ -229,54 +252,95 @@ impl RegistryRecovery for JsonProfileRegistry {
 
     fn create_registry_backup(&self) -> StoreFuture<'_, RegistrySnapshotIdentity> {
         let config = self.config.clone();
+        let history = self.history.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || create_backup(&config))
+            let result = tokio::task::spawn_blocking(move || create_backup(&config))
                 .await
-                .map_err(|error| write_error("create_registry_backup", error))?
+                .map_err(|error| write_error("create_registry_backup", error))?;
+            record_result(&history, &result);
+            result
         })
     }
 
-    fn restore_registry_backup(&self) -> StoreFuture<'_, RegistrySnapshot> {
+    fn restore_registry_backup(
+        &self,
+        _guard: &colui_app::RegistryRecoveryGuard,
+    ) -> StoreFuture<'_, RegistrySnapshot> {
         let config = self.config.clone();
+        let history = self.history.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || restore_backup(&config))
+            let result = tokio::task::spawn_blocking(move || restore_backup(&config))
                 .await
-                .map_err(|error| write_error("restore_registry_backup", error))?
+                .map_err(|error| write_error("restore_registry_backup", error))?;
+            record_result(&history, &result);
+            result
         })
     }
 }
 
-fn registry_health(config: &RegistryConfig) -> RegistryHealth {
+fn registry_health(config: &RegistryConfig, history: &Mutex<RegistryHistory>) -> RegistryHealth {
+    let history = history
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let fields = || {
+        (
+            history.last_operation_at.clone(),
+            history.last_failure_at.clone(),
+            history.latest_failure.clone(),
+        )
+    };
     match fs::read(&config.canonical_path) {
         Ok(bytes) => match decode(&bytes) {
-            Ok(snapshot) => RegistryHealth {
-                state: RegistryHealthState::Healthy,
-                identity: Some(identity(&snapshot, &bytes)),
-                error: None,
-            },
-            Err(error) => RegistryHealth {
-                state: RegistryHealthState::Corrupt,
+            Ok(snapshot) => {
+                let (last_operation_at, last_failure_at, error) = fields();
+                RegistryHealth {
+                    state: match error.as_ref().map(|error| error.code) {
+                        Some(AppErrorCode::RegistryLocked) => RegistryHealthState::Locked,
+                        Some(_) => RegistryHealthState::WriteFailure,
+                        None => RegistryHealthState::Healthy,
+                    },
+                    identity: Some(identity(&snapshot, &bytes)),
+                    error,
+                    last_operation_at,
+                    last_failure_at,
+                }
+            }
+            Err(error) => {
+                let (last_operation_at, last_failure_at, _) = fields();
+                RegistryHealth {
+                    state: RegistryHealthState::Corrupt,
+                    identity: None,
+                    error: Some(error),
+                    last_operation_at,
+                    last_failure_at,
+                }
+            }
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let (last_operation_at, last_failure_at, error) = fields();
+            RegistryHealth {
+                state: RegistryHealthState::Missing,
                 identity: None,
-                error: Some(error),
-            },
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => RegistryHealth {
-            state: RegistryHealthState::Missing,
-            identity: None,
-            error: None,
-        },
-        Err(error) => RegistryHealth {
-            state: RegistryHealthState::Unreadable,
-            identity: None,
-            error: Some(io_error("read_registry_health", error)),
-        },
+                error,
+                last_operation_at,
+                last_failure_at,
+            }
+        }
+        Err(error) => {
+            let (last_operation_at, last_failure_at, _) = fields();
+            RegistryHealth {
+                state: RegistryHealthState::Unreadable,
+                identity: None,
+                error: Some(io_error("read_registry_health", error)),
+                last_operation_at,
+                last_failure_at,
+            }
+        }
     }
 }
 
 fn create_backup(config: &RegistryConfig) -> Result<RegistrySnapshotIdentity, AppError> {
-    let registry = JsonProfileRegistry {
-        config: config.clone(),
-    };
+    let registry = JsonProfileRegistry::new(config.clone())?;
     let _lock = registry.lock()?;
     let bytes = fs::read(&config.canonical_path)
         .map_err(|error| io_error("read_registry_backup_source", error))?;
@@ -286,14 +350,22 @@ fn create_backup(config: &RegistryConfig) -> Result<RegistrySnapshotIdentity, Ap
 }
 
 fn restore_backup(config: &RegistryConfig) -> Result<RegistrySnapshot, AppError> {
+    let result = restore_backup_attempt(config);
+    let prune = prune_artifacts(config);
+    match (result, prune) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(snapshot), Ok(())) => Ok(snapshot),
+    }
+}
+
+fn restore_backup_attempt(config: &RegistryConfig) -> Result<RegistrySnapshot, AppError> {
     let backup_path = backup_path(config);
     let initial_backup =
         fs::read(&backup_path).map_err(|error| io_error("read_registry_backup", error))?;
     let initial_hash = digest(&initial_backup);
     let backup = decode(&initial_backup)?;
-    let registry = JsonProfileRegistry {
-        config: config.clone(),
-    };
+    let registry = JsonProfileRegistry::new(config.clone())?;
     let _lock = registry.lock()?;
     let locked_backup =
         fs::read(&backup_path).map_err(|error| io_error("reread_registry_backup", error))?;
@@ -364,7 +436,6 @@ fn restore_backup(config: &RegistryConfig) -> Result<RegistrySnapshot, AppError>
             let _ = fs::remove_file(path);
         }
     }
-    prune_artifacts(config)?;
     result
 }
 
@@ -381,6 +452,21 @@ fn identity(snapshot: &RegistrySnapshot, bytes: &[u8]) -> RegistrySnapshotIdenti
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn record_result<T>(history: &Mutex<RegistryHistory>, result: &Result<T, AppError>) {
+    let now = colui_domain::Timestamp(chrono::Utc::now().to_rfc3339());
+    let mut history = history
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    history.last_operation_at = Some(now.clone());
+    match result {
+        Ok(_) => history.latest_failure = None,
+        Err(error) => {
+            history.last_failure_at = Some(now);
+            history.latest_failure = Some(error.clone());
+        }
+    }
 }
 
 fn preserve_canonical(config: &RegistryConfig, bytes: &[u8]) -> Result<PathBuf, AppError> {

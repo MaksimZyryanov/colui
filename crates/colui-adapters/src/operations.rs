@@ -21,7 +21,7 @@ pub struct OperationLockManager {
 struct LockState {
     profiles: Mutex<HashMap<ProfileId, ProfileState>>,
     barrier: Mutex<BarrierState>,
-    recovery_path: Option<PathBuf>,
+    recovery_path: PathBuf,
     next_token: AtomicU64,
 }
 
@@ -66,23 +66,12 @@ struct LifecycleReservation {
 }
 
 impl OperationLockManager {
-    pub fn new() -> Self {
+    pub fn new(path: PathBuf) -> Self {
         Self {
             state: Arc::new(LockState {
                 profiles: Mutex::new(HashMap::new()),
                 barrier: Mutex::new(BarrierState::default()),
-                recovery_path: None,
-                next_token: AtomicU64::new(0),
-            }),
-        }
-    }
-
-    pub fn with_recovery_lock(path: PathBuf) -> Self {
-        Self {
-            state: Arc::new(LockState {
-                profiles: Mutex::new(HashMap::new()),
-                barrier: Mutex::new(BarrierState::default()),
-                recovery_path: Some(path),
+                recovery_path: path,
                 next_token: AtomicU64::new(0),
             }),
         }
@@ -174,12 +163,6 @@ impl OperationLockManager {
             let _file = recovery_file;
             lock_barrier(&state).recovering = false;
         }))
-    }
-}
-
-impl Default for OperationLockManager {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -430,8 +413,7 @@ fn release_shared(state: &LockState) {
     barrier.shared = barrier.shared.saturating_sub(1);
 }
 
-fn acquire_file(path: &Option<PathBuf>, exclusive: bool) -> Result<Option<File>, AppError> {
-    let Some(path) = path else { return Ok(None) };
+fn acquire_file(path: &PathBuf, exclusive: bool) -> Result<Option<File>, AppError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(recovery_io)?;
     }

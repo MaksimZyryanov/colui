@@ -1,6 +1,8 @@
 use colui_app::{
-    CreateProfile, GetProfile, IdGenerator, InspectProfileDraft, ListProfiles, ProfileMutation,
-    ProfileReader, ProfileStore, RegistrySnapshot, RemoveProfile, UpdateProfile,
+    CreateProfile, DefinitionBusy, DefinitionLoadGuard, GetProfile, IdGenerator,
+    InspectProfileDraft, LifecycleOperationGuard, ListProfiles, OperationFuture, OperationKind,
+    OperationLockManager, OperationLockReader, ProfileMutation, ProfileReader, ProfileStore,
+    RegistryMutationGuard, RegistrySnapshot, RemoveProfile, UpdateProfile,
 };
 use colui_domain::{
     AppError, AppErrorCode, AppErrorSubject, AppErrorSubjectKind, ProfileDraft, ProfileId,
@@ -12,6 +14,55 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>;
+
+struct MutationLocks;
+impl OperationLockReader for MutationLocks {
+    fn is_busy(&self, _: &ProfileId) -> bool {
+        false
+    }
+}
+
+struct RejectingMutationLocks;
+impl OperationLockReader for RejectingMutationLocks {
+    fn is_busy(&self, _: &ProfileId) -> bool {
+        false
+    }
+}
+impl OperationLockManager for RejectingMutationLocks {
+    fn acquire_lifecycle(
+        &self,
+        _: ProfileId,
+        _: OperationKind,
+    ) -> OperationFuture<'_, LifecycleOperationGuard> {
+        Box::pin(async { unreachable!() })
+    }
+    fn acquire_definition(&self, _: ProfileId) -> Result<DefinitionLoadGuard, DefinitionBusy> {
+        unreachable!()
+    }
+    fn acquire_mutation(&self) -> Result<RegistryMutationGuard, AppError> {
+        Err(AppError::new(
+            AppErrorCode::OperationConflict,
+            "test",
+            None,
+            "blocked",
+        ))
+    }
+}
+impl OperationLockManager for MutationLocks {
+    fn acquire_lifecycle(
+        &self,
+        _: ProfileId,
+        _: OperationKind,
+    ) -> OperationFuture<'_, LifecycleOperationGuard> {
+        Box::pin(async { unreachable!() })
+    }
+    fn acquire_definition(&self, _: ProfileId) -> Result<DefinitionLoadGuard, DefinitionBusy> {
+        unreachable!()
+    }
+    fn acquire_mutation(&self) -> Result<RegistryMutationGuard, AppError> {
+        Ok(RegistryMutationGuard::new(|| {}))
+    }
+}
 
 struct FakeProfileStore {
     state: Arc<Mutex<FakeStoreState>>,
@@ -85,6 +136,18 @@ fn draft() -> ProfileDraft {
     }
 }
 
+#[tokio::test]
+async fn profile_mutation_requires_shared_operation_lease_before_store_write() {
+    let store = FakeProfileStore::with_profiles(vec![]);
+    let ids = FixedIdGenerator(profile_id());
+    let error = CreateProfile::new(&store, &ids, &RejectingMutationLocks)
+        .execute(draft())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, AppErrorCode::OperationConflict);
+    assert_eq!(store.write_count(), 0);
+}
+
 #[test]
 fn inspect_profile_draft_reports_domain_validation_issue() {
     let mut invalid = draft();
@@ -130,7 +193,7 @@ async fn list_profile_reads_without_mutation() {
 #[tokio::test]
 async fn update_requires_expected_revision() {
     let store = FakeProfileStore::with_profiles(vec![profile_revision(3)]);
-    let error = UpdateProfile::new(&store)
+    let error = UpdateProfile::new(&store, &MutationLocks)
         .execute(profile_id(), 2, patch())
         .await
         .unwrap_err();
@@ -145,7 +208,7 @@ async fn failed_update_leaves_snapshot_revision_and_write_count_unchanged() {
     let before_revision = before_snapshot.registry_revision;
     let before_writes = store.write_count();
 
-    let error = UpdateProfile::new(&store)
+    let error = UpdateProfile::new(&store, &MutationLocks)
         .execute(
             profile_id(),
             3,
@@ -223,7 +286,7 @@ async fn create_uses_generated_id_and_initial_revision() {
     let store = FakeProfileStore::with_profiles(vec![]);
     let ids = FixedIdGenerator(profile_id());
 
-    let created = CreateProfile::new(&store, &ids)
+    let created = CreateProfile::new(&store, &ids, &MutationLocks)
         .execute(draft())
         .await
         .unwrap();
@@ -239,7 +302,7 @@ async fn create_id_collision_is_registry_write_failure() {
     let store = FakeProfileStore::with_profiles(vec![profile_revision(1)]);
     let ids = FixedIdGenerator(profile_id());
 
-    let error = CreateProfile::new(&store, &ids)
+    let error = CreateProfile::new(&store, &ids, &MutationLocks)
         .execute(draft())
         .await
         .unwrap_err();
@@ -252,7 +315,7 @@ async fn create_id_collision_is_registry_write_failure() {
 async fn update_revision_overflow_is_typed_error() {
     let store = FakeProfileStore::with_profiles(vec![profile_revision(u64::MAX)]);
 
-    let error = UpdateProfile::new(&store)
+    let error = UpdateProfile::new(&store, &MutationLocks)
         .execute(profile_id(), u64::MAX, patch())
         .await
         .unwrap_err();
@@ -268,7 +331,7 @@ async fn registry_revision_overflow_is_typed_error() {
     let store = FakeProfileStore::with_profiles(vec![profile]);
     store.state.lock().unwrap().snapshot.registry_revision = u64::MAX;
 
-    let error = UpdateProfile::new(&store)
+    let error = UpdateProfile::new(&store, &MutationLocks)
         .execute(ProfileId::new(uuid::Uuid::from_u128(2)), 1, patch())
         .await
         .unwrap_err();
@@ -304,7 +367,7 @@ async fn get_missing_profile_returns_typed_error() {
 async fn update_changes_fields_but_preserves_id_and_advances_revisions() {
     let store = FakeProfileStore::with_profiles(vec![profile_revision(3)]);
 
-    let updated = UpdateProfile::new(&store)
+    let updated = UpdateProfile::new(&store, &MutationLocks)
         .execute(profile_id(), 3, patch())
         .await
         .unwrap();
@@ -319,7 +382,7 @@ async fn update_changes_fields_but_preserves_id_and_advances_revisions() {
 async fn update_missing_profile_returns_typed_error() {
     let store = FakeProfileStore::with_profiles(vec![]);
 
-    let error = UpdateProfile::new(&store)
+    let error = UpdateProfile::new(&store, &MutationLocks)
         .execute(profile_id(), 1, patch())
         .await
         .unwrap_err();
@@ -332,7 +395,7 @@ async fn update_missing_profile_returns_typed_error() {
 async fn remove_requires_expected_revision() {
     let store = FakeProfileStore::with_profiles(vec![profile_revision(3)]);
 
-    let error = RemoveProfile::new(&store)
+    let error = RemoveProfile::new(&store, &MutationLocks)
         .execute(profile_id(), 2)
         .await
         .unwrap_err();
@@ -345,7 +408,7 @@ async fn remove_requires_expected_revision() {
 async fn remove_deletes_only_matching_revision() {
     let store = FakeProfileStore::with_profiles(vec![profile_revision(3)]);
 
-    RemoveProfile::new(&store)
+    RemoveProfile::new(&store, &MutationLocks)
         .execute(profile_id(), 3)
         .await
         .unwrap();
@@ -359,7 +422,7 @@ async fn remove_deletes_only_matching_revision() {
 async fn remove_missing_profile_returns_typed_error() {
     let store = FakeProfileStore::with_profiles(vec![]);
 
-    let error = RemoveProfile::new(&store)
+    let error = RemoveProfile::new(&store, &MutationLocks)
         .execute(profile_id(), 1)
         .await
         .unwrap_err();

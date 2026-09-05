@@ -736,7 +736,9 @@ async fn shared_compose_gate_serializes_lifecycle_and_definition_across_profiles
         Arc::new(DefinitionCountingRunner(definition_calls.clone())),
         gateway.clone(),
         Arc::new(FixedClock),
-        Arc::new(OperationLockManager::new()),
+        Arc::new(OperationLockManager::new(
+            std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+        )),
         gate,
     ));
 

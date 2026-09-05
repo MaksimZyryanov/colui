@@ -98,7 +98,9 @@ impl ComposeRunner for Runner {
 #[tokio::test]
 async fn changed_profile_revision_does_not_return_old_services_when_busy() {
     let runner = Runner::new(r#"{"services":{"old":{"image":"old"}}}"#);
-    let locks = Arc::new(OperationLockManager::new());
+    let locks = Arc::new(OperationLockManager::new(
+        std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+    ));
     let clock = Arc::new(TestClock {
         mono: Arc::new(0.into()),
     });
@@ -194,7 +196,9 @@ async fn failed_refresh_retains_services_as_stale_and_success_clears_error() {
     assert_eq!(failed.definition.services[0].name, "web");
     assert_eq!(failed.error.unwrap().code, AppErrorCode::DefinitionFailed);
 
-    let locks = Arc::new(OperationLockManager::new());
+    let locks = Arc::new(OperationLockManager::new(
+        std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+    ));
     let busy_runner = SequenceRunner::new(vec![
         success(r#"{"services":{"web":{"image":"nginx"}}}"#),
         failure(),
@@ -263,7 +267,9 @@ fn cache(runner: Arc<dyn ComposeRunner>, clock: Arc<TestClock>) -> DefinitionCac
         runner,
         Arc::new(Runtime),
         clock,
-        Arc::new(OperationLockManager::new()),
+        Arc::new(OperationLockManager::new(
+            std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+        )),
         Arc::new(ComposeExecutionGate::new()),
     )
 }
@@ -538,7 +544,9 @@ impl ComposeRunner for RecordingRunner {
 #[tokio::test]
 async fn lifecycle_busy_returns_unchecked_without_running_compose() {
     let runner = Runner::new(r#"{"services":{}}"#);
-    let locks = Arc::new(OperationLockManager::new());
+    let locks = Arc::new(OperationLockManager::new(
+        std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+    ));
     let guard = locks
         .acquire_lifecycle(profile(1).id.clone(), OperationKind::Apply)
         .await

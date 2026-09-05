@@ -75,23 +75,26 @@ impl From<&DiscoveryCandidate> for RegisterCandidateRequest {
     }
 }
 
-pub struct RegisterCandidate<'a, I: ?Sized, S: ?Sized, G: ?Sized> {
+pub struct RegisterCandidate<'a, I: ?Sized, S: ?Sized, G: ?Sized, L: ?Sized> {
     inventory: &'a I,
     store: &'a S,
     ids: &'a G,
+    locks: &'a L,
 }
 
-impl<'a, I, S, G> RegisterCandidate<'a, I, S, G>
+impl<'a, I, S, G, L> RegisterCandidate<'a, I, S, G, L>
 where
     I: DiscoveryReader + ?Sized,
     S: ProfileStore + ?Sized,
     G: IdGenerator + ?Sized,
+    L: crate::OperationLockManager + ?Sized,
 {
-    pub fn new(inventory: &'a I, store: &'a S, ids: &'a G) -> Self {
+    pub fn new(inventory: &'a I, store: &'a S, ids: &'a G, locks: &'a L) -> Self {
         Self {
             inventory,
             store,
             ids,
+            locks,
         }
     }
 
@@ -129,6 +132,7 @@ where
         let selected_id = Arc::new(Mutex::new(None));
         let selected_id_for_mutation = selected_id.clone();
         let request_for_mutation = request.clone();
+        let _mutation_guard = self.locks.acquire_mutation()?;
         let snapshot = self
             .store
             .mutate(Box::new(move |mut snapshot| {
@@ -592,20 +596,27 @@ impl<'a, P: ProfileReader + ?Sized> ScheduleAutoRegistration<'a, P> {
     }
 }
 
-pub struct AutoRegisterCandidates<'a, I: ?Sized, S: ?Sized, G: ?Sized> {
-    registration: RegisterCandidate<'a, I, S, G>,
+pub struct AutoRegisterCandidates<'a, I: ?Sized, S: ?Sized, G: ?Sized, L: ?Sized> {
+    registration: RegisterCandidate<'a, I, S, G, L>,
     session: &'a DiscoverySession,
 }
 
-impl<'a, I, S, G> AutoRegisterCandidates<'a, I, S, G>
+impl<'a, I, S, G, L> AutoRegisterCandidates<'a, I, S, G, L>
 where
     I: DiscoveryReader + ?Sized,
     S: ProfileStore + ?Sized,
     G: IdGenerator + ?Sized,
+    L: crate::OperationLockManager + ?Sized,
 {
-    pub fn new(inventory: &'a I, store: &'a S, ids: &'a G, session: &'a DiscoverySession) -> Self {
+    pub fn new(
+        inventory: &'a I,
+        store: &'a S,
+        ids: &'a G,
+        locks: &'a L,
+        session: &'a DiscoverySession,
+    ) -> Self {
         Self {
-            registration: RegisterCandidate::new(inventory, store, ids),
+            registration: RegisterCandidate::new(inventory, store, ids, locks),
             session,
         }
     }

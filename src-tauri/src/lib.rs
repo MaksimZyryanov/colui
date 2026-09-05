@@ -120,6 +120,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let directory = tauri::Manager::path(app).app_data_dir()?;
+            let recovery_lock = directory.join("registry.recovery.lock");
             let profiles = Arc::new(
                 JsonProfileRegistry::new(RegistryConfig::in_directory(directory))
                     .map_err(|error| std::io::Error::other(error.message))?,
@@ -134,7 +135,7 @@ pub fn run() {
                 gateway.clone(),
                 Arc::new(SystemClock(std::time::Instant::now())),
             ));
-            let locks = Arc::new(OperationLockManager::new());
+            let locks = Arc::new(OperationLockManager::new(recovery_lock));
             let definitions = Arc::new(DefinitionCache::new(
                 runner,
                 gateway.clone(),

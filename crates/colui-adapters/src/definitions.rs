@@ -361,6 +361,16 @@ impl DefinitionRefresher for DefinitionCache {
         state.entries.remove(&profile_id);
     }
 }
+impl colui_app::DefinitionInvalidator for DefinitionCache {
+    fn invalidate_all(&self) {
+        let mut state = lock(&self.state);
+        for epoch in state.epoch.values_mut() {
+            *epoch += 1;
+        }
+        state.entries.clear();
+        state.revisions.clear();
+    }
+}
 
 fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
     state

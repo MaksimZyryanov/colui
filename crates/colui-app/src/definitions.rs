@@ -23,3 +23,7 @@ pub trait DefinitionRefresher: DefinitionReader {
     ) -> DefinitionFuture<'_, DefinitionProjection>;
     fn invalidate(&self, profile_id: ProfileId);
 }
+
+pub trait DefinitionInvalidator: Send + Sync {
+    fn invalidate_all(&self);
+}

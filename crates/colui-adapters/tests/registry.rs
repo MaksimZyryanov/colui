@@ -2,7 +2,10 @@ use colui_adapters::{
     registry::{import_v1, import_v1_if_needed},
     JsonProfileRegistry, RegistryConfig,
 };
-use colui_app::{IdGenerator, ProfileReader, ProfileStore, RegistryHealthState, RegistryRecovery};
+use colui_app::{
+    DefinitionInvalidator, IdGenerator, ProfileReader, ProfileStore, RegistryHealthState,
+    RegistryRecovery, RestoreRegistryBackup,
+};
 use colui_domain::{
     AppError, AppErrorCode, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin,
 };
@@ -635,7 +638,14 @@ async fn restore_replaces_corrupt_canonical_without_silent_read_repair() {
     );
     assert_eq!(bytes(&canonical), b"{broken");
 
-    let restored = registry.restore_registry_backup().await.unwrap();
+    let locks =
+        colui_adapters::OperationLockManager::new(directory.path().join("registry.recovery.lock"));
+    let invalidator = CountingInvalidator::default();
+    let restored = RestoreRegistryBackup::new(&registry, &locks, &invalidator)
+        .execute()
+        .await
+        .unwrap();
+    assert_eq!(invalidator.0.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_eq!(restored.registry_revision, 5);
     assert_eq!(registry.load().await.unwrap().registry_revision, 5);
     let artifacts = std::fs::read_dir(directory.path())
@@ -650,4 +660,215 @@ async fn restore_replaces_corrupt_canonical_without_silent_read_repair() {
         .collect::<Vec<_>>();
     assert_eq!(artifacts.len(), 1);
     assert_eq!(bytes(&artifacts[0].path()), b"{broken");
+}
+
+#[derive(Default)]
+struct CountingInvalidator(std::sync::atomic::AtomicUsize);
+
+impl DefinitionInvalidator for CountingInvalidator {
+    fn invalidate_all(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+async fn restore(
+    directory: &TempDir,
+    registry: &JsonProfileRegistry,
+) -> colui_app::RegistrySnapshot {
+    let locks =
+        colui_adapters::OperationLockManager::new(directory.path().join("registry.recovery.lock"));
+    RestoreRegistryBackup::new(registry, &locks, &CountingInvalidator::default())
+        .execute()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn restore_missing_canonical_advances_from_backup_only() {
+    let (directory, registry) = test_registry();
+    let canonical = directory.path().join("registry.json");
+    std::fs::write(
+        &canonical,
+        br#"{"schemaVersion":2,"registryRevision":9,"profiles":[]}"#,
+    )
+    .unwrap();
+    registry.create_registry_backup().await.unwrap();
+    std::fs::remove_file(&canonical).unwrap();
+    assert_eq!(restore(&directory, &registry).await.registry_revision, 10);
+}
+
+#[tokio::test]
+async fn restore_advances_matching_profile_above_canonical_and_backup() {
+    let (directory, registry) = test_registry();
+    let profile = profile_with_files(&["compose.yml"]);
+    let id = profile.id.to_string();
+    let record = |registry_revision, profile_revision| {
+        serde_json::json!({
+            "schemaVersion": 2, "registryRevision": registry_revision,
+            "profiles": [{"id": id, "revision": profile_revision, "displayName": "Demo", "composeProjectName": "demo", "workingDirectory": "/tmp/demo", "composeFiles": ["compose.yml"], "environmentFiles": [], "registrationOrigin": "Manual"}]
+        })
+    };
+    let canonical = directory.path().join("registry.json");
+    std::fs::write(&canonical, serde_json::to_vec(&record(4, 7)).unwrap()).unwrap();
+    registry.create_registry_backup().await.unwrap();
+    std::fs::write(&canonical, serde_json::to_vec(&record(12, 20)).unwrap()).unwrap();
+    let restored = restore(&directory, &registry).await;
+    assert_eq!(restored.registry_revision, 13);
+    assert_eq!(restored.profiles[0].revision.value(), 21);
+}
+
+#[tokio::test]
+async fn restore_rejects_backup_replacement_while_waiting_for_registry_lock() {
+    let (directory, registry) = test_registry();
+    let canonical = directory.path().join("registry.json");
+    std::fs::write(
+        &canonical,
+        br#"{"schemaVersion":2,"registryRevision":1,"profiles":[]}"#,
+    )
+    .unwrap();
+    registry.create_registry_backup().await.unwrap();
+    let registry_lock = std::fs::File::create(directory.path().join("registry.lock")).unwrap();
+    fs2::FileExt::lock_exclusive(&registry_lock).unwrap();
+    let registry = std::sync::Arc::new(registry);
+    let task_registry = registry.clone();
+    let lock_path = directory.path().join("registry.recovery.lock");
+    let task = tokio::spawn(async move {
+        let locks = colui_adapters::OperationLockManager::new(lock_path);
+        RestoreRegistryBackup::new(
+            task_registry.as_ref(),
+            &locks,
+            &CountingInvalidator::default(),
+        )
+        .execute()
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    std::fs::write(
+        directory.path().join("registry.json.bak"),
+        br#"{"schemaVersion":2,"registryRevision":2,"profiles":[]}"#,
+    )
+    .unwrap();
+    drop(registry_lock);
+    assert_eq!(
+        task.await.unwrap().unwrap_err().code,
+        AppErrorCode::RecoveryConflict
+    );
+}
+
+#[tokio::test]
+async fn operation_lease_precedes_registry_lock_and_blocks_local_recovery() {
+    let (directory, registry) = test_registry();
+    let registry_lock = std::fs::File::create(directory.path().join("registry.lock")).unwrap();
+    fs2::FileExt::lock_exclusive(&registry_lock).unwrap();
+    let locks = std::sync::Arc::new(colui_adapters::OperationLockManager::new(
+        directory.path().join("registry.recovery.lock"),
+    ));
+    let registry = std::sync::Arc::new(registry);
+    let task_locks = locks.clone();
+    let task_registry = registry.clone();
+    let task = tokio::spawn(async move {
+        let _operation =
+            colui_app::OperationLockManager::acquire_mutation(task_locks.as_ref()).unwrap();
+        task_registry.mutate(Box::new(Ok)).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        colui_app::OperationLockManager::acquire_recovery(locks.as_ref())
+            .unwrap_err()
+            .code,
+        AppErrorCode::OperationConflict
+    );
+    drop(registry_lock);
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn every_restore_attempt_prunes_completed_artifacts_to_three() {
+    let (directory, registry) = test_registry();
+    for index in 0..5 {
+        std::fs::write(
+            directory
+                .path()
+                .join(format!("registry.pre-restore.2026010{index}.x.json")),
+            b"old",
+        )
+        .unwrap();
+    }
+    std::fs::write(directory.path().join("registry.json.bak"), b"{broken").unwrap();
+    let locks =
+        colui_adapters::OperationLockManager::new(directory.path().join("registry.recovery.lock"));
+    RestoreRegistryBackup::new(&registry, &locks, &CountingInvalidator::default())
+        .execute()
+        .await
+        .unwrap_err();
+    let count = std::fs::read_dir(directory.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("registry.pre-restore.")
+        })
+        .count();
+    assert_eq!(count, 3);
+}
+
+#[tokio::test]
+async fn successful_operation_clears_retained_write_failure_but_keeps_failure_timestamp() {
+    let (directory, registry) = test_registry();
+    let canonical = directory.path().join("registry.json");
+    std::fs::write(
+        &canonical,
+        br#"{"schemaVersion":2,"registryRevision":18446744073709551615,"profiles":[]}"#,
+    )
+    .unwrap();
+    registry
+        .mutate(Box::new(|mut value| {
+            value.profiles.push(profile_with_files(&["compose.yml"]));
+            Ok(value)
+        }))
+        .await
+        .unwrap_err();
+    let failed = registry.registry_health().await.unwrap();
+    assert_eq!(failed.state, RegistryHealthState::WriteFailure);
+    assert!(failed.last_failure_at.is_some());
+    std::fs::write(
+        &canonical,
+        br#"{"schemaVersion":2,"registryRevision":1,"profiles":[]}"#,
+    )
+    .unwrap();
+    registry.create_registry_backup().await.unwrap();
+    let healthy = registry.registry_health().await.unwrap();
+    assert_eq!(healthy.state, RegistryHealthState::Healthy);
+    assert!(healthy.last_failure_at.is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn restore_rejects_unreadable_canonical_without_replacing_it() {
+    let (directory, registry) = test_registry();
+    let canonical = directory.path().join("registry.json");
+    std::fs::write(
+        &canonical,
+        br#"{"schemaVersion":2,"registryRevision":1,"profiles":[]}"#,
+    )
+    .unwrap();
+    registry.create_registry_backup().await.unwrap();
+    std::fs::set_permissions(
+        &canonical,
+        std::os::unix::fs::PermissionsExt::from_mode(0o000),
+    )
+    .unwrap();
+    let locks =
+        colui_adapters::OperationLockManager::new(directory.path().join("registry.recovery.lock"));
+    let result = RestoreRegistryBackup::new(&registry, &locks, &CountingInvalidator::default())
+        .execute()
+        .await;
+    std::fs::set_permissions(
+        &canonical,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
+    assert_eq!(result.unwrap_err().code, AppErrorCode::PermissionDenied);
 }

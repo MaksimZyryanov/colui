@@ -1,9 +1,11 @@
 use colui_app::{
     AutoRegisterCandidates, AutoRegistrationOutcome, CandidateLease, ConfigureAutoRegistration,
-    DiscoveryFuture, DiscoveryReader, DiscoverySession, IdGenerator, IgnoreCandidate,
-    InventoryFuture, InventoryReader, InventoryRefresher, JournalEventKind,
-    ListDiscoveryCandidates, ProfileMutation, ProfileReader, ProfileStore, RegisterCandidate,
-    RegisterCandidateRequest, RegistrySnapshot, ScheduleAutoRegistration, StoreFuture,
+    DefinitionBusy, DefinitionLoadGuard, DiscoveryFuture, DiscoveryReader, DiscoverySession,
+    IdGenerator, IgnoreCandidate, InventoryFuture, InventoryReader, InventoryRefresher,
+    JournalEventKind, LifecycleOperationGuard, ListDiscoveryCandidates, OperationFuture,
+    OperationKind, OperationLockManager, OperationLockReader, ProfileMutation, ProfileReader,
+    ProfileStore, RegisterCandidate, RegisterCandidateRequest, RegistryMutationGuard,
+    RegistrySnapshot, ScheduleAutoRegistration, StoreFuture,
 };
 use colui_domain::{
     AppError, AppErrorCode, AppErrorSubjectKind, ComposeObservationGroup, ContainerId,
@@ -15,6 +17,29 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Barrier;
 use uuid::Uuid;
+
+struct MutationLocks;
+static MUTATION_LOCKS: MutationLocks = MutationLocks;
+impl OperationLockReader for MutationLocks {
+    fn is_busy(&self, _: &ProfileId) -> bool {
+        false
+    }
+}
+impl OperationLockManager for MutationLocks {
+    fn acquire_lifecycle(
+        &self,
+        _: ProfileId,
+        _: OperationKind,
+    ) -> OperationFuture<'_, LifecycleOperationGuard> {
+        Box::pin(async { unreachable!() })
+    }
+    fn acquire_definition(&self, _: ProfileId) -> Result<DefinitionLoadGuard, DefinitionBusy> {
+        unreachable!()
+    }
+    fn acquire_mutation(&self) -> Result<RegistryMutationGuard, AppError> {
+        Ok(RegistryMutationGuard::new(|| {}))
+    }
+}
 
 struct CountingInventory {
     reads: AtomicUsize,
@@ -468,10 +493,15 @@ async fn registration_rejects_disappeared_or_changed_candidate_without_write() {
         .unwrap()
         .compose_observation_groups
         .clear();
-    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
-        .execute(request)
-        .await
-        .unwrap_err();
+    let error = RegisterCandidate::new(
+        &inventory,
+        &store,
+        &SequenceIds::starting_at(100),
+        &MUTATION_LOCKS,
+    )
+    .execute(request)
+    .await
+    .unwrap_err();
 
     assert_eq!(error.code, AppErrorCode::CandidateStale);
     assert_eq!(error.subject.unwrap().kind, AppErrorSubjectKind::Candidate);
@@ -485,20 +515,30 @@ async fn locked_recheck_detects_reconnect_and_matching_profile_lost_races() {
     store.state.lock().unwrap().before_mutation = Some(Box::new(move || {
         valid.store(false, Ordering::SeqCst);
     }));
-    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
-        .execute(request.clone())
-        .await
-        .unwrap_err();
+    let error = RegisterCandidate::new(
+        &inventory,
+        &store,
+        &SequenceIds::starting_at(100),
+        &MUTATION_LOCKS,
+    )
+    .execute(request.clone())
+    .await
+    .unwrap_err();
     assert_eq!(error.code, AppErrorCode::CandidateStale);
     assert_eq!(store.writes(), 0);
 
     inventory.lease_valid.store(true, Ordering::SeqCst);
     store.state.lock().unwrap().before_mutation = Some(Box::new(|| {}));
     store.state.lock().unwrap().snapshot.profiles = vec![registered_profile()];
-    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(200))
-        .execute(request)
-        .await
-        .unwrap_err();
+    let error = RegisterCandidate::new(
+        &inventory,
+        &store,
+        &SequenceIds::starting_at(200),
+        &MUTATION_LOCKS,
+    )
+    .execute(request)
+    .await
+    .unwrap_err();
     assert_eq!(error.code, AppErrorCode::ProfileAlreadyRegistered);
     assert!(error
         .details
@@ -513,8 +553,10 @@ async fn concurrent_registrars_and_name_conflicts_never_update_existing_profiles
     store.state.lock().unwrap().mutation_barrier = Some(Arc::new(Barrier::new(2)));
     let first_ids = SequenceIds::starting_at(100);
     let second_ids = SequenceIds::starting_at(200);
-    let first_registration = RegisterCandidate::new(&inventory, &store, &first_ids);
-    let second_registration = RegisterCandidate::new(&inventory, &store, &second_ids);
+    let first_registration =
+        RegisterCandidate::new(&inventory, &store, &first_ids, &MUTATION_LOCKS);
+    let second_registration =
+        RegisterCandidate::new(&inventory, &store, &second_ids, &MUTATION_LOCKS);
     let (first, second) = tokio::join!(
         first_registration.execute(request.clone()),
         second_registration.execute(request.clone()),
@@ -529,10 +571,15 @@ async fn concurrent_registrars_and_name_conflicts_never_update_existing_profiles
     assert_eq!(store.state.lock().unwrap().snapshot.profiles[0], first);
 
     store.state.lock().unwrap().snapshot.profiles[0].working_directory = "/other".into();
-    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(300))
-        .execute(request)
-        .await
-        .unwrap_err();
+    let error = RegisterCandidate::new(
+        &inventory,
+        &store,
+        &SequenceIds::starting_at(300),
+        &MUTATION_LOCKS,
+    )
+    .execute(request)
+    .await
+    .unwrap_err();
     assert_eq!(error.code, AppErrorCode::DiscoveryConflict);
     assert_eq!(store.writes(), 1);
 }
@@ -562,7 +609,7 @@ async fn registration_uses_discovered_draft_and_bounds_id_collisions_at_sixteen(
             .map(|value| ProfileId::new(Uuid::from_u128(value)))
             .collect(),
     ));
-    let error = RegisterCandidate::new(&inventory, &store, &ids)
+    let error = RegisterCandidate::new(&inventory, &store, &ids, &MUTATION_LOCKS)
         .execute(request)
         .await
         .unwrap_err();
@@ -570,10 +617,15 @@ async fn registration_uses_discovered_draft_and_bounds_id_collisions_at_sixteen(
     assert_eq!(store.writes(), 0);
 
     let (inventory, store, _state, request) = registration_fixture().await;
-    let profile = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
-        .execute(request)
-        .await
-        .unwrap();
+    let profile = RegisterCandidate::new(
+        &inventory,
+        &store,
+        &SequenceIds::starting_at(100),
+        &MUTATION_LOCKS,
+    )
+    .execute(request)
+    .await
+    .unwrap();
     assert_eq!(profile.display_name.as_ref(), "demo");
     assert_eq!(profile.compose_project_name.as_ref(), "demo");
     assert_eq!(profile.working_directory.to_str(), Some("/work/demo"));
@@ -604,10 +656,15 @@ async fn registration_returns_exact_selected_id_after_partial_collision() {
     .unwrap();
     store.state.lock().unwrap().snapshot.profiles = vec![existing];
 
-    let profile = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
-        .execute(request)
-        .await
-        .unwrap();
+    let profile = RegisterCandidate::new(
+        &inventory,
+        &store,
+        &SequenceIds::starting_at(100),
+        &MUTATION_LOCKS,
+    )
+    .execute(request)
+    .await
+    .unwrap();
 
     assert_eq!(profile.id, selected_id);
     assert_eq!(profile.compose_project_name.as_ref(), "demo");
@@ -628,10 +685,15 @@ async fn registration_preserves_corrupt_locked_and_write_failed_registry_errors(
             "excluded upstream detail",
         ));
 
-        let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
-            .execute(request)
-            .await
-            .unwrap_err();
+        let error = RegisterCandidate::new(
+            &inventory,
+            &store,
+            &SequenceIds::starting_at(100),
+            &MUTATION_LOCKS,
+        )
+        .execute(request)
+        .await
+        .unwrap_err();
 
         assert_eq!(error.code, code);
         assert_eq!(error.retryable, retryable);
@@ -658,10 +720,15 @@ async fn auto_registration_retries_only_on_next_generation_and_manual_bypasses_d
         None,
         "locked",
     ));
-    let results =
-        AutoRegisterCandidates::new(&inventory, &store, &SequenceIds::starting_at(100), &state)
-            .execute(schedule)
-            .await;
+    let results = AutoRegisterCandidates::new(
+        &inventory,
+        &store,
+        &SequenceIds::starting_at(100),
+        &MUTATION_LOCKS,
+        &state,
+    )
+    .execute(schedule)
+    .await;
     assert_eq!(
         results[0].as_ref().unwrap_err().code,
         AppErrorCode::RegistryLocked
@@ -683,19 +750,25 @@ async fn auto_registration_retries_only_on_next_generation_and_manual_bypasses_d
         &inventory,
         &store,
         &SequenceIds::starting_at(200),
+        &MUTATION_LOCKS,
         &state,
     )
     .execute(retry)
     .await[0]
         .is_ok());
 
-    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(300))
-        .execute(RegisterCandidateRequest {
-            inventory_generation: 4,
-            ..request
-        })
-        .await
-        .unwrap_err();
+    let error = RegisterCandidate::new(
+        &inventory,
+        &store,
+        &SequenceIds::starting_at(300),
+        &MUTATION_LOCKS,
+    )
+    .execute(RegisterCandidateRequest {
+        inventory_generation: 4,
+        ..request
+    })
+    .await
+    .unwrap_err();
     assert_eq!(error.code, AppErrorCode::ProfileAlreadyRegistered);
 }
 
@@ -711,8 +784,8 @@ async fn concurrent_manual_and_auto_registration_converge_on_shared_store() {
     store.state.lock().unwrap().mutation_barrier = Some(Arc::new(Barrier::new(2)));
     let auto_ids = SequenceIds::starting_at(100);
     let manual_ids = SequenceIds::starting_at(200);
-    let auto = AutoRegisterCandidates::new(&inventory, &store, &auto_ids, &state);
-    let manual = RegisterCandidate::new(&inventory, &store, &manual_ids);
+    let auto = AutoRegisterCandidates::new(&inventory, &store, &auto_ids, &MUTATION_LOCKS, &state);
+    let manual = RegisterCandidate::new(&inventory, &store, &manual_ids, &MUTATION_LOCKS);
 
     let (auto_results, manual_result) =
         tokio::join!(auto.execute(schedule), manual.execute(request),);

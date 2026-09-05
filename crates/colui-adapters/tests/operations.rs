@@ -15,9 +15,15 @@ fn id(value: u128) -> ProfileId {
     ProfileId::new(Uuid::from_u128(value))
 }
 
+fn locks() -> ConcreteOperationLockManager {
+    ConcreteOperationLockManager::new(
+        std::env::temp_dir().join(format!("colui-{}.recovery.lock", Uuid::new_v4())),
+    )
+}
+
 #[tokio::test]
 async fn lifecycle_pending_blocks_definition_and_duplicate_lifecycle() {
-    let locks = ConcreteOperationLockManager::new();
+    let locks = locks();
     let lifecycle = locks
         .acquire_lifecycle(id(1), OperationKind::Apply)
         .await
@@ -42,7 +48,7 @@ async fn lifecycle_pending_blocks_definition_and_duplicate_lifecycle() {
 
 #[tokio::test]
 async fn lifecycle_guard_release_allows_next_lifecycle() {
-    let locks = ConcreteOperationLockManager::new();
+    let locks = locks();
     let first = locks
         .acquire_lifecycle(id(1), OperationKind::Apply)
         .await
@@ -61,7 +67,7 @@ async fn lifecycle_guard_release_allows_next_lifecycle() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_lifecycle_acquisition_has_one_winner() {
-    let locks = Arc::new(ConcreteOperationLockManager::new());
+    let locks = Arc::new(locks());
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let first = acquire_lifecycle_at_barrier(Arc::clone(&locks), Arc::clone(&barrier));
     let second = acquire_lifecycle_at_barrier(Arc::clone(&locks), barrier);
@@ -82,7 +88,7 @@ async fn acquire_lifecycle_at_barrier(
 
 #[tokio::test]
 async fn pending_lifecycle_overtakes_definition_lease() {
-    let locks = Arc::new(ConcreteOperationLockManager::new());
+    let locks = Arc::new(locks());
     let definition = locks.acquire_definition(id(1)).unwrap();
     let pending = {
         let locks = Arc::clone(&locks);
@@ -119,7 +125,7 @@ async fn pending_lifecycle_overtakes_definition_lease() {
 
 #[tokio::test]
 async fn cancelled_pending_lifecycle_releases_reservation() {
-    let locks = Arc::new(ConcreteOperationLockManager::new());
+    let locks = Arc::new(locks());
     let definition = locks.acquire_definition(id(1)).unwrap();
     let pending = {
         let locks = Arc::clone(&locks);
@@ -151,7 +157,7 @@ async fn cancelled_pending_lifecycle_releases_reservation() {
 
 #[test]
 fn concurrent_definition_acquisition_has_one_winner() {
-    let locks = Arc::new(ConcreteOperationLockManager::new());
+    let locks = Arc::new(locks());
     let barrier = Arc::new(Barrier::new(2));
     let first = acquire_definition_at_barrier(Arc::clone(&locks), Arc::clone(&barrier));
     let second = acquire_definition_at_barrier(Arc::clone(&locks), barrier);
@@ -175,7 +181,7 @@ fn acquire_definition_at_barrier(
 
 #[tokio::test]
 async fn cancelled_active_lifecycle_releases_guard() {
-    let locks = Arc::new(ConcreteOperationLockManager::new());
+    let locks = Arc::new(locks());
     let acquired = Arc::new(tokio::sync::Notify::new());
     let held = Arc::clone(&locks);
     let acquired_task = Arc::clone(&acquired);
@@ -204,7 +210,7 @@ async fn cancelled_active_lifecycle_releases_guard() {
 
 #[tokio::test]
 async fn profiles_hold_independent_operation_leases() {
-    let locks = ConcreteOperationLockManager::new();
+    let locks = locks();
     let lifecycle = locks
         .acquire_lifecycle(id(1), OperationKind::Apply)
         .await
@@ -222,7 +228,7 @@ async fn profiles_hold_independent_operation_leases() {
 
 #[test]
 fn definition_lease_releases_after_guard_drop() {
-    let locks = ConcreteOperationLockManager::new();
+    let locks = locks();
     let definition = locks.acquire_definition(id(1)).unwrap();
     assert!(matches!(
         locks.acquire_definition(id(1)),
@@ -256,9 +262,7 @@ fn guard_release_callback_runs_once() {
 
 fn recovery_locks() -> (TempDir, ConcreteOperationLockManager) {
     let directory = tempfile::tempdir().unwrap();
-    let locks = ConcreteOperationLockManager::with_recovery_lock(
-        directory.path().join("registry.recovery.lock"),
-    );
+    let locks = ConcreteOperationLockManager::new(directory.path().join("registry.recovery.lock"));
     (directory, locks)
 }
 
@@ -297,8 +301,8 @@ fn recovery_fails_fast_while_shared_operation_is_active() {
 fn recovery_file_lease_excludes_another_manager() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("registry.recovery.lock");
-    let first = ConcreteOperationLockManager::with_recovery_lock(path.clone());
-    let second = ConcreteOperationLockManager::with_recovery_lock(path);
+    let first = ConcreteOperationLockManager::new(path.clone());
+    let second = ConcreteOperationLockManager::new(path);
     let operation = first.acquire_mutation().unwrap();
     assert_eq!(
         second.acquire_recovery().unwrap_err().code,
@@ -306,4 +310,46 @@ fn recovery_file_lease_excludes_another_manager() {
     );
     drop(operation);
     assert!(second.acquire_recovery().is_ok());
+}
+
+#[test]
+fn recovery_lock_child_process() {
+    let Ok(lock_path) = std::env::var("COLUI_RECOVERY_CHILD_LOCK") else {
+        return;
+    };
+    let ready = std::env::var("COLUI_RECOVERY_CHILD_READY").unwrap();
+    let release = std::env::var("COLUI_RECOVERY_CHILD_RELEASE").unwrap();
+    let locks = ConcreteOperationLockManager::new(lock_path.into());
+    let _lease = locks.acquire_mutation().unwrap();
+    std::fs::write(&ready, b"ready").unwrap();
+    while !std::path::Path::new(&release).exists() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn recovery_file_lease_excludes_another_process() {
+    let directory = tempfile::tempdir().unwrap();
+    let lock_path = directory.path().join("registry.recovery.lock");
+    let ready = directory.path().join("ready");
+    let release = directory.path().join("release");
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "recovery_lock_child_process", "--nocapture"])
+        .env("COLUI_RECOVERY_CHILD_LOCK", &lock_path)
+        .env("COLUI_RECOVERY_CHILD_READY", &ready)
+        .env("COLUI_RECOVERY_CHILD_RELEASE", &release)
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !ready.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(ready.exists());
+    let locks = ConcreteOperationLockManager::new(lock_path);
+    assert_eq!(
+        locks.acquire_recovery().unwrap_err().code,
+        AppErrorCode::RecoveryConflict
+    );
+    std::fs::write(release, b"release").unwrap();
+    assert!(child.wait().unwrap().success());
 }

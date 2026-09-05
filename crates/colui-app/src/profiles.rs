@@ -58,19 +58,27 @@ impl InspectProfileDraft {
     }
 }
 
-pub struct CreateProfile<'a, S: ?Sized, G: ?Sized> {
+pub struct CreateProfile<'a, S: ?Sized, G: ?Sized, L: ?Sized> {
     store: &'a S,
     ids: &'a G,
+    locks: &'a L,
 }
 
-impl<'a, S: ProfileStore + ?Sized, G: IdGenerator + ?Sized> CreateProfile<'a, S, G> {
-    pub fn new(store: &'a S, ids: &'a G) -> Self {
-        Self { store, ids }
+impl<
+        'a,
+        S: ProfileStore + ?Sized,
+        G: IdGenerator + ?Sized,
+        L: crate::OperationLockManager + ?Sized,
+    > CreateProfile<'a, S, G, L>
+{
+    pub fn new(store: &'a S, ids: &'a G, locks: &'a L) -> Self {
+        Self { store, ids, locks }
     }
 
     pub async fn execute(&self, draft: ProfileDraft) -> Result<ProjectProfile, AppError> {
         let id = self.ids.generate();
         let profile = ProjectProfile::from_draft(id.clone(), draft)?;
+        let _guard = self.locks.acquire_mutation()?;
         let snapshot = self
             .store
             .mutate(Box::new(move |mut snapshot| {
@@ -151,13 +159,16 @@ pub struct ProfilePatch {
     pub environment_files: Option<Vec<PathBuf>>,
 }
 
-pub struct UpdateProfile<'a, S: ?Sized> {
+pub struct UpdateProfile<'a, S: ?Sized, L: ?Sized> {
     store: &'a S,
+    locks: &'a L,
 }
 
-impl<'a, S: ProfileStore + ?Sized> UpdateProfile<'a, S> {
-    pub fn new(store: &'a S) -> Self {
-        Self { store }
+impl<'a, S: ProfileStore + ?Sized, L: crate::OperationLockManager + ?Sized>
+    UpdateProfile<'a, S, L>
+{
+    pub fn new(store: &'a S, locks: &'a L) -> Self {
+        Self { store, locks }
     }
 
     pub async fn execute(
@@ -167,6 +178,7 @@ impl<'a, S: ProfileStore + ?Sized> UpdateProfile<'a, S> {
         patch: ProfilePatch,
     ) -> Result<ProjectProfile, AppError> {
         let result_id = id.clone();
+        let _guard = self.locks.acquire_mutation()?;
         let snapshot = self
             .store
             .mutate(Box::new(move |mut snapshot| {
@@ -220,16 +232,20 @@ impl<'a, S: ProfileStore + ?Sized> UpdateProfile<'a, S> {
     }
 }
 
-pub struct RemoveProfile<'a, S: ?Sized> {
+pub struct RemoveProfile<'a, S: ?Sized, L: ?Sized> {
     store: &'a S,
+    locks: &'a L,
 }
 
-impl<'a, S: ProfileStore + ?Sized> RemoveProfile<'a, S> {
-    pub fn new(store: &'a S) -> Self {
-        Self { store }
+impl<'a, S: ProfileStore + ?Sized, L: crate::OperationLockManager + ?Sized>
+    RemoveProfile<'a, S, L>
+{
+    pub fn new(store: &'a S, locks: &'a L) -> Self {
+        Self { store, locks }
     }
 
     pub async fn execute(&self, id: ProfileId, expected_revision: u64) -> Result<(), AppError> {
+        let _guard = self.locks.acquire_mutation()?;
         self.store
             .mutate(Box::new(move |mut snapshot| {
                 let position = snapshot
