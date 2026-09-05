@@ -1,5 +1,6 @@
 use colui_app::{
-    Clock, InventoryFuture, InventoryReader, InventoryRefresher, RuntimeInventorySource,
+    CandidateLease, Clock, DiscoveryFuture, DiscoveryReader, InventoryFuture, InventoryReader,
+    InventoryRefresher, RuntimeInventorySource,
 };
 use colui_domain::{
     AppError, AppErrorCode, ComposeObservationGroup, ContainerObservation, InventoryFreshness,
@@ -9,7 +10,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, watch, Mutex};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
 
 type RefreshResult = Result<RuntimeInventory, AppError>;
 
@@ -29,6 +30,7 @@ pub struct InventoryCoordinator {
     api: Arc<dyn RuntimeInventorySource>,
     clock: Arc<dyn Clock>,
     state: Arc<Mutex<State>>,
+    publication_gate: Arc<RwLock<()>>,
     subscribers: broadcast::Sender<RuntimeInventory>,
     joins: broadcast::Sender<()>,
 }
@@ -47,6 +49,7 @@ impl InventoryCoordinator {
                 failures: 0,
                 retry_at: None,
             })),
+            publication_gate: Arc::new(RwLock::new(())),
             subscribers,
             joins,
         }
@@ -100,9 +103,11 @@ impl InventoryCoordinator {
             let api = self.api.clone();
             let clock = self.clock.clone();
             let state = self.state.clone();
+            let publication_gate = self.publication_gate.clone();
             let subscribers = self.subscribers.clone();
             tokio::spawn(async move {
                 let observed = observe(&api).await;
+                let _publication = publication_gate.write().await;
                 let mut state = state.lock().await;
                 let result = complete_refresh(&clock, &subscribers, &mut state, observed);
                 let in_flight = state
@@ -350,5 +355,30 @@ impl InventoryReader for InventoryCoordinator {
 impl InventoryRefresher for InventoryCoordinator {
     fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
         self.refresh()
+    }
+}
+
+impl DiscoveryReader for InventoryCoordinator {
+    fn lease_candidate(
+        &self,
+        runtime_session_id: colui_domain::RuntimeSessionId,
+        inventory_generation: u64,
+    ) -> DiscoveryFuture<'_, CandidateLease> {
+        let gate = self.publication_gate.clone();
+        Box::pin(async move {
+            let guard = gate.read_owned().await;
+            let current = self.state.lock().await.current.clone();
+            if current.runtime_session_id != Some(runtime_session_id)
+                || current.generation != inventory_generation
+            {
+                return Err(AppError::new(
+                    AppErrorCode::RuntimeUnavailable,
+                    "lease_candidate",
+                    None,
+                    "discovery evidence changed",
+                ));
+            }
+            Ok(CandidateLease::hold(guard))
+        })
     }
 }

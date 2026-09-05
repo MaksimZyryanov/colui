@@ -1,4 +1,5 @@
 mod definitions;
+mod discovery;
 mod inventory;
 mod lifecycle;
 mod operations;
@@ -7,6 +8,7 @@ mod runtime;
 mod status;
 
 pub use definitions::*;
+pub use discovery::*;
 pub use inventory::*;
 pub use lifecycle::*;
 pub use operations::*;
