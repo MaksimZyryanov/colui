@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { appErrorSchema, errorCodeSchema } from '../errors';
+import { appErrorSchema, errorCodeSchema, appErrorSubjectSchema, appErrorSubjectKindSchema } from '../errors';
 import { daemonFingerprintSchema, lifecycleResultSchema, mismatchDetailsSchema, profileDetailsSchema, profileDraftSchema, profileIdRequestSchema, profileSummarySchema, profileValidationSchema, projectStatusSchema, runtimeProjectionSchema, runtimeStateSchema, sessionContextSchema } from '../schemas';
 import * as s from '../schemas';
 import { decodeResponse } from '../validation';
@@ -20,6 +20,11 @@ const dtoManifest = [
   ['DefinitionProjectionDto', z.object({ state: z.enum(['unchecked', 'valid', 'invalid', 'stale']), revision: z.string().nullable().optional(), serviceCount: z.number().int().nonnegative().nullable().optional() })],
   ['OperationDto', z.object({ kind: z.enum(['apply', 'stop', 'tear-down', 'restart']), phase: z.enum(['queued', 'running', 'succeeded', 'failed']), startedAt: z.string().datetime({ offset: true }) })],
   ['ProjectStatusDto', projectStatusSchema], ['RuntimeStateDto', runtimeStateSchema], ['LifecycleResultDto', lifecycleResultSchema], ['RuntimeInventoryDto', s.inventorySchema], ['ProjectDefinitionDto', s.projectDefinitionSchema], ['ProjectDetailsResponseDto', s.projectDetailsResponseSchema],
+  ['AppErrorSubjectDto', appErrorSubjectSchema], ['AppErrorSubjectKindDto', appErrorSubjectKindSchema],
+  ['ContainerStateDto', s.containerStateSchema], ['PortBindingDto', s.portBindingSchema], ['PortBindingActionDto', s.portBindingActionSchema], ['ContainerInstanceDto', s.containerInstanceSchema], ['ProjectRuntimeSnapshotDto', s.projectRuntimeSnapshotSchema], ['ComposeObservationGroupDto', s.composeObservationGroupSchema], ['InventoryFreshnessDto', s.inventoryFreshnessSchema], ['ServiceDefinitionDto', s.serviceDefinitionSchema],
+  ['DiscoveryClassificationDto', s.discoveryClassificationSchema], ['DiscoveryConflictSourceDto', s.discoveryConflictSourceSchema], ['DiscoveryConflictEvidenceDto', s.discoveryConflictEvidenceSchema], ['DiscoveryCandidateDto', s.discoveryCandidateSchema], ['DiscoveryListDto', s.discoveryListSchema], ['RegisterCandidateRequestDto', s.registerCandidateRequestSchema], ['IgnoreCandidateRequestDto', s.ignoreCandidateRequestSchema], ['ConfigureAutoRegistrationRequestDto', s.configureAutoRegistrationRequestSchema], ['AutoRegistrationConfigurationDto', s.autoRegistrationConfigurationSchema], ['AutoRegistrationResultDto', s.autoRegistrationResultSchema], ['AutoRegistrationRequestDto', s.autoRegistrationRequestSchema],
+  ['RegistrySnapshotIdentityDto', s.registrySnapshotIdentitySchema], ['RegistryHealthStateDto', s.registryHealthStateSchema], ['RegistryHealthDto', s.registryHealthSchema], ['RuntimeDiagnosticsDto', s.runtimeDiagnosticsSchema], ['RecoveryResultDto', s.recoveryResultSchema], ['RegistryDiagnosticsDto', s.registryDiagnosticsSchema], ['BackupValidationStateDto', s.backupValidationStateSchema], ['RegistryBackupDiagnosticsDto', s.registryBackupDiagnosticsSchema], ['ImportDiagnosticsDto', s.importDiagnosticsSchema], ['ActiveOperationPhaseDto', s.activeOperationPhaseSchema], ['ActiveOperationDto', s.activeOperationSchema], ['OperationsDiagnosticsDto', s.operationsDiagnosticsSchema], ['ProfileDefinitionDiagnosticsDto', s.profileDefinitionDiagnosticsSchema], ['DefinitionsDiagnosticsDto', s.definitionsDiagnosticsSchema], ['JournalEventKindDto', s.journalEventKindSchema], ['JournalSeverityDto', s.journalSeveritySchema], ['JournalEntryDto', s.journalEntrySchema], ['SessionJournalDto', s.sessionJournalSchema], ['DiagnosticsSnapshotDto', s.diagnosticsSnapshotSchema], ['ApplicationStateScopeDto', s.applicationStateScopeSchema], ['ApplicationStateChangedDto', s.applicationStateChangedSchema],
+  ['ContainerActionDto', s.containerActionSchema], ['ContainerActionObservationDto', s.containerActionObservationSchema], ['ContainerActionRequestDto', s.containerActionRequestSchema], ['ContainerActionResultDto', s.containerActionResultSchema], ['ContainerLogsRequestDto', s.containerLogsRequestSchema], ['ContainerLogsDto', s.containerLogsSchema], ['OpenContainerPortRequestDto', s.openContainerPortRequestSchema], ['ReconnectResultDto', s.reconnectResultSchema],
 ] as const;
 const fixtureManifest: Array<[string, { safeParse: (value: unknown) => { success: boolean } }, boolean]> = [
   ['app_error_invalid_code.json', appErrorSchema, false], ['app_error_missing_retryable.json', appErrorSchema, false],
@@ -86,6 +91,7 @@ describe('IPC contracts', () => {
       lastSuccessfulObservedAt: null,
       containers: [],
       projects: [],
+      composeObservationGroups: [],
       standaloneContainers: [],
       error: null,
     };
@@ -125,7 +131,7 @@ describe('IPC contracts', () => {
     const projection = s.projectDefinitionSchema.parse({
       profileId: '00000000-0000-0000-0000-000000000001', definitionRevision: 'retained',
       loadedAt: '2026-09-03T00:00:00Z', state: 'stale', services: [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }], issues: [],
-      error: { code: 'definition_failed', operation: 'definition', subjectId: '00000000-0000-0000-0000-000000000001', message: 'compose config failed', details: null, retryable: false },
+      error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: '00000000-0000-0000-0000-000000000001' }, message: 'compose config failed', details: null, retryable: false },
     });
     expect(projection.services[0].name).toBe('web');
     expect(projection.error?.code).toBe('definition_failed');
@@ -163,8 +169,7 @@ describe('IPC contracts', () => {
   });
 
   it('preserves unknown-field behavior at IPC boundary', () => {
-    const parsed = profileIdRequestSchema.parse({ profileId: '00000000-0000-0000-0000-000000000001', extra: true });
-    expect(parsed).toEqual({ profileId: '00000000-0000-0000-0000-000000000001' });
+    expect(profileIdRequestSchema.safeParse({ profileId: '00000000-0000-0000-0000-000000000001', extra: true }).success).toBe(false);
     expect(s.profileIdRequestSchema.strict().safeParse({ profileId: '00000000-0000-0000-0000-000000000001', extra: true }).success).toBe(false);
   });
 
@@ -206,13 +211,44 @@ describe('IPC contracts', () => {
       const generated = zodToJsonSchema(schema, { name, $refStrategy: 'none' });
       expect(normalizeSchema(generated), name).toEqual(normalizeSchema(rust));
     }
-  expect(dtoManifest).toHaveLength(29);
+   expect(dtoManifest.map(([name]) => `${name}.json`).sort()).toEqual(readdirSync(resolve('schemas')).filter(name => name.endsWith('.json')).sort());
   });
 
   it('does not discard additionalProperties contract metadata', () => {
     expect(normalizeSchema({ type: 'object', additionalProperties: false })).toEqual({ type: 'object', additionalProperties: false });
     expect(normalizeSchema({ type: 'object' })).toEqual({ type: 'object', additionalProperties: false });
     expect(normalizeSchema({ type: 'object', additionalProperties: true })).toEqual({ type: 'object', additionalProperties: true });
+  });
+
+  it('preserves typed subjects and retryability without pretending container IDs are profile UUIDs', () => {
+    for (const kind of ['profile', 'candidate', 'container', 'registry']) {
+      const raw = { code: 'operation_conflict', operation: 'action', subject: { kind, id: 'opaque-id' }, message: 'Busy', retryable: true };
+      expect(decodeResponse(appErrorSchema, raw, 'action')).toEqual(raw);
+    }
+    expect(appErrorSchema.safeParse({ code: 'candidate_stale', operation: 'register', message: 'Stale', retryable: false, subject: { kind: 'daemon', id: 'x' } }).success).toBe(false);
+  });
+
+  it('validates discovery identity, session, enums and strict immutable requests', () => {
+    const candidate = { candidateId: 'a'.repeat(64), runtimeSessionId: '00000000-0000-0000-0000-000000000001', inventoryGeneration: 1, composeProjectName: 'demo', workingDirectory: null, configFiles: [], containerCount: 1, classification: 'incomplete_metadata', conflicts: [], ignored: false };
+    expect(s.discoveryCandidateSchema.parse(candidate)).toEqual(candidate);
+    for (const patch of [{ candidateId: 'A'.repeat(64) }, { runtimeSessionId: 'not-a-session' }, { inventoryGeneration: -1 }, { classification: 'new' }]) {
+      expect(() => decodeResponse(s.discoveryCandidateSchema, { ...candidate, ...patch }, 'list_discovery_candidates')).toThrowError(expect.objectContaining({ code: 'protocol_mismatch', retryable: false }));
+    }
+    expect(s.registrySnapshotIdentitySchema.safeParse({ registryRevision: 0, canonicalContentSha256: 'a'.repeat(64) }).success).toBe(true);
+    expect(s.registrySnapshotIdentitySchema.safeParse({ registryRevision: 1, canonicalContentSha256: 'bad' }).success).toBe(false);
+    const request = { containerId: 'opaque', runtimeSessionId: candidate.runtimeSessionId };
+    expect(s.containerLogsRequestSchema.parse(request)).toEqual(request);
+    expect(s.containerLogsRequestSchema.safeParse({ ...request, path: '/tmp/log' }).success).toBe(false);
+    expect(s.containerActionRequestSchema.safeParse({ ...request, action: 'delete' }).success).toBe(false);
+    expect(s.containerLogsSchema.safeParse({ containerId: 'opaque', text: '', retainedBytes: 262145, truncated: true, observedAt: '2026-09-04T00:00:00Z' }).success).toBe(false);
+  });
+
+  it('requires observation evidence and backend port actions in inventory', () => {
+    const inventory = JSON.parse(readFileSync(resolve(fixtureRoot, 'inventory_pre_observation_valid.json'), 'utf8'));
+    expect(s.inventorySchema.safeParse({ ...inventory, composeObservationGroups: undefined }).success).toBe(false);
+    expect(s.inventorySchema.safeParse({ ...inventory, composeObservationGroups: [{ composeProjectName: 'demo', workingDirectory: null, configFiles: [], containerIds: ['id'] }] }).success).toBe(false);
+    expect(s.portBindingSchema.safeParse({ containerPort: 80, protocol: 'tcp' }).success).toBe(false);
+    expect(s.portBindingSchema.parse({ containerPort: 80, protocol: 'tcp', action: { copy: '80/tcp', url: null } }).action.url).toBeNull();
   });
 
   it('exercises every committed fixture exactly once', () => {

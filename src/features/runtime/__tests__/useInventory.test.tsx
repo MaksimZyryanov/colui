@@ -21,6 +21,7 @@ const publishedInventory = (generation: number): RuntimeInventory => ({
   lastSuccessfulObservedAt: '2026-09-03T00:00:00.000Z',
   containers: [],
   projects: [],
+  composeObservationGroups: [],
   standaloneContainers: [],
   error: null,
 });
@@ -35,6 +36,7 @@ const preObservation = (): RuntimeInventory => ({
   lastSuccessfulObservedAt: null,
   containers: [],
   projects: [],
+  composeObservationGroups: [],
   standaloneContainers: [],
   error: null,
 });
@@ -106,7 +108,7 @@ describe('useInventory polling lifecycle', () => {
     const client = renderInventory();
     await act(async () => { await Promise.resolve(); });
     const retained = client.getQueryData(inventoryKeys.snapshot());
-    mockBackend.setErrorOverride('get_inventory', new AppErrorException({ code: 'runtime_unavailable', operation: 'get_inventory', subjectId: null, message: 'offline', details: null, retryable: false }));
+    mockBackend.setErrorOverride('get_inventory', new AppErrorException({ code: 'runtime_unavailable', operation: 'get_inventory', subject: null, message: 'offline', details: null, retryable: false }));
     await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(screen.getByTestId('inventory')).toHaveTextContent('1:offline');

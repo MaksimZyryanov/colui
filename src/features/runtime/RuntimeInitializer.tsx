@@ -4,17 +4,23 @@ import { AppErrorException } from '../../ipc/errors';
 import { Alert } from '../../ui/components/Alert';
 import { Button } from '../../ui/components/Button';
 import type { RuntimeState } from '../../ipc/types';
+import { useInventory } from './hooks/useInventory';
+import { useDiagnostics } from '../diagnostics/hooks';
+import { useApplicationStateEvents } from './useApplicationStateEvents';
 
 function terminalStateError(state: RuntimeState | undefined): AppErrorException | null {
   if (state?.state === 'failed') return new AppErrorException(state.error);
   if (state?.state === 'contextMismatch') return new AppErrorException({
-    code: 'runtime_context_mismatch', operation: 'get_runtime_state', subjectId: null,
+    code: 'runtime_context_mismatch', operation: 'get_runtime_state', subject: null,
     message: 'Runtime context mismatch', details: `Runtime endpoint: ${state.details.endpoint}`, retryable: false,
   });
   return null;
 }
 
 export function RuntimeInitializer({ children }: { children: ReactNode }) {
+  useApplicationStateEvents();
+  useInventory();
+  useDiagnostics();
   const attempted = useRef(false);
   const state = useRuntimeState();
   const connect = useConnectRuntime();

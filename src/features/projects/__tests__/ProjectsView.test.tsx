@@ -7,9 +7,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ProjectsView } from '../ProjectsView';
 import { StatusDetails } from '../components/StatusDetails';
 import { mockBackend } from '../../../ipc/mock-backend';
+import { useInventory } from '../../runtime/hooks/useInventory';
+import type { ReactNode } from 'react';
 
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-const renderProjects = () => render(<QueryClientProvider client={client}><ProjectsView /></QueryClientProvider>);
+function TestShell({ children }: { children: ReactNode }) { useInventory(); return children; }
+const renderProjects = () => render(<QueryClientProvider client={client}><TestShell><ProjectsView /></TestShell></QueryClientProvider>);
 
 describe('ProjectsView', () => {
   beforeEach(() => {
@@ -30,7 +33,7 @@ describe('ProjectsView', () => {
   it('renders running as one label and expands independent details', async () => {
     const draft = { displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', composeFiles: ['compose.yml'], environmentFiles: [] };
     mockBackend.setResponseOverride('list_profiles', [{ id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
-    mockBackend.setResponseOverride('get_inventory', { generation: 1, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [{ id: 'one', name: 'demo-web-1', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'two', name: 'demo-web-2', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'three', name: 'demo-web-3', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }], projects: [{ composeProjectName: 'demo', workingDirectory: '/tmp', configFiles: ['compose.yml'], containers: [{ id: 'one', name: 'demo-web-1', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'two', name: 'demo-web-2', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'three', name: 'demo-web-3', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }]}], standaloneContainers: [], error: null });
+    mockBackend.setResponseOverride('get_inventory', { generation: 1, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [{ id: 'one', name: 'demo-web-1', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'two', name: 'demo-web-2', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'three', name: 'demo-web-3', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }], projects: [{ composeProjectName: 'demo', workingDirectory: '/tmp', configFiles: ['compose.yml'], containers: [{ id: 'one', name: 'demo-web-1', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'two', name: 'demo-web-2', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'three', name: 'demo-web-3', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }]}], composeObservationGroups: [], standaloneContainers: [], error: null });
     void draft;
     const user = userEvent.setup();
     renderProjects();
@@ -62,7 +65,7 @@ describe('ProjectsView', () => {
   it('keeps card and retained definition visible beside separate definition error', async () => {
     const profileId = '00000000-0000-0000-0000-000000000001';
     mockBackend.setResponseOverride('list_profiles', [{ id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
-    mockBackend.setResponseOverride('get_project_details', { profile: { profile: { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: 'retained', loadedAt: '2026-09-03T00:00:00Z', state: 'stale', services: [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }], issues: [], error: { code: 'definition_failed', operation: 'definition', subjectId: profileId, message: 'compose config failed', details: null, retryable: false } }, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null } });
+    mockBackend.setResponseOverride('get_project_details', { profile: { profile: { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: 'retained', loadedAt: '2026-09-03T00:00:00Z', state: 'stale', services: [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }], issues: [], error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: profileId }, message: 'compose config failed', details: null, retryable: false } }, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null } });
     renderProjects();
 
     expect(await screen.findByText('Demo')).toBeVisible();

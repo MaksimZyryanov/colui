@@ -23,7 +23,7 @@ describe('projects foundations', () => {
   });
 
   it('only publishes inventory for successful lifecycle results', () => {
-    const inventory = { generation: 0, hasSnapshot: false, observedAt: null, runtimeSessionId: null, daemonFingerprint: null, freshness: 'unavailable' as const, lastSuccessfulObservedAt: null, containers: [], projects: [], standaloneContainers: [], error: null };
+    const inventory = { generation: 0, hasSnapshot: false, observedAt: null, runtimeSessionId: null, daemonFingerprint: null, freshness: 'unavailable' as const, lastSuccessfulObservedAt: null, containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: null };
     expect(shouldPublishLifecycleInventory({ profileId: 'id-1', success: true, inventoryGeneration: 0, inventory })).toBe(true);
     expect(shouldPublishLifecycleInventory({ profileId: 'id-1', success: false, inventoryGeneration: 0, inventory })).toBe(false);
   });
@@ -34,7 +34,7 @@ describe('projects foundations', () => {
 
   it('maps published inventory without matching project to absent runtime', () => {
     const profile = { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' as const };
-    const inventory = { generation: 1, hasSnapshot: true, observedAt: '2026-09-03T00:00:00.000Z', runtimeSessionId: null, daemonFingerprint: null, freshness: 'fresh' as const, lastSuccessfulObservedAt: null, containers: [], projects: [], standaloneContainers: [], error: null };
+    const inventory = { generation: 1, hasSnapshot: true, observedAt: '2026-09-03T00:00:00.000Z', runtimeSessionId: null, daemonFingerprint: null, freshness: 'fresh' as const, lastSuccessfulObservedAt: null, containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: null };
     expect(projectStatusFromInventory(profile, inventory).runtime).toMatchObject({ presence: 'absent', activity: null });
   });
 

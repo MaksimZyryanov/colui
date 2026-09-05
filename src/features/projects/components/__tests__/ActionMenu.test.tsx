@@ -35,7 +35,7 @@ describe('ActionMenu', () => {
   });
 
   it('publishes lifecycle inventory without refresh, invalidation, or refetch', async () => {
-    const oldInventory = { generation: 4, hasSnapshot: true, observedAt: '2026-09-03T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh' as const, lastSuccessfulObservedAt: '2026-09-03T00:00:00.000Z', containers: [], projects: [], standaloneContainers: [], error: null };
+    const oldInventory = { generation: 4, hasSnapshot: true, observedAt: '2026-09-03T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh' as const, lastSuccessfulObservedAt: '2026-09-03T00:00:00.000Z', containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: null };
     const newer = { ...oldInventory, generation: 5 };
     client.setQueryData(inventoryKeys.snapshot(), oldInventory);
     mockBackend.setResponseOverride('apply_project', { profileId, success: true, inventoryGeneration: 4, inventory: { ...oldInventory } });
