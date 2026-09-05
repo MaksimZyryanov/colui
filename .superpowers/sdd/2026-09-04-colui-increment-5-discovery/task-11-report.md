@@ -224,3 +224,58 @@ Browser mock smoke OK
 - Verified request feedback keys include operation and immutable candidate ID, preventing registration/ignore collisions for one candidate.
 - Verified `runtime_context_mismatch` is evaluated before generic runtime/session recovery and retains backend technical details.
 - Existing Node localStorage warnings and intentional React error-boundary stderr remain. Live Tauri/Docker testing remains outside this frontend round.
+
+## Task 11 Fix Round 3
+
+Status: **DONE**
+
+Base: `1542a1d`.
+No subagents, push, merge, amend, or Git configuration changes.
+
+### Finding And Fix
+
+- Candidate feedback used immutable IDs as map keys but omitted them from accessible action names. Duplicate Compose project names therefore produced indistinguishable announcements. Registration and ignore feedback now include full immutable candidate IDs.
+
+### RED Evidence
+
+```sh
+npx --yes pnpm@9.15.5 test -- src/features/discovery/__tests__/DiscoverySection.test.tsx
+```
+
+```text
+Test Files 1 failed (1)
+Tests 1 failed | 9 passed (10)
+Unable to find role="status" and name "Registration shared-app (1111111111111111111111111111111111111111111111111111111111111111) succeeded"
+```
+
+Rendered output showed both outcomes named only `Registration shared-app succeeded/failed`, confirming accessible-name collision.
+
+### GREEN Evidence
+
+Focused result:
+
+```text
+Test Files 1 passed (1)
+Tests 10 passed (10)
+```
+
+Final exact chain:
+
+```sh
+npx --yes pnpm@9.15.5 test && npx --yes pnpm@9.15.5 typecheck && npx --yes pnpm@9.15.5 lint && npx --yes pnpm@9.15.5 build && git diff --check
+```
+
+```text
+Test Files 15 passed (15)
+Tests 145 passed (145)
+> tsc --noEmit
+> tsc --noEmit
+207 modules transformed
+✓ built in 631ms
+```
+
+### Self-Review And Concerns
+
+- Duplicate-name test resolves concurrent requests to different success/failure outcomes and selects each announcement by its candidate-specific accessible name.
+- Both registration and ignore action naming use the same immutable-ID format.
+- Existing Node localStorage warnings and intentional React error-boundary stderr remain.
