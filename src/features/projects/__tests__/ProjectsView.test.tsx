@@ -9,6 +9,7 @@ import { StatusDetails } from '../components/StatusDetails';
 import { mockBackend } from '../../../ipc/mock-backend';
 import { useInventory } from '../../runtime/hooks/useInventory';
 import type { ReactNode } from 'react';
+import { AppShell } from '../../../app/AppShell';
 
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 function TestShell({ children }: { children: ReactNode }) { useInventory(); return children; }
@@ -28,6 +29,17 @@ describe('ProjectsView', () => {
     expect(await screen.findByText('No projects yet')).toBeVisible();
     await user.click(screen.getByRole('button', { name: /add project/i }));
     expect(screen.getByRole('dialog', { name: /add project/i })).toBeVisible();
+  });
+
+  it('provides working desktop and mobile Projects/Diagnostics navigation with one main landmark', async () => {
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><AppShell /></QueryClientProvider>);
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeVisible();
+    expect(screen.getAllByRole('link', { name: 'Projects' })).toHaveLength(2);
+    expect(screen.getAllByRole('link', { name: 'Diagnostics' })).toHaveLength(2);
+    await user.click(screen.getAllByRole('link', { name: 'Diagnostics' })[0]);
+    expect(await screen.findByRole('heading', { name: 'Diagnostics' })).toBeVisible();
+    expect(screen.getAllByRole('main')).toHaveLength(1);
   });
 
   it('renders running as one label and expands independent details', async () => {
@@ -130,7 +142,7 @@ describe('ProjectsView', () => {
     mockBackend.setResponseOverride('list_profiles', [{ id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
     mockBackend.setResponseOverride('get_project_status', new Promise(() => {}));
     renderProjects();
-    expect(await screen.findByRole('status', { name: /loading project status/i })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('status', { name: /loading project status/i })).toBeVisible());
   });
 
   it('keeps user edits while fresh profile details replace stale hydration', async () => {

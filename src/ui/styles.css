@@ -15,3 +15,30 @@
 .ui-menu-item { padding: .5rem 1rem; cursor: pointer; }
 .projects-grid { display: grid; grid-template-columns: 1fr; gap: 1rem; }
 @media (min-width: 44rem) { .projects-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.app-shell { min-height: 100vh; }
+.sidebar { display: none; background: #17202a; color: white; padding: 1.5rem 1rem; }
+.brand { font-size: 1.35rem; font-weight: 800; letter-spacing: -.03em; margin-bottom: 2rem; }
+.brand span { color: #7dd3fc; }
+.side-nav, .mobile-nav { display: flex; gap: .5rem; }
+.side-nav { flex-direction: column; }
+.side-nav a, .mobile-nav a { color: inherit; text-decoration: none; padding: .7rem .8rem; border-radius: 6px; }
+.side-nav a[aria-current="page"], .mobile-nav a[aria-current="page"] { background: #334155; }
+.mobile-nav { position: sticky; bottom: 0; justify-content: space-around; background: #17202a; color: white; padding: .5rem; }
+.page { max-width: 76rem; margin: 0 auto; padding: 1.25rem; }
+.page-heading, .feature-section > header, .ui-card > header, .diagnostic-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.page-heading { margin-bottom: 2rem; }
+.page-heading h1, .feature-section h2, .ui-card h3 { margin: 0; }
+.eyebrow { color: #52606d; font-size: .75rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .25rem; }
+.feature-section { margin: 2rem 0; }
+.card-actions, .auto-registration { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.status-chip { display: inline-block; border: 1px solid #94a3b8; border-radius: 999px; padding: .2rem .55rem; font-size: .78rem; text-transform: capitalize; }
+.status-new_unambiguous { border-color: #15803d; color: #166534; }
+.status-name_conflict, .status-incomplete_metadata { border-color: #b45309; color: #92400e; }
+.port-list { list-style: none; padding: 0; }
+.port-list li { display: flex; justify-content: space-between; align-items: center; gap: .5rem; padding: .45rem 0; border-bottom: 1px solid #e2e8f0; }
+.port-list span { display: flex; gap: .35rem; }
+.container-logs { max-width: 72vw; max-height: 55vh; overflow: auto; user-select: text; background: #111827; color: #e5e7eb; padding: 1rem; white-space: pre-wrap; }
+.diagnostic-grid { display: grid; grid-template-columns: max-content 1fr; gap: .55rem 1rem; }
+.diagnostic-grid dt { font-weight: 700; }
+.diagnostic-grid dd { margin: 0; overflow-wrap: anywhere; }
+@media (min-width: 48rem) { .app-shell { display: grid; grid-template-columns: 14rem minmax(0, 1fr); } .sidebar { display: block; position: sticky; top: 0; height: 100vh; } .mobile-nav { display: none; } .page { padding: 2.5rem; } }

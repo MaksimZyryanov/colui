@@ -4,8 +4,6 @@ import { AppErrorException } from '../../ipc/errors';
 import { Alert } from '../../ui/components/Alert';
 import { Button } from '../../ui/components/Button';
 import type { RuntimeState } from '../../ipc/types';
-import { useInventory } from './hooks/useInventory';
-import { useDiagnostics } from '../diagnostics/hooks';
 import { useApplicationStateEvents } from './useApplicationStateEvents';
 
 function terminalStateError(state: RuntimeState | undefined): AppErrorException | null {
@@ -19,8 +17,6 @@ function terminalStateError(state: RuntimeState | undefined): AppErrorException 
 
 export function RuntimeInitializer({ children }: { children: ReactNode }) {
   useApplicationStateEvents();
-  useInventory();
-  useDiagnostics();
   const attempted = useRef(false);
   const state = useRuntimeState();
   const connect = useConnectRuntime();
