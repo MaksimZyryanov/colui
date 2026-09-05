@@ -2,10 +2,11 @@ use colui_app::{
     Clock, InventoryFuture, InventoryReader, InventoryRefresher, RuntimeInventorySource,
 };
 use colui_domain::{
-    AppError, AppErrorCode, ContainerObservation, InventoryFreshness, ProjectRuntimeSnapshot,
-    RuntimeInventory, RuntimeSessionState, SessionContext, Timestamp,
+    AppError, AppErrorCode, ComposeObservationGroup, ContainerObservation, InventoryFreshness,
+    ProjectRuntimeSnapshot, RuntimeInventory, RuntimeSessionState, SessionContext, Timestamp,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, watch, Mutex};
@@ -204,11 +205,33 @@ fn normalize(
     observations: Vec<ContainerObservation>,
 ) -> RuntimeInventory {
     let mut projects = BTreeMap::<String, ProjectRuntimeSnapshot>::new();
+    let mut groups =
+        BTreeMap::<(String, Option<String>, Vec<String>), Vec<colui_domain::ContainerId>>::new();
     let mut containers = Vec::with_capacity(observations.len());
     let mut standalone = Vec::new();
     for observation in observations {
-        add_observation(observation, &mut containers, &mut standalone, &mut projects);
+        add_observation(
+            observation,
+            &mut containers,
+            &mut standalone,
+            &mut projects,
+            &mut groups,
+        );
     }
+    let compose_observation_groups = groups
+        .into_iter()
+        .map(
+            |((compose_project_name, working_directory, config_files), mut container_ids)| {
+                container_ids.sort_by(|left, right| left.0.cmp(&right.0));
+                ComposeObservationGroup {
+                    compose_project_name,
+                    working_directory,
+                    config_files,
+                    container_ids,
+                }
+            },
+        )
+        .collect();
     RuntimeInventory {
         generation,
         has_snapshot: true,
@@ -219,6 +242,7 @@ fn normalize(
         last_successful_observed_at: Some(now),
         containers,
         project_snapshots: projects.into_values().collect(),
+        compose_observation_groups,
         standalone_containers: standalone,
         error: None,
     }
@@ -241,10 +265,20 @@ fn add_observation(
     all: &mut Vec<colui_domain::ContainerInstance>,
     standalone: &mut Vec<colui_domain::ContainerInstance>,
     projects: &mut BTreeMap<String, ProjectRuntimeSnapshot>,
+    groups: &mut BTreeMap<(String, Option<String>, Vec<String>), Vec<colui_domain::ContainerId>>,
 ) {
     let instance = observation.instance;
     all.push(instance.clone());
     if let Some(metadata) = observation.compose {
+        let group_tuple = normalize_compose_tuple(
+            &metadata.project,
+            metadata.working_directory.as_deref(),
+            &metadata.config_files,
+        );
+        groups
+            .entry(group_tuple)
+            .or_default()
+            .push(instance.id.clone());
         let project =
             projects
                 .entry(metadata.project.clone())
@@ -258,6 +292,53 @@ fn add_observation(
     } else {
         standalone.push(instance);
     }
+}
+
+fn normalize_compose_tuple(
+    project: &str,
+    working_directory: Option<&str>,
+    config_files: &[String],
+) -> (String, Option<String>, Vec<String>) {
+    let working_directory = working_directory
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .and_then(|path| normalize_absolute_path(Path::new(path)));
+    let mut seen = HashSet::new();
+    let config_files = config_files
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .filter_map(|path| {
+            let path = Path::new(path);
+            if path.is_absolute() {
+                normalize_absolute_path(path)
+            } else {
+                working_directory.as_ref().and_then(|directory| {
+                    normalize_absolute_path(&PathBuf::from(directory).join(path))
+                })
+            }
+        })
+        .filter(|path| seen.insert(path.clone()))
+        .collect();
+    (project.trim().to_owned(), working_directory, config_files)
+}
+
+fn normalize_absolute_path(path: &Path) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    normalized.to_str().map(str::to_owned)
 }
 
 impl InventoryReader for InventoryCoordinator {

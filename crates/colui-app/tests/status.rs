@@ -1,11 +1,13 @@
 use colui_app::{
-    project_status_from_inventory, GetProjectStatus, ProfileReader, ProjectStatus,
-    ProjectStatusFuture, ProjectStatusReader, RegistrySnapshot, RuntimeProjection, StoreFuture,
+    project_status_from_inventory, project_status_from_registry_inventory_and_definition,
+    GetProjectStatus, ProfileReader, ProjectStatus, ProjectStatusFuture, ProjectStatusReader,
+    RegistrySnapshot, RuntimeProjection, StoreFuture,
 };
 use colui_domain::{
-    AppError, ContainerId, ContainerInstance, ContainerState, DefinitionState, ProfileDraft,
-    ProfileId, ProjectProfile, ProjectRuntimeSnapshot, RegistrationOrigin, RuntimeInventory,
-    RuntimePresence, Timestamp,
+    AppError, ComposeObservationGroup, ContainerId, ContainerInstance, ContainerState,
+    DefinitionRevision, DefinitionState, Issue, IssueCode, ProfileDraft, ProfileId,
+    ProjectDefinition, ProjectProfile, ProjectRuntimeSnapshot, RegistrationOrigin,
+    RuntimeInventory, RuntimePresence, Timestamp,
 };
 use std::sync::Mutex;
 
@@ -128,4 +130,117 @@ fn status_projection_uses_shared_project_snapshot() {
     assert_eq!(status.runtime.presence, RuntimePresence::Present);
     assert_eq!(status.runtime.container_count, 1);
     assert_eq!(status.runtime.running_container_count, 1);
+}
+
+#[test]
+fn ambiguous_runtime_full_tuple_match_projects_only_matching_containers() {
+    let profile = profile();
+    let registry = RegistrySnapshot {
+        registry_revision: 1,
+        profiles: vec![profile.clone()],
+    };
+    let inventory = grouped_inventory(vec![
+        group("other", "/tmp/other", &["compose.yml"], &["other"]),
+        group("demo", "/tmp/demo", &["compose.yml"], &["matching"]),
+    ]);
+
+    let status =
+        project_status_from_registry_inventory_and_definition(&profile, &registry, inventory, None);
+
+    assert_eq!(status.runtime.presence, RuntimePresence::Present);
+    assert_eq!(status.runtime.container_count, 1);
+    assert!(status.issues.is_empty());
+}
+
+#[test]
+fn ambiguous_runtime_duplicate_matching_profiles_project_no_containers_and_merge_issues() {
+    let first = profile();
+    let mut second = profile();
+    second.id = ProfileId::parse("00000000-0000-0000-0000-000000000002").unwrap();
+    let registry = RegistrySnapshot {
+        registry_revision: 1,
+        profiles: vec![first.clone(), second],
+    };
+    let inventory = grouped_inventory(vec![group(
+        "demo",
+        "/tmp/demo",
+        &["compose.yml"],
+        &["matching"],
+    )]);
+    let definition_issue = Issue {
+        field: Some("services.web".into()),
+        message: "definition issue".into(),
+    };
+    let definition = ProjectDefinition {
+        profile_id: first.id.clone(),
+        definition_revision: DefinitionRevision("revision".into()),
+        loaded_at: Timestamp("2026-09-05T00:00:00Z".into()),
+        state: DefinitionState::Invalid,
+        services: vec![],
+        issues: vec![definition_issue.clone()],
+    };
+
+    let status = project_status_from_registry_inventory_and_definition(
+        &first,
+        &registry,
+        inventory,
+        Some(definition),
+    );
+
+    assert_eq!(status.runtime.presence, RuntimePresence::Absent);
+    assert_eq!(status.runtime.container_count, 0);
+    assert_eq!(status.issues[0], definition_issue);
+    assert_eq!(
+        status.issues[1].field.as_deref(),
+        Some(IssueCode::AmbiguousRuntimeAssociation.as_str())
+    );
+}
+
+fn grouped_inventory(groups: Vec<ComposeObservationGroup>) -> RuntimeInventory {
+    RuntimeInventory {
+        generation: 1,
+        has_snapshot: true,
+        observed_at: Some(Timestamp("2026-09-05T00:00:00Z".into())),
+        compose_observation_groups: groups,
+        containers: vec![container("other"), container("matching")],
+        ..RuntimeInventory::unavailable()
+    }
+}
+
+fn group(
+    project: &str,
+    working_directory: &str,
+    config_files: &[&str],
+    container_ids: &[&str],
+) -> ComposeObservationGroup {
+    ComposeObservationGroup {
+        compose_project_name: project.into(),
+        working_directory: Some(working_directory.into()),
+        config_files: config_files
+            .iter()
+            .map(|path| {
+                if path.starts_with('/') {
+                    (*path).into()
+                } else {
+                    format!("{working_directory}/{path}")
+                }
+            })
+            .collect(),
+        container_ids: container_ids
+            .iter()
+            .map(|id| ContainerId((*id).into()))
+            .collect(),
+    }
+}
+
+fn container(id: &str) -> ContainerInstance {
+    ContainerInstance {
+        id: ContainerId(id.into()),
+        name: id.into(),
+        image: "image".into(),
+        state: ContainerState::Running,
+        status_text: "Up".into(),
+        service_name: None,
+        published_ports: vec![],
+    }
 }

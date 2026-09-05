@@ -188,6 +188,106 @@ async fn first_inventory_is_unavailable_and_success_groups_observations() {
 }
 
 #[tokio::test]
+async fn compose_observation_groups_preserve_equal_names_with_distinct_tuples() {
+    let source = Arc::new(QueuedSource::new(vec![Ok(vec![
+        compose_observation(
+            "z-container",
+            "demo",
+            "/workspace/b",
+            &["/workspace/b/compose.yml"],
+        ),
+        compose_observation(
+            "b-container",
+            "demo",
+            "/workspace/a",
+            &["/workspace/a/compose.yml", "/workspace/a/override.yml"],
+        ),
+        compose_observation(
+            "a-container",
+            "demo",
+            "/workspace/a",
+            &["/workspace/a/compose.yml", "/workspace/a/override.yml"],
+        ),
+    ])]));
+    let coordinator = InventoryCoordinator::new(source.clone(), test_clock());
+
+    let snapshot = coordinator.refresh().await.unwrap();
+
+    assert_eq!(source.calls.load(Ordering::Acquire), 1);
+    assert_eq!(snapshot.compose_observation_groups.len(), 2);
+    assert_eq!(
+        snapshot.compose_observation_groups[0]
+            .working_directory
+            .as_deref(),
+        Some("/workspace/a")
+    );
+    assert_eq!(
+        snapshot.compose_observation_groups[0].container_ids,
+        vec![
+            ContainerId("a-container".into()),
+            ContainerId("b-container".into())
+        ]
+    );
+    assert_eq!(
+        snapshot.compose_observation_groups[1]
+            .working_directory
+            .as_deref(),
+        Some("/workspace/b")
+    );
+    assert_eq!(
+        snapshot.compose_observation_groups[1].container_ids,
+        vec![ContainerId("z-container".into())]
+    );
+}
+
+#[tokio::test]
+async fn compose_observation_groups_normalize_tuple_before_grouping() {
+    let mut first = compose_observation(
+        "b-container",
+        " demo ",
+        " /workspace/project/./nested/.. ",
+        &[" compose.yml ", "./compose.yml", "config/../override.yml"],
+    );
+    let mut second = compose_observation(
+        "a-container",
+        "demo",
+        "/workspace/project",
+        &[
+            "/workspace/project/compose.yml",
+            "/workspace/project/override.yml",
+        ],
+    );
+    first.instance.id = ContainerId("b-container".into());
+    second.instance.id = ContainerId("a-container".into());
+    let source = Arc::new(QueuedSource::new(vec![Ok(vec![first, second])]));
+    let coordinator = InventoryCoordinator::new(source, test_clock());
+
+    let snapshot = coordinator.refresh().await.unwrap();
+
+    assert_eq!(snapshot.compose_observation_groups.len(), 1);
+    let group = &snapshot.compose_observation_groups[0];
+    assert_eq!(group.compose_project_name, "demo");
+    assert_eq!(
+        group.working_directory.as_deref(),
+        Some("/workspace/project")
+    );
+    assert_eq!(
+        group.config_files,
+        vec![
+            "/workspace/project/compose.yml".to_owned(),
+            "/workspace/project/override.yml".to_owned(),
+        ]
+    );
+    assert_eq!(
+        group.container_ids,
+        vec![
+            ContainerId("a-container".into()),
+            ContainerId("b-container".into())
+        ]
+    );
+}
+
+#[tokio::test]
 async fn successful_refresh_notifies_subscriber_once() {
     let gateway = gateway_with_summary(compose_summary("checkout", "web")).await;
     let coordinator = InventoryCoordinator::new(Arc::new(gateway.gateway), test_clock());
@@ -331,6 +431,19 @@ fn observation(name: &str, project: Option<&str>) -> ContainerObservation {
         },
         project.map(colui_domain::ComposeContainerMetadata::project),
     )
+}
+
+fn compose_observation(
+    name: &str,
+    project: &str,
+    working_directory: &str,
+    config_files: &[&str],
+) -> ContainerObservation {
+    let mut value = observation(name, Some(project));
+    let compose = value.compose.as_mut().unwrap();
+    compose.working_directory = Some(working_directory.to_owned());
+    compose.config_files = config_files.iter().map(|path| (*path).to_owned()).collect();
+    value
 }
 
 fn runtime_error(message: &str) -> AppError {

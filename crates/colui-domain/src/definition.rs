@@ -84,6 +84,19 @@ pub struct Issue {
     pub message: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum IssueCode {
+    AmbiguousRuntimeAssociation,
+}
+
+impl IssueCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AmbiguousRuntimeAssociation => "ambiguous_runtime_association",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum InventoryFreshness {
     Fresh,
@@ -102,6 +115,7 @@ pub struct RuntimeInventory {
     pub last_successful_observed_at: Option<Timestamp>,
     pub containers: Vec<ContainerInstance>,
     pub project_snapshots: Vec<ProjectRuntimeSnapshot>,
+    pub compose_observation_groups: Vec<ComposeObservationGroup>,
     pub standalone_containers: Vec<ContainerInstance>,
     pub error: Option<AppError>,
 }
@@ -118,10 +132,19 @@ impl RuntimeInventory {
             last_successful_observed_at: None,
             containers: Vec::new(),
             project_snapshots: Vec::new(),
+            compose_observation_groups: Vec::new(),
             standalone_containers: Vec::new(),
             error: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ComposeObservationGroup {
+    pub compose_project_name: String,
+    pub working_directory: Option<String>,
+    pub config_files: Vec<String>,
+    pub container_ids: Vec<ContainerId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
