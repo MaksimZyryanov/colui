@@ -9,6 +9,346 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
 
+async fn wire_logs(body: Vec<u8>, status: &str) -> (Result<ContainerLogs, AppError>, String) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let status = status.to_owned();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        let kind = if body.first().is_some_and(|b| *b <= 2) {
+            "multiplexed"
+        } else {
+            "raw"
+        };
+        write!(stream,"HTTP/1.1 {status}\r\nContent-Type: application/vnd.docker.{kind}-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
+        let _ = stream.write_all(&body);
+        String::from_utf8(request).unwrap()
+    });
+    let docker = bollard::Docker::connect_with_http(
+        &format!("http://{address}"),
+        30,
+        bollard::API_DEFAULT_VERSION,
+    )
+    .unwrap();
+    let result = DockerApiAdapter::new(
+        docker,
+        DockerEndpoint::try_from(format!("http://{address}").as_str()).unwrap(),
+    )
+    .logs(ContainerId("abc".into()))
+    .await;
+    (result, server.join().unwrap())
+}
+fn frame(stream: u8, bytes: &[u8]) -> Vec<u8> {
+    let mut result = vec![stream, 0, 0, 0];
+    result.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    result.extend_from_slice(bytes);
+    result
+}
+#[tokio::test]
+async fn logs_raw_http_options_framing_order_tty_and_retention() {
+    for size in [0_usize, 262_144, 262_145, 700_000] {
+        let payload: Vec<u8> = (0..size).map(|n| b'a' + (n % 26) as u8).collect();
+        for tty in [false, true] {
+            let wire = if tty {
+                payload.clone()
+            } else {
+                payload
+                    .chunks(1031)
+                    .enumerate()
+                    .flat_map(|(n, c)| frame(1 + (n % 2) as u8, c))
+                    .collect()
+            };
+            let (result, request) = wire_logs(wire, "200 OK").await;
+            let logs = result.unwrap();
+            assert_eq!(
+                logs.text.as_bytes(),
+                &payload[size.saturating_sub(262_144)..]
+            );
+            assert_eq!(logs.retained_bytes as usize, size.min(262_144));
+            assert_eq!(logs.truncated, size > 262_144);
+            let line = request.lines().next().unwrap();
+            assert!(
+                line.starts_with("GET /v1.47/containers/abc/logs?"),
+                "{line}"
+            );
+            for option in [
+                "stdout=true",
+                "stderr=true",
+                "follow=false",
+                "timestamps=false",
+                "since=0",
+                "until=0",
+                "tail=4096",
+            ] {
+                assert!(line.contains(option), "{line}");
+            }
+        }
+    }
+    let mut wire = frame(1, b"out");
+    wire.extend(frame(2, b"err"));
+    wire.extend(frame(1, &[0xe2, 0x82]));
+    assert_eq!(
+        wire_logs(wire, "200 OK").await.0.unwrap().text,
+        "outerr\u{fffd}"
+    );
+}
+#[tokio::test]
+async fn logs_raw_http_transfer_limit_and_disappearance_are_sanitized() {
+    let below_cap = vec![b'x'; 8 * 1024 * 1024 - 1];
+    let result = wire_logs(below_cap, "200 OK").await.0.unwrap();
+    assert_eq!(result.retained_bytes, 262_144);
+    assert!(result.truncated);
+    let at_cap = frame(1, &vec![b'x'; 8 * 1024 * 1024]);
+    let error = wire_logs(at_cap, "200 OK").await.0.unwrap_err();
+    assert_eq!(error.code, AppErrorCode::ContainerOperationFailed);
+    assert!(error.retryable);
+    for status in ["404 Not Found", "500 Internal Server Error"] {
+        let error = wire_logs(br#"{"message":"SECRET output"}"#.to_vec(), status)
+            .await
+            .0
+            .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::ContainerOperationFailed);
+        assert_eq!(error.subject.unwrap().id, "abc");
+        assert!(!error.message.contains("SECRET"));
+    }
+}
+
+#[tokio::test]
+async fn logs_transfer_cap_applies_before_large_multiplexed_frame_finishes() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(stream.read_u8().await.unwrap());
+        }
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.multiplexed-stream\r\nContent-Length: 4294967303\r\n\r\n\x01\0\0\0\xff\xff\xff\xff").await.unwrap();
+        let chunk = [b'x'; 8192];
+        for _ in 0..1024 {
+            if stream.write_all(&chunk).await.is_err() {
+                return;
+            }
+        }
+        // Never finish the announced frame or response. The cap must close it first.
+        match stream.read(&mut [0]).await {
+            Ok(0) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => (),
+            other => panic!("expected client closure: {other:?}"),
+        }
+    });
+    let endpoint = DockerEndpoint::try_from(format!("http://{address}").as_str()).unwrap();
+    let docker =
+        bollard::Docker::connect_with_http(endpoint.as_str(), 30, bollard::API_DEFAULT_VERSION)
+            .unwrap();
+    let adapter = DockerApiAdapter::new(docker, endpoint);
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        adapter.logs(ContainerId("abc".into())),
+    )
+    .await
+    .expect("cap must precede ten-second deadline")
+    .unwrap_err();
+    assert!(error.retryable);
+    assert_eq!(error.code, AppErrorCode::ContainerOperationFailed);
+    server.await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn logs_unix_transport_preserves_tty_control_bytes_and_unterminated_utf8() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    for multiplexed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("docker.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            let kind = if multiplexed { "multiplexed" } else { "raw" };
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.{kind}-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            let payload = [0, 1, 2, b'x', 0xe2, 0x82];
+            let bytes = if multiplexed {
+                let mut bytes = frame(1, &payload[..3]);
+                bytes.extend(frame(2, &payload[3..]));
+                bytes
+            } else {
+                payload.to_vec()
+            };
+            for byte in bytes {
+                stream
+                    .write_all(&[b'1', b'\r', b'\n', byte, b'\r', b'\n'])
+                    .await
+                    .unwrap();
+            }
+            stream.write_all(b"0\r\n\r\n").await.unwrap();
+        });
+        let endpoint =
+            DockerEndpoint::try_from(format!("unix://{}", socket.display()).as_str()).unwrap();
+        let docker =
+            bollard::Docker::connect_with_unix(endpoint.as_str(), 30, bollard::API_DEFAULT_VERSION)
+                .unwrap();
+        let logs = DockerApiAdapter::new(docker, endpoint)
+            .logs(ContainerId("abc".into()))
+            .await
+            .unwrap();
+        assert_eq!(logs.text, "\0\u{1}\u{2}x\u{fffd}");
+        assert_eq!(logs.retained_bytes, 6);
+        assert!(!logs.truncated);
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn logs_gateway_checks_before_capture_and_after_completion_and_drops_cancelled_future() {
+    let (docker, gateway, _, session) = setup().await;
+    let request = ContainerLogsRequest {
+        container_id: ContainerId("abc".into()),
+        runtime_session_id: session,
+    };
+    let task = tokio::spawn({
+        let gateway = gateway.clone();
+        let request = request.clone();
+        async move { gateway.read_logs(request).await }
+    });
+    docker.action_started.notified().await;
+    gateway.disconnect_runtime().await.unwrap();
+    docker.action_release.add_permits(1);
+    let error = task.await.unwrap().unwrap_err();
+    assert!(!error.retryable);
+    assert!(!format!("{error:?}").contains("SECRET"));
+    assert!(gateway.read_logs(request).await.is_err());
+    assert_eq!(docker.actions.load(Ordering::SeqCst), 1);
+    gateway.connect_runtime(None).await.unwrap();
+    let request = ContainerLogsRequest {
+        container_id: ContainerId("abc".into()),
+        runtime_session_id: gateway.api_read_context().await.unwrap().session_id,
+    };
+    let task = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.read_logs(request).await }
+    });
+    docker.action_started.notified().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(docker.action_release.available_permits(), 0);
+    assert_eq!(gateway.created_client_count(), 2);
+}
+
+async fn stalled_log_request(
+    send_body: bool,
+) -> (
+    tokio::task::JoinHandle<Result<ContainerLogs, AppError>>,
+    tokio::task::JoinHandle<usize>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (started, received) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(stream.read_u8().await.unwrap());
+        }
+        if send_body {
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\nContent-Length: 1000\r\n\r\nSECRET").await.unwrap();
+        }
+        started.send(()).unwrap();
+        match stream.read(&mut [0]).await {
+            Ok(n) => n,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => 0,
+            Err(error) => panic!("unexpected transport error: {error}"),
+        }
+    });
+    let task = tokio::spawn(async move {
+        let endpoint = DockerEndpoint::try_from(format!("http://{address}").as_str()).unwrap();
+        let docker =
+            bollard::Docker::connect_with_http(endpoint.as_str(), 30, bollard::API_DEFAULT_VERSION)
+                .unwrap();
+        DockerApiAdapter::new(docker, endpoint)
+            .logs(ContainerId("abc".into()))
+            .await
+    });
+    received.await.unwrap();
+    (task, server)
+}
+
+#[tokio::test]
+async fn logs_deadline_is_ten_monotonic_seconds_including_headers_and_body() {
+    for send_body in [false, true] {
+        let (task, server) = stalled_log_request(send_body).await;
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert!(!task.is_finished());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let error = task.await.unwrap().unwrap_err();
+        assert_eq!(error.code, AppErrorCode::ContainerOperationFailed);
+        assert!(error.retryable);
+        assert!(!format!("{error:?}").contains("SECRET"));
+        tokio::time::resume();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[tokio::test]
+async fn logs_cancellation_closes_transport_without_returning_partial_text() {
+    let (task, server) = stalled_log_request(true).await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn logs_incomplete_frame_is_failure_not_partial_success() {
+    let mut bytes = frame(1, b"SECRET");
+    bytes.pop();
+    let error = wire_logs(bytes, "200 OK").await.0.unwrap_err();
+    assert_eq!(error.code, AppErrorCode::ContainerOperationFailed);
+    assert!(!format!("{error:?}").contains("SECRET"));
+}
+
+#[test]
+fn ports_list_keeps_partial_bindings() {
+    let summary = serde_json::from_str(r#"{"Id":"abc","Ports":[{"IP":"::","PrivatePort":80,"Type":"tcp"},{"PublicPort":8080,"PrivatePort":80,"Type":"tcp"},{"PrivatePort":53,"Type":"udp"}]}"#).unwrap();
+    let ports = colui_adapters::runtime::normalize_container_summary(summary)
+        .instance
+        .published_ports;
+    assert_eq!(ports.len(), 3);
+    assert_eq!(ports[0].host_ip.as_deref(), Some("::"));
+    assert_eq!(ports[0].host_port, None);
+    assert_eq!(ports[1].host_ip, None);
+    assert_eq!(ports[1].host_port, Some(8080));
+    assert_eq!(ports[2].host_ip, None);
+    assert_eq!(ports[2].host_port, None);
+}
+
 struct TestClock;
 impl Clock for TestClock {
     fn now(&self) -> Timestamp {
@@ -74,6 +414,16 @@ fn observation(id: &str) -> ContainerObservation {
     )
 }
 impl DockerControl for Docker {
+    fn logs(&self, id: ContainerId) -> RuntimeFuture<'_, ContainerLogs> {
+        Box::pin(async move {
+            self.actions.fetch_add(1, Ordering::SeqCst);
+            self.action_started.notify_one();
+            self.action_release.acquire().await.unwrap().forget();
+            let mut ring = LogByteRing::default();
+            ring.push(b"SECRET");
+            Ok(ring.finish(id, Timestamp("now".into())))
+        })
+    }
     fn info(&self) -> RuntimeFuture<'_, DaemonFingerprint> {
         Box::pin(async { Ok(DaemonFingerprint::new("same", "1", "linux", "x86_64")) })
     }
@@ -453,9 +803,12 @@ async fn wire_action(action: ContainerAction, status: &str) -> (Result<(), AppEr
         bollard::API_DEFAULT_VERSION,
     )
     .unwrap();
-    let result = DockerApiAdapter::new(docker)
-        .action(ContainerId("abc".into()), action)
-        .await;
+    let result = DockerApiAdapter::new(
+        docker,
+        DockerEndpoint::try_from(format!("http://{address}").as_str()).unwrap(),
+    )
+    .action(ContainerId("abc".into()), action)
+    .await;
     (result, server.join().unwrap())
 }
 

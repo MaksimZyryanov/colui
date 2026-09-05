@@ -1,6 +1,7 @@
 use super::ComposeOperation;
 use super::{build_cli_environment, resolve_endpoint, DockerControl};
 use bollard::Docker;
+use colui_app::{container_logs_error, ContainerLogs, ContainerLogsRequest, ContainerLogsRuntime};
 use colui_app::{
     container_operation_error, ComposeInvocation, ComposeProcessResult, ComposeRunner,
     ContainerAction, ContainerRuntime, DockerApi, LifecycleFuture, LifecycleOperation,
@@ -95,7 +96,10 @@ impl DockerFactory for BollardFactory {
                 "Runtime connection failed",
             )
         })?;
-        Ok(Arc::new(super::DockerApiAdapter::new(docker)))
+        Ok(Arc::new(super::DockerApiAdapter::new(
+            docker,
+            endpoint.clone(),
+        )))
     }
 }
 
@@ -761,6 +765,39 @@ impl ContainerRuntime for RuntimeGateway {
                 .action(id.clone(), action)
                 .await
                 .map_err(|_| container_operation_error(&id, "container operation failed"))
+        })
+    }
+}
+
+impl ContainerLogsRuntime for RuntimeGateway {
+    fn read_logs(&self, request: ContainerLogsRequest) -> RuntimeFuture<'_, ContainerLogs> {
+        Box::pin(async move {
+            let id = &request.container_id;
+            let client = {
+                let snapshot = self.snapshot.lock().await;
+                snapshot
+                    .client
+                    .as_ref()
+                    .filter(|c| c.session_id == request.runtime_session_id)
+                    .map(|c| c.client.clone())
+                    .ok_or_else(|| container_logs_error(id, false))?
+            };
+            if !self
+                .api_read_context()
+                .await
+                .is_ok_and(|c| c.session_id == request.runtime_session_id)
+            {
+                return Err(container_logs_error(id, false));
+            }
+            let result = client.logs(id.clone()).await;
+            if !self
+                .api_read_context()
+                .await
+                .is_ok_and(|c| c.session_id == request.runtime_session_id)
+            {
+                return Err(container_logs_error(id, false));
+            }
+            result.map_err(|e| container_logs_error(id, e.retryable))
         })
     }
 }

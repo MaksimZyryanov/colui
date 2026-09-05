@@ -740,6 +740,12 @@ impl CountingDocker {
 }
 
 impl DockerControl for CountingDocker {
+    fn logs(
+        &self,
+        _: colui_domain::ContainerId,
+    ) -> colui_app::RuntimeFuture<'_, colui_app::ContainerLogs> {
+        panic!("no logs")
+    }
     fn action(&self, _: ContainerId, _: colui_app::ContainerAction) -> RuntimeFuture<'_, ()> {
         panic!("inventory never mutates containers")
     }

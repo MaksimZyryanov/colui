@@ -17,8 +17,8 @@ pub enum ContainerStateDto {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PortBindingDto {
-    pub host_ip: String,
-    pub host_port: u16,
+    pub host_ip: Option<String>,
+    pub host_port: Option<u16>,
     pub container_port: u16,
     pub protocol: String,
 }
@@ -160,5 +160,26 @@ impl From<RuntimeInventory> for RuntimeInventoryDto {
                 .collect(),
             error: value.error.map(Into::into),
         }
+    }
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+    #[test]
+    fn partial_bindings_keep_nullable_host_fields() {
+        let dto: PortBindingDto = PortBinding {
+            host_ip: None,
+            host_port: None,
+            container_port: 80,
+            protocol: "tcp".into(),
+        }
+        .into();
+        let json = serde_json::to_value(dto).unwrap();
+        assert!(json["hostIp"].is_null());
+        assert!(json["hostPort"].is_null());
+        let restored: PortBindingDto = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.host_ip, None);
+        assert_eq!(restored.host_port, None);
     }
 }

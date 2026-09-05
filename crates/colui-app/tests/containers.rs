@@ -1,5 +1,277 @@
 use colui_app::*;
 use colui_domain::*;
+
+#[test]
+fn logs_ring_retains_newest_payload_bytes_and_decodes_only_at_end() {
+    for size in [0_usize, 262_144, 262_145, 900_000] {
+        let bytes: Vec<u8> = (0..size).map(|n| b'a' + (n % 26) as u8).collect();
+        let mut ring = LogByteRing::default();
+        for chunk in bytes.chunks(777) {
+            ring.push(chunk);
+        }
+        let logs = ring.finish(ContainerId("abc".into()), Timestamp("now".into()));
+        assert_eq!(logs.retained_bytes as usize, size.min(262_144));
+        assert_eq!(logs.truncated, size > 262_144);
+        assert_eq!(logs.text.as_bytes(), &bytes[size.saturating_sub(262_144)..]);
+    }
+    let mut ring = LogByteRing::default();
+    ring.push(&[0xe2]);
+    ring.push(&[0x82, 0xac]);
+    ring.push(&vec![b'x'; 262_140]);
+    ring.push(&[0xf0, 0x9f]);
+    let logs = ring.finish(ContainerId("abc".into()), Timestamp("now".into()));
+    assert_eq!(logs.retained_bytes, 262_144);
+    assert!(logs.truncated);
+    assert!(logs.text.starts_with("\u{fffd}\u{fffd}x"));
+    assert!(logs.text.ends_with("x\u{fffd}"));
+}
+
+fn binding(host: Option<&str>, port: Option<u16>, service: u16, protocol: &str) -> PortBinding {
+    PortBinding {
+        host_ip: host.map(str::to_owned),
+        host_port: port,
+        container_port: service,
+        protocol: protocol.into(),
+    }
+}
+
+#[test]
+fn ports_exact_display_copy_and_safe_url_table() {
+    for (host, port, display, authority) in [
+        (
+            Some("0.0.0.0"),
+            Some(8080),
+            "0.0.0.0:8080",
+            Some("127.0.0.1:8080"),
+        ),
+        (Some("::"), Some(8080), "[::]:8080", Some("[::1]:8080")),
+        (
+            Some("2001:db8::1"),
+            Some(8080),
+            "[2001:db8::1]:8080",
+            Some("[2001:db8::1]:8080"),
+        ),
+        (
+            Some("127.0.0.2"),
+            Some(8080),
+            "127.0.0.2:8080",
+            Some("127.0.0.2:8080"),
+        ),
+        (Some("::"), None, "[::]:?", None),
+        (None, Some(8080), "?:8080", None),
+        (None, None, "<unpublished>", None),
+    ] {
+        let b = binding(host, port, 443, "TCP");
+        assert_eq!(binding_display(&b), format!("{display} -> 443/tcp"));
+        assert_eq!(binding_url(&b), authority.map(|a| format!("https://{a}")));
+        let action = PortBindingAction::from(&b);
+        assert_eq!(action.copy, binding_display(&b));
+        assert_eq!(action.url, binding_url(&b));
+    }
+    for service in [80, 443, 3000, 5173, 8000, 8080, 8443] {
+        for host_port in [80, 443, 12345] {
+            let scheme = if [443, 8443].contains(&service) {
+                "https"
+            } else {
+                "http"
+            };
+            assert_eq!(
+                binding_url(&binding(Some("127.0.0.1"), Some(host_port), service, "tcp")),
+                Some(format!("{scheme}://127.0.0.1:{host_port}"))
+            );
+        }
+        for protocol in ["udp", "sctp", "", "tcp "] {
+            assert!(
+                binding_url(&binding(Some("127.0.0.1"), Some(service), 80, protocol)).is_none()
+            );
+        }
+        let scheme = if [443, 8443].contains(&service) {
+            "https"
+        } else {
+            "http"
+        };
+        assert_eq!(
+            binding_url(&binding(Some("127.0.0.1"), Some(service), 9999, "tcp")),
+            Some(format!("{scheme}://127.0.0.1:{service}"))
+        );
+    }
+    for host in [
+        "",
+        "localhost",
+        "https://evil",
+        "127.0.0.1@evil",
+        "127.0.0.1/path",
+        "[::1]",
+        "::1%eth0",
+        "127.0.0.1\n",
+    ] {
+        assert!(
+            binding_url(&binding(Some(host), Some(80), 80, "tcp")).is_none(),
+            "{host}"
+        );
+    }
+    assert!(binding_url(&binding(Some("127.0.0.1"), Some(9999), 9999, "tcp")).is_none());
+    assert!(binding_url(&binding(Some("127.0.0.1"), Some(0), 80, "tcp")).is_none());
+}
+
+struct ReadFixture {
+    inner: Fixture,
+    opened: Mutex<Vec<String>>,
+    reads: AtomicUsize,
+}
+impl ReadFixture {
+    fn new() -> Self {
+        let inner = Fixture::new();
+        inner.inventory.lock().unwrap().standalone_containers[0].published_ports =
+            vec![binding(Some("::"), Some(18080), 80, "tcp")];
+        Self {
+            inner,
+            opened: Mutex::new(vec![]),
+            reads: AtomicUsize::new(0),
+        }
+    }
+}
+impl RuntimeStateReader for ReadFixture {
+    fn session_state(&self) -> RuntimeFuture<'_, RuntimeSessionState> {
+        self.inner.session_state()
+    }
+}
+impl InventoryReader for ReadFixture {
+    fn current_inventory(&self) -> InventoryFuture<'_, RuntimeInventory> {
+        Box::pin(async {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.inner.change_on_read.load(Ordering::SeqCst) {
+                *self.inner.state.lock().unwrap() = session(2);
+            }
+            Ok(self.inner.inventory.lock().unwrap().clone())
+        })
+    }
+}
+impl BrowserOpener for ReadFixture {
+    fn open(&self, url: &str) -> Result<(), AppError> {
+        self.opened.lock().unwrap().push(url.into());
+        Ok(())
+    }
+}
+impl ContainerLogsRuntime for ReadFixture {
+    fn read_logs(&self, request: ContainerLogsRequest) -> RuntimeFuture<'_, ContainerLogs> {
+        Box::pin(async move {
+            self.inner.actions.fetch_add(1, Ordering::SeqCst);
+            if self.inner.change_on_action.load(Ordering::SeqCst) {
+                *self.inner.state.lock().unwrap() = session(2);
+            }
+            if self.inner.fail_action.load(Ordering::SeqCst) {
+                return Err(container_operation_error(&request.container_id, "SECRET"));
+            }
+            let mut ring = LogByteRing::default();
+            ring.push(b"SECRET");
+            Ok(ring.finish(request.container_id, Timestamp("now".into())))
+        })
+    }
+}
+#[tokio::test]
+async fn ports_browser_rereads_inventory_and_rejects_untrusted_inputs() {
+    let f = ReadFixture::new();
+    let open = OpenContainerPort::new(&f, &f, &f);
+    open.execute(ContainerId("abc".into()), session(1), 0)
+        .await
+        .unwrap();
+    assert_eq!(*f.opened.lock().unwrap(), vec!["http://[::1]:18080"]);
+    f.inner.inventory.lock().unwrap().standalone_containers[0].published_ports[0].host_port =
+        Some(8081);
+    open.execute(ContainerId("abc".into()), session(1), 0)
+        .await
+        .unwrap();
+    assert_eq!(f.opened.lock().unwrap()[1], "http://[::1]:8081");
+    for (id, s, index) in [
+        ("https://evil", session(1), 0),
+        ("abc", session(2), 0),
+        ("abc", session(1), usize::MAX),
+    ] {
+        let error = open
+            .execute(ContainerId(id.into()), s, index)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::ContainerOperationFailed);
+        assert!(!error.retryable);
+    }
+    f.inner.inventory.lock().unwrap().standalone_containers[0].published_ports[0].protocol =
+        "udp".into();
+    assert!(open
+        .execute(ContainerId("abc".into()), session(1), 0)
+        .await
+        .is_err());
+    assert_eq!(f.opened.lock().unwrap().len(), 2);
+}
+#[tokio::test]
+async fn logs_and_ports_reject_stale_missing_or_changed_inventory_without_side_effects() {
+    for case in [
+        "old_session",
+        "missing",
+        "stale",
+        "no_snapshot",
+        "changed_on_read",
+    ] {
+        let f = ReadFixture::new();
+        {
+            let mut i = f.inner.inventory.lock().unwrap();
+            match case {
+                "old_session" => i.runtime_session_id = Some(session(2)),
+                "missing" => i.standalone_containers.clear(),
+                "stale" => i.freshness = InventoryFreshness::Stale,
+                "no_snapshot" => i.has_snapshot = false,
+                _ => f.inner.change_on_read.store(true, Ordering::SeqCst),
+            }
+        }
+        assert!(
+            ReadContainerLogs::new(&f, &f)
+                .execute(ContainerLogsRequest {
+                    container_id: ContainerId("abc".into()),
+                    runtime_session_id: session(1)
+                })
+                .await
+                .is_err(),
+            "{case}"
+        );
+        assert!(
+            OpenContainerPort::new(&f, &f, &f)
+                .execute(ContainerId("abc".into()), session(1), 0)
+                .await
+                .is_err(),
+            "{case}"
+        );
+        assert_eq!(f.inner.actions.load(Ordering::SeqCst), 0);
+        assert!(f.opened.lock().unwrap().is_empty());
+    }
+}
+#[tokio::test]
+async fn logs_session_guards_and_failures_never_return_or_retain_text() {
+    let f = ReadFixture::new();
+    let before = f.inner.inventory.lock().unwrap().clone();
+    let request = ContainerLogsRequest {
+        container_id: ContainerId("abc".into()),
+        runtime_session_id: session(1),
+    };
+    let read = ReadContainerLogs::new(&f, &f);
+    let logs = read.execute(request.clone()).await.unwrap();
+    assert_eq!(logs.text, "SECRET");
+    assert!(!format!("{logs:?}").contains("SECRET"));
+    drop(logs);
+    f.inner.fail_action.store(true, Ordering::SeqCst);
+    let error = read.execute(request.clone()).await.unwrap_err();
+    assert!(!format!("{error:?}").contains("SECRET"));
+    f.inner.fail_action.store(false, Ordering::SeqCst);
+    f.inner.change_on_action.store(true, Ordering::SeqCst);
+    let error = read.execute(request.clone()).await.unwrap_err();
+    assert!(!error.retryable);
+    assert!(!format!("{error:?}").contains("SECRET"));
+    let calls = f.inner.actions.load(Ordering::SeqCst);
+    assert!(read.execute(request).await.is_err());
+    assert_eq!(f.inner.actions.load(Ordering::SeqCst), calls);
+    assert_eq!(*f.inner.inventory.lock().unwrap(), before);
+    assert_eq!(f.inner.refreshes.load(Ordering::SeqCst), 0);
+    assert_eq!(f.inner.acquisitions.load(Ordering::SeqCst), 0);
+}
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,

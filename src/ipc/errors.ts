@@ -1,7 +1,7 @@
 import { z } from 'zod';
 const canonicalUuid = z.string().uuid().refine(value => value === value.toLowerCase() && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value), 'must be canonical lowercase hyphenated UUID');
 
-export const errorCodeSchema = z.enum(['runtime_unavailable','runtime_connection_failed','runtime_context_mismatch','profile_not_found','profile_already_registered','profile_revision_conflict','profile_invalid','definition_failed','compose_failed','container_operation_failed','operation_conflict','operation_timeout','registry_corrupt','registry_locked','registry_write_failed','permission_denied','protocol_mismatch']);
+export const errorCodeSchema = z.enum(['runtime_unavailable','runtime_connection_failed','runtime_context_mismatch','candidate_stale','discovery_conflict','profile_not_found','profile_already_registered','profile_revision_conflict','profile_invalid','definition_failed','compose_failed','container_operation_failed','operation_conflict','operation_timeout','registry_corrupt','registry_locked','registry_write_failed','recovery_conflict','permission_denied','protocol_mismatch']);
 export const appErrorSchema = z.object({ code: errorCodeSchema, operation: z.string(), subjectId: canonicalUuid.nullable().optional(), message: z.string(), details: z.string().nullable().optional(), retryable: z.boolean() });
 export type AppError = z.infer<typeof appErrorSchema>;
 export class AppErrorException extends Error implements AppError {

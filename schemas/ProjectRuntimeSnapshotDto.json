@@ -57,12 +57,18 @@
           "type": "integer"
         },
         "hostIp": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "hostPort": {
           "format": "uint16",
           "minimum": 0.0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "protocol": {
           "type": "string"
@@ -70,8 +76,6 @@
       },
       "required": [
         "containerPort",
-        "hostIp",
-        "hostPort",
         "protocol"
       ],
       "type": "object"

@@ -28,8 +28,8 @@ pub enum RuntimeActivity {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PortBinding {
-    pub host_ip: String,
-    pub host_port: u16,
+    pub host_ip: Option<String>,
+    pub host_port: Option<u16>,
     pub container_port: u16,
     pub protocol: String,
 }

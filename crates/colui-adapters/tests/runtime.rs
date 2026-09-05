@@ -1226,6 +1226,12 @@ impl FakeDocker {
     }
 }
 impl colui_adapters::runtime::DockerControl for FakeDocker {
+    fn logs(
+        &self,
+        _: colui_domain::ContainerId,
+    ) -> colui_app::RuntimeFuture<'_, colui_app::ContainerLogs> {
+        panic!("no logs")
+    }
     fn action(
         &self,
         _: colui_domain::ContainerId,
@@ -1253,6 +1259,12 @@ impl colui_adapters::runtime::DockerControl for FakeDocker {
 }
 
 impl colui_adapters::runtime::DockerControl for StaleDocker {
+    fn logs(
+        &self,
+        _: colui_domain::ContainerId,
+    ) -> colui_app::RuntimeFuture<'_, colui_app::ContainerLogs> {
+        panic!("no logs")
+    }
     fn action(
         &self,
         _: colui_domain::ContainerId,
