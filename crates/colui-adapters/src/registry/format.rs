@@ -173,6 +173,7 @@ impl JsonProfileRegistry {
             .create(true)
             .read(true)
             .write(true)
+            .truncate(false)
             .open(&self.config.lock_path)
             .map_err(|error| io_error("open_registry_lock", error))?;
         let started = Instant::now();

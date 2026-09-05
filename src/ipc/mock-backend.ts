@@ -15,7 +15,10 @@ const now = () => new Date().toISOString();
 const error = (code: AppErrorException['code'], operation: string, message: string, subjectId: string | null = null): never => { throw new AppErrorException({ code, operation, subject: subjectId === null ? null : { kind: 'profile', id: subjectId }, message, details: null, retryable: false }); };
 const validateDraft = (draft: ProfileDraft, operation: string) => { if (!draft.displayName || !/^[a-z0-9][a-z0-9_-]*$/.test(draft.composeProjectName) || draft.composeFiles.length === 0 || new Set([...draft.composeFiles, ...draft.environmentFiles]).size !== draft.composeFiles.length + draft.environmentFiles.length) error('profile_invalid', operation, 'Invalid profile draft'); };
 const storageKey = 'colui.mock.profiles';
-const stored = () => { if (typeof localStorage === 'undefined') return null; try { return JSON.parse(localStorage.getItem(storageKey) ?? 'null') as { profiles: ProfileSummary[]; drafts: Array<[string, ProfileDraft]>; statuses: Array<[string, unknown]> } | null; } catch { return null; } };
+const storage = () => typeof process !== 'undefined' && process.release?.name === 'node'
+  ? Object.getOwnPropertyDescriptor(globalThis, 'localStorage')?.value as Storage | undefined
+  : window.localStorage;
+const stored = () => { try { return JSON.parse(storage()?.getItem(storageKey) ?? 'null') as { profiles: ProfileSummary[]; drafts: Array<[string, ProfileDraft]>; statuses: Array<[string, unknown]> } | null; } catch { return null; } };
 const initial = stored();
 let profiles: ProfileSummary[] = initial?.profiles ?? [];
 let nextId = nextPersistedId(profiles);
@@ -41,11 +44,11 @@ const overrides = new Map<string, unknown>();
 const errors = new Map<string, unknown>();
 let invocations: Array<{ command: string; args?: unknown }> = [];
 const publishInvocations = () => { if (typeof window !== 'undefined') window.__COLUI_MOCK_INVOCATIONS = [...invocations]; };
-const persist = () => { if (typeof localStorage !== 'undefined') localStorage.setItem(storageKey, JSON.stringify({ profiles, drafts: [...drafts], statuses: [...statuses] })); };
+const persist = () => storage()?.setItem(storageKey, JSON.stringify({ profiles, drafts: [...drafts], statuses: [...statuses] }));
 const baseStatus = (profileId: string) => typeof window !== 'undefined' && /runtimeFailure|lifecycle/.test(window.location.search) ? { profileId, runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: now() }, definition: { state: 'valid', revision: '1', serviceCount: 1 }, operation: null, issues: [] } : { profileId, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null }, definition: { state: 'unchecked', revision: null, serviceCount: null }, operation: null, issues: [] };
 function validateId(args: unknown, operation: string) { const result = profileIdRequestSchema.safeParse(args); if (!result.success) error('profile_invalid', operation, 'profileId must be a UUID'); return result.data!.profileId; }
 export const mockBackend = {
-  reset() { profiles = []; drafts = new Map(); runtime = { state: 'disconnected' }; statuses = new Map(); inventoryGeneration = 0; inventoryObservedAt = null; inventoryContainerState = 'running'; autoRegistrationEnabled = false; backup = null; backupDrafts.clear(); registryRevision = 0; if (typeof localStorage !== 'undefined') localStorage.removeItem(storageKey); overrides.clear(); errors.clear(); invocations = []; nextId = 1; },
+  reset() { profiles = []; drafts = new Map(); runtime = { state: 'disconnected' }; statuses = new Map(); inventoryGeneration = 0; inventoryObservedAt = null; inventoryContainerState = 'running'; autoRegistrationEnabled = false; backup = null; backupDrafts.clear(); registryRevision = 0; storage()?.removeItem(storageKey); overrides.clear(); errors.clear(); invocations = []; nextId = 1; },
   getInvocations() { return [...invocations]; },
   setResponseOverride(command: string, value: unknown) { overrides.set(command, value); },
   setErrorOverride(command: string, value: unknown) { errors.set(command, value); },

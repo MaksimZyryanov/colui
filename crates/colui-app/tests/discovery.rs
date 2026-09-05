@@ -776,8 +776,9 @@ async fn registration_preserves_corrupt_locked_and_write_failed_registry_errors(
 async fn auto_registration_retries_only_on_next_generation_and_manual_bypasses_dedup() {
     let (inventory, store, state, request) = registration_fixture().await;
     ConfigureAutoRegistration::new(&state).execute(true).await;
+    let current = inventory.inventory.lock().unwrap().clone();
     let schedule = ScheduleAutoRegistration::new(&store, &state, &VALID_SESSIONS)
-        .execute(inventory.inventory.lock().unwrap().clone())
+        .execute(current)
         .await
         .unwrap()
         .unwrap();
@@ -802,16 +803,18 @@ async fn auto_registration_retries_only_on_next_generation_and_manual_bypasses_d
     );
 
     store.state.lock().unwrap().error = None;
+    let current = inventory.inventory.lock().unwrap().clone();
     assert!(
         ScheduleAutoRegistration::new(&store, &state, &VALID_SESSIONS)
-            .execute(inventory.inventory.lock().unwrap().clone())
+            .execute(current)
             .await
             .unwrap()
             .is_none()
     );
     inventory.inventory.lock().unwrap().generation = 4;
+    let current = inventory.inventory.lock().unwrap().clone();
     let retry = ScheduleAutoRegistration::new(&store, &state, &VALID_SESSIONS)
-        .execute(inventory.inventory.lock().unwrap().clone())
+        .execute(current)
         .await
         .unwrap()
         .unwrap();
@@ -845,8 +848,9 @@ async fn auto_registration_retries_only_on_next_generation_and_manual_bypasses_d
 async fn concurrent_manual_and_auto_registration_converge_on_shared_store() {
     let (inventory, store, state, request) = registration_fixture().await;
     ConfigureAutoRegistration::new(&state).execute(true).await;
+    let current = inventory.inventory.lock().unwrap().clone();
     let schedule = ScheduleAutoRegistration::new(&store, &state, &VALID_SESSIONS)
-        .execute(inventory.inventory.lock().unwrap().clone())
+        .execute(current)
         .await
         .unwrap()
         .unwrap();

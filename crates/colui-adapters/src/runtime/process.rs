@@ -22,11 +22,6 @@ impl ComposeProcessRunner {
     pub fn new(termination: TerminationConfig) -> Self {
         Self { termination }
     }
-    pub fn default() -> Self {
-        Self::new(TerminationConfig {
-            grace_period: Duration::from_secs(5),
-        })
-    }
     pub async fn run(
         &self,
         invocation: ComposeInvocation,
@@ -137,7 +132,9 @@ impl ComposeProcessRunner {
 
 impl Default for ComposeProcessRunner {
     fn default() -> Self {
-        Self::default()
+        Self::new(TerminationConfig {
+            grace_period: Duration::from_secs(5),
+        })
     }
 }
 impl ComposeRunner for ComposeProcessRunner {

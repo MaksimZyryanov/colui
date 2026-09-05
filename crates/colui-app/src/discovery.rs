@@ -213,7 +213,7 @@ fn registration_store_error(mut error: AppError) -> AppError {
                 | AppErrorCode::RegistryWriteFailed
         )
     {
-        error.subject = Some(AppErrorSubject::registry("registry"));
+        error.subject = Some(Box::new(AppErrorSubject::registry("registry")));
     }
     error
 }

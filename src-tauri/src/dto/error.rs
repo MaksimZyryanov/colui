@@ -105,12 +105,12 @@ impl From<AppError> for AppErrorDto {
                     | AppErrorCode::RegistryWriteFailed
                     | AppErrorCode::RecoveryConflict
             )
-            .then(|| AppErrorSubject::registry("registry"))
+            .then(|| Box::new(AppErrorSubject::registry("registry")))
         });
         Self {
             code: error.code.into(),
             operation: error.operation,
-            subject: subject.map(Into::into),
+            subject: subject.map(|subject| (*subject).into()),
             message: error.message,
             details: error.details,
             retryable: error.retryable,

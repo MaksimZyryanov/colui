@@ -17,6 +17,8 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, watch, Mutex, RwLock};
 
 type RefreshResult = Result<RuntimeInventory, AppError>;
+type ComposeGroupMap =
+    BTreeMap<(String, Option<String>, Vec<String>), Vec<colui_domain::ContainerId>>;
 
 struct InFlight {
     start_order: ObservationOrder,
@@ -282,8 +284,7 @@ fn normalize(
     observations: Vec<ContainerObservation>,
 ) -> RuntimeInventory {
     let mut projects = BTreeMap::<String, ProjectRuntimeSnapshot>::new();
-    let mut groups =
-        BTreeMap::<(String, Option<String>, Vec<String>), Vec<colui_domain::ContainerId>>::new();
+    let mut groups = ComposeGroupMap::new();
     let mut containers = Vec::with_capacity(observations.len());
     let mut standalone = Vec::new();
     for observation in observations {
@@ -330,7 +331,7 @@ fn add_observation(
     all: &mut Vec<colui_domain::ContainerInstance>,
     standalone: &mut Vec<colui_domain::ContainerInstance>,
     projects: &mut BTreeMap<String, ProjectRuntimeSnapshot>,
-    groups: &mut BTreeMap<(String, Option<String>, Vec<String>), Vec<colui_domain::ContainerId>>,
+    groups: &mut ComposeGroupMap,
 ) {
     let instance = observation.instance;
     all.push(instance.clone());

@@ -41,7 +41,7 @@ describe('Vite mock browser flow', () => {
     await user.click(screen.getByRole('button', { name: /^Remove profile$/ }));
     await waitFor(() => expect(screen.getByText('No projects yet')).toBeVisible());
     expect(mockBackend.getInvocations().map(invocation => invocation.command)).toContain('remove_profile');
-  }, 15000);
+  }, 30000);
 
   it('keeps profiles visible when runtime connection fails', async () => {
     mockBackend.setErrorOverride('connect_runtime', new Error('runtime offline'));

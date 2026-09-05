@@ -68,7 +68,7 @@ impl AppErrorSubject {
 pub struct AppError {
     pub code: AppErrorCode,
     pub operation: String,
-    pub subject: Option<AppErrorSubject>,
+    pub subject: Option<Box<AppErrorSubject>>,
     pub subject_id: Option<ProfileId>,
     pub message: String,
     pub details: Option<String>,
@@ -82,7 +82,10 @@ impl AppError {
         subject_id: Option<ProfileId>,
         message: impl Into<String>,
     ) -> Self {
-        let subject = subject_id.clone().map(AppErrorSubject::profile);
+        let subject = subject_id
+            .clone()
+            .map(AppErrorSubject::profile)
+            .map(Box::new);
         Self {
             code,
             operation: operation.into(),
@@ -108,7 +111,7 @@ impl AppError {
         Self {
             code,
             operation: operation.into(),
-            subject: Some(subject),
+            subject: Some(Box::new(subject)),
             subject_id: None,
             message: message.into(),
             details: None,

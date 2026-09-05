@@ -76,10 +76,10 @@ impl DefinitionCache {
         let cached = {
             let mut state = lock(&self.state);
             let previous_revision = state.revisions.insert(id.clone(), profile.revision);
-            if previous_revision.is_some_and(|revision| revision != profile.revision) {
-                if state.entries.remove(&id).is_some() {
-                    state.generation = state.generation.wrapping_add(1);
-                }
+            if previous_revision.is_some_and(|revision| revision != profile.revision)
+                && state.entries.remove(&id).is_some()
+            {
+                state.generation = state.generation.wrapping_add(1);
             }
             state.entries.get(&id).cloned()
         };
