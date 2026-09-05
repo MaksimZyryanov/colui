@@ -126,7 +126,8 @@ where
             registration_origin: RegistrationOrigin::Discovered,
         };
         let ids = generate_profile_ids(self.ids);
-        let result_ids = ids.clone();
+        let selected_id = Arc::new(Mutex::new(None));
+        let selected_id_for_mutation = selected_id.clone();
         let request_for_mutation = request.clone();
         let snapshot = self
             .store
@@ -155,6 +156,9 @@ where
                         )
                     })?;
                 let profile = ProjectProfile::from_draft(id, draft)?;
+                *selected_id_for_mutation
+                    .lock()
+                    .expect("selected profile ID poisoned") = Some(profile.id.clone());
                 snapshot.profiles.push(profile);
                 snapshot.registry_revision =
                     snapshot.registry_revision.checked_add(1).ok_or_else(|| {
@@ -169,11 +173,16 @@ where
             }))
             .await
             .map_err(registration_store_error)?;
+        let selected_id = selected_id
+            .lock()
+            .expect("selected profile ID poisoned")
+            .clone()
+            .expect("successful mutation selected profile ID");
 
         snapshot
             .profiles
             .into_iter()
-            .find(|profile| result_ids.contains(&profile.id))
+            .find(|profile| profile.id == selected_id)
             .ok_or_else(|| {
                 candidate_error(
                     AppErrorCode::CandidateStale,

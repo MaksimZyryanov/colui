@@ -13,6 +13,7 @@ use colui_domain::{
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::Barrier;
 use uuid::Uuid;
 
 struct CountingInventory {
@@ -366,6 +367,7 @@ struct RegistrationStoreState {
     writes: usize,
     before_mutation: Option<Box<dyn FnOnce() + Send>>,
     error: Option<AppError>,
+    mutation_barrier: Option<Arc<Barrier>>,
 }
 
 impl RegistrationStore {
@@ -379,6 +381,7 @@ impl RegistrationStore {
                 writes: 0,
                 before_mutation: None,
                 error: None,
+                mutation_barrier: None,
             })),
         }
     }
@@ -398,7 +401,11 @@ impl ProfileReader for RegistrationStore {
 impl ProfileStore for RegistrationStore {
     fn mutate(&self, mutation: ProfileMutation) -> StoreFuture<'_, RegistrySnapshot> {
         let state = self.state.clone();
+        let barrier = state.lock().unwrap().mutation_barrier.clone();
         Box::pin(async move {
+            if let Some(barrier) = barrier {
+                barrier.wait().await;
+            }
             let mut state = state.lock().unwrap();
             if let Some(error) = state.error.clone() {
                 return Err(error);
@@ -501,16 +508,22 @@ async fn locked_recheck_detects_reconnect_and_matching_profile_lost_races() {
 }
 
 #[tokio::test]
-async fn two_registrars_and_name_conflicts_never_update_existing_profiles() {
+async fn concurrent_registrars_and_name_conflicts_never_update_existing_profiles() {
     let (inventory, store, _state, request) = registration_fixture().await;
-    let first = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
-        .execute(request.clone())
-        .await
-        .unwrap();
-    let error = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(200))
-        .execute(request.clone())
-        .await
-        .unwrap_err();
+    store.state.lock().unwrap().mutation_barrier = Some(Arc::new(Barrier::new(2)));
+    let first_ids = SequenceIds::starting_at(100);
+    let second_ids = SequenceIds::starting_at(200);
+    let first_registration = RegisterCandidate::new(&inventory, &store, &first_ids);
+    let second_registration = RegisterCandidate::new(&inventory, &store, &second_ids);
+    let (first, second) = tokio::join!(
+        first_registration.execute(request.clone()),
+        second_registration.execute(request.clone()),
+    );
+    store.state.lock().unwrap().mutation_barrier = None;
+    let (first, error) = match (first, second) {
+        (Ok(profile), Err(error)) | (Err(error), Ok(profile)) => (profile, error),
+        results => panic!("expected one success and one error, got {results:?}"),
+    };
     assert_eq!(error.code, AppErrorCode::ProfileAlreadyRegistered);
     assert_eq!(store.writes(), 1);
     assert_eq!(store.state.lock().unwrap().snapshot.profiles[0], first);
@@ -570,6 +583,34 @@ async fn registration_uses_discovered_draft_and_bounds_id_collisions_at_sixteen(
     );
     assert!(profile.environment_files.is_empty());
     assert_eq!(profile.registration_origin, RegistrationOrigin::Discovered);
+}
+
+#[tokio::test]
+async fn registration_returns_exact_selected_id_after_partial_collision() {
+    let (inventory, store, _state, request) = registration_fixture().await;
+    let colliding_id = ProfileId::new(Uuid::from_u128(100));
+    let selected_id = ProfileId::new(Uuid::from_u128(101));
+    let existing = ProjectProfile::from_draft(
+        colliding_id,
+        ProfileDraft {
+            display_name: "Other".try_into().unwrap(),
+            compose_project_name: "other".try_into().unwrap(),
+            working_directory: "/other".into(),
+            compose_files: vec!["compose.yml".into()],
+            environment_files: vec![],
+            registration_origin: RegistrationOrigin::Manual,
+        },
+    )
+    .unwrap();
+    store.state.lock().unwrap().snapshot.profiles = vec![existing];
+
+    let profile = RegisterCandidate::new(&inventory, &store, &SequenceIds::starting_at(100))
+        .execute(request)
+        .await
+        .unwrap();
+
+    assert_eq!(profile.id, selected_id);
+    assert_eq!(profile.compose_project_name.as_ref(), "demo");
 }
 
 #[tokio::test]
@@ -656,4 +697,42 @@ async fn auto_registration_retries_only_on_next_generation_and_manual_bypasses_d
         .await
         .unwrap_err();
     assert_eq!(error.code, AppErrorCode::ProfileAlreadyRegistered);
+}
+
+#[tokio::test]
+async fn concurrent_manual_and_auto_registration_converge_on_shared_store() {
+    let (inventory, store, state, request) = registration_fixture().await;
+    ConfigureAutoRegistration::new(&state).execute(true).await;
+    let schedule = ScheduleAutoRegistration::new(&store, &state)
+        .execute(inventory.inventory.lock().unwrap().clone())
+        .await
+        .unwrap()
+        .unwrap();
+    store.state.lock().unwrap().mutation_barrier = Some(Arc::new(Barrier::new(2)));
+    let auto_ids = SequenceIds::starting_at(100);
+    let manual_ids = SequenceIds::starting_at(200);
+    let auto = AutoRegisterCandidates::new(&inventory, &store, &auto_ids, &state);
+    let manual = RegisterCandidate::new(&inventory, &store, &manual_ids);
+
+    let (auto_results, manual_result) =
+        tokio::join!(auto.execute(schedule), manual.execute(request),);
+    let auto_result = auto_results.into_iter().next().unwrap();
+    let outcomes = [
+        auto_result.as_ref().map(|_| ()).map_err(|error| error.code),
+        manual_result
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| error.code),
+    ];
+
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|result| **result == Err(AppErrorCode::ProfileAlreadyRegistered))
+            .count(),
+        1
+    );
+    assert_eq!(store.writes(), 1);
+    assert_eq!(store.state.lock().unwrap().snapshot.profiles.len(), 1);
 }
