@@ -87,6 +87,8 @@ pub struct ComposeObservationGroup {
 
 Groups are derived during the same coordinator normalization pass as existing projections. No second Docker list, inspect, registry read, or write occurs. Group identity is the normalized tuple `(compose_project_name, working_directory, config_files)`, not Compose name alone. Groups sort by normalized project name, working directory, config-file sequence, then container IDs so equal observations produce deterministic output.
 
+Profile runtime projection no longer selects `project_snapshots` by Compose name alone. Project projection use case receives one registry-wide immutable snapshot plus inventory, precomputes association cardinality for all profile tuples, and passes that context to `project_status_from_inventory`. Function normalizes current profile working directory and ordered Compose files, then matches `compose_observation_groups` by full tuple. Exactly one observation-group match and exactly one registered-profile tuple match supplies containers. No observation match produces absent runtime presence. More than one observation match, more than one registered profile with matching tuple, any noncomparable profile path, or another runtime tuple with same Compose name produces explicit `AmbiguousRuntimeAssociation` issue and supplies no containers to every affected profile. Association issues are appended to existing definition/runtime issues and never overwrite them. One runtime container is never projected into multiple profiles.
+
 ### 4.2 Metadata normalization
 
 - Compose name is trimmed and accepted only when `ComposeProjectName::try_from` accepts the exact value. Invalid grammar, including uppercase characters, is incomplete metadata; discovery does not rewrite runtime namespace.
@@ -138,10 +140,10 @@ pub enum DiscoveryClassification {
 
 Classification uses one immutable inventory snapshot and one immutable registry snapshot:
 
-- `IncompleteMetadata`: normalized working directory is absent/invalid or normalized config files are empty.
-- `NameConflict`: more than one complete runtime tuple has the same Compose name, or any registered profile with that Compose namespace has a different normalized working-directory/config-file tuple.
+- `IncompleteMetadata`: Compose namespace fails `ComposeProjectName` validation, normalized working directory is absent/invalid, or normalized config files are empty.
+- `NameConflict`: any other complete or incomplete runtime observation has the same valid Compose name but a different normalized tuple, or any registered profile with that Compose namespace has a different normalized working-directory/config-file tuple.
 - `AlreadyRegistered`: no name conflict exists and a registered profile has the same Compose namespace and normalized tuple.
-- `NewUnambiguous`: metadata is complete, exactly one runtime tuple has the Compose name, and no registered profile uses that Compose name.
+- `NewUnambiguous`: metadata is complete, it is the only runtime observation with that Compose name, and no registered profile uses that Compose name.
 
 Precedence is `IncompleteMetadata`, `NameConflict`, `AlreadyRegistered`, then `NewUnambiguous`. Multiple matching registered profiles still classify as `NameConflict`; discovery never chooses or merges them automatically.
 
@@ -159,12 +161,14 @@ The journal is a single FIFO of at most 256 registration and operational events.
 
 Manual and automatic registration call one application registration use case. Auto-registration defaults disabled and is an in-memory current-application-session setting owned by `DiscoverySession`; it is not persisted. Diagnostics/Projects expose an explicit accessible toggle command and current setting. When enabled, a subscriber to successful `InventoryCoordinator` publication schedules one separate `AutoRegisterCandidates` use case for that published session/generation. Publication completes before scheduling; refresh and discovery query contain no write. Equal generation is not rescheduled, and session dedup prevents repeat scheduling. Scheduled use case rechecks enabled state, runtime session, and scheduled generation before processing, so disabling toggle cancels queued work before any write. Auto-registration considers only nonignored `NewUnambiguous` candidates with complete labels. Filesystem existence and `compose config` are deferred to the existing definition flow.
 
+Auto-registration dedup key is `(runtime_session_id, candidate_id, metadata_hash)`, where metadata hash covers ordered config files. State is `Pending`, `Succeeded`, `TerminalFailure`, or `RetryableFailure { next_generation }`. Succeeded and terminal failures are not rescheduled for equal metadata in that session. Retryable failure permits one automatic retry only after a later inventory generation, preventing a tight loop; each later failure advances `next_generation` again. Metadata change creates a new key. Manual registration bypasses auto dedup and always performs current-state/locked checks. Disabling auto-registration removes pending entries but preserves completed journal history.
+
 Registration input carries `candidate_id`, `runtime_session_id`, `inventory_generation`, and the expected normalized tuple. The use case:
 
 1. Acquires a generation-scoped candidate lease from `InventoryCoordinator`. Lease permits Docker observation but delays publication/replacement of current discovery evidence until release; it does not create another inventory owner.
 2. Reads the current runtime session and inventory.
 3. Rejects a changed session/generation, missing candidate, changed tuple, or candidate no longer registrable with a typed stale-candidate error.
-4. Creates a discovered-origin profile draft using the candidate Compose namespace and ordered files. Profile ID is newly generated and immutable.
+4. Creates a discovered-origin profile draft with `display_name` equal to Compose namespace, `compose_project_name` equal to that namespace, normalized observed working directory, ordered observed Compose files, empty `environment_files`, and `registration_origin = Discovered`. Profile ID is newly generated and immutable.
 5. Enters `ProfileStore::mutate`, rereads under the registry's cross-process lock, revalidates the still-held candidate lease/session/generation immediately before mutation, and repeats classification against the locked registry snapshot.
 6. Returns `profile_already_registered` when the same tuple now exists. It never overwrites, merges, or updates that profile.
 7. Returns an explicit conflict when the Compose name now maps to another tuple or several profiles.
@@ -172,7 +176,9 @@ Registration input carries `candidate_id`, `runtime_session_id`, `inventory_gene
 
 Repeated manual scheduling, repeated auto scheduling, manual/auto races, and two application instances therefore converge through the same locked check. Tuple equivalence, not generated profile ID, establishes registration idempotency.
 
-Registry corruption, lock timeout, and write failure preserve their existing typed codes and produce journal events. Auto-registration does not retry nonretryable failures. Retryable lock/write failures may be retried only by a later explicit auto-registration command; no unbounded background loop is introduced.
+Registry corruption, lock timeout, and write failure preserve their typed codes and produce journal events. Auto-registration never retries nonretryable failures and retries retryable failures at most once per later inventory generation through the dedup state machine; no timer or unbounded same-generation loop is introduced.
+
+Stable discovery/recovery errors are added across Rust `AppErrorCode`, Rust DTO/Schemars, Zod, and contract manifest: `candidate_stale` (`candidate` subject, nonretryable), `discovery_conflict` (`candidate` subject, nonretryable), `profile_already_registered` (`candidate` subject plus existing profile ID detail, nonretryable), and `recovery_conflict` (`registry` subject, retryable after active work/backup change ends). Existing `registry_locked` and `registry_write_failed` remain `registry`-subject retryable errors; `registry_corrupt` remains nonretryable until explicit recovery. Automatic retry follows only the dedup state machine above; manual action is always available.
 
 ## 7. Diagnostics
 
@@ -190,7 +196,17 @@ The aggregate does not promise one global transaction. Each section carries its 
 
 `ContextMismatch` is returned as structured runtime state, not converted into command failure. Diagnostics shows resolved endpoint and both fingerprints, explains that Compose operations are blocked, and permits API-backed inventory when the verified API client remains usable. `RuntimeGateway` therefore exposes an API-read context for both `Ready` and `ContextMismatch`; it contains session ID, endpoint, and API fingerprint, while the existing Compose-ready context remains `Ready`-only. `RuntimeInventorySource` and the coordinator session guard use API-read context before and after listing. Runtime, registry, inventory, definition, and operation errors remain independent typed fields.
 
-Connect, disconnect, and reconnect are explicit commands. Connect remains idempotent. Disconnect drops the gateway client and updates state without disabling profile/registry access. Reconnect returns `ReconnectResult { runtime_state, inventory }`, where `inventory` is optional. It performs disconnect then connect as one use case; after `Ready` or API-readable `ContextMismatch`, it requests exactly one explicit coordinated inventory refresh. If connection reaches an API-readable terminal state but refresh fails, reconnect still resolves with that runtime state and the coordinator's retained `current_inventory()` carrying stale/unavailable error. A failed connect rejects with its typed error and does not invent inventory.
+Connect, disconnect, and reconnect are serialized by one gateway transition mutex. Exact behavior:
+
+| Current/active state | `connect` | `disconnect` | `reconnect` |
+| --- | --- | --- | --- |
+| `Disconnected`/`Failed`/`ContextMismatch`, no transition | Start one connect | Publish/retain `Disconnected` | Start atomic disconnect-connect |
+| `Ready`, no transition | Return current session unchanged | Invalidate client, publish `Disconnected` | Start atomic disconnect-connect |
+| Connect transition active | Join same connect result | Cancel connect, await cleanup, publish `Disconnected` | Cancel connect, await cleanup, then own fresh connect |
+| Disconnect transition active | Wait for disconnect, then own connect | Join same disconnect result | Wait for disconnect, then own fresh connect |
+| Reconnect transition active | Join reconnect's connect result | Return `operation_conflict` | Join same reconnect result |
+
+Only transition owner publishes a new session, and publication occurs at terminal state. Reconnect returns `ReconnectResult { runtime_state, inventory }`, where `inventory` is optional. After `Ready` or API-readable `ContextMismatch`, it requests exactly one explicit coordinated inventory refresh. If connection reaches an API-readable terminal state but refresh fails, reconnect still resolves with that runtime state and coordinator retained `current_inventory()` carrying stale/unavailable error. Failed connect rejects with typed error and does not invent inventory.
 
 ## 8. Registry health, backup, and restore
 
@@ -202,21 +218,21 @@ Canonical backup update uses temp write, private owner-only permissions, file fs
 
 ### 8.2 Recovery exclusion
 
-Every profile mutation use case, discovery registration, definition lease, profile lifecycle, and container action must acquire its typed lease from the single `OperationLockManager`; ports do not expose an unguarded production constructor. Each process-local lease also holds a shared advisory file lease on `registry.recovery.lock`; restore obtains its exclusive nonblocking file lease after obtaining process-local exclusive recovery lease. Thus another app instance's mutation, definition, or operation makes restore fail fast. After shared file lease acquisition and before definition/runtime work, each profile operation rereads canonical registry revision, invalidates local profile/definition projections if revision differs, and resolves current profile again. Idle instances therefore cannot operate on pre-restore cached profiles. Lock order is process-local operation/recovery lease, recovery file lease, registry file lock, then runtime call. While recovery is pending/active, new local leases fail with `operation_conflict`. Existing registry lock timeout semantics remain separate.
+Every profile mutation use case, discovery registration, definition lease, profile lifecycle, and container action must acquire its typed lease from the single `OperationLockManager`; ports do not expose an unguarded production constructor. Each process-local lease also holds a shared advisory file lease on `registry.recovery.lock`; restore obtains its exclusive nonblocking file lease after obtaining process-local exclusive recovery lease. Thus another app instance's mutation, definition, or operation makes restore fail fast. After shared file lease acquisition and before definition/runtime work, each profile operation rereads full canonical snapshot identity `(registry_revision, canonical_content_sha256)`, invalidates local profile/definition projections if either component differs, and resolves current profile again. Idle instances therefore cannot operate on pre-restore cached profiles. Lock order is process-local operation/recovery lease, recovery file lease, registry file lock, then runtime call. While recovery is pending/active, new local leases fail with `operation_conflict`. Existing registry lock timeout semantics remain separate.
 
 Once exclusive:
 
 1. Read and fully validate `.bak` as schema v2, recording SHA-256 of its bytes.
 2. Acquire the existing cross-process registry lock with its bounded timeout. Canonical state read under this lock is authoritative; changes before lock acquisition are serialized into this request rather than compared with an unlocked snapshot.
 3. Reread and revalidate `.bak`; a changed SHA-256 rejects the request as a recovery conflict rather than silently selecting another backup.
-4. If canonical exists, preserve its bytes, including corrupt bytes, in the registry directory as `registry.pre-restore.<UTC timestamp>.<random suffix>.json` using exclusive private creation. Missing canonical needs no artifact and may be restored. Keep newest three artifacts and delete older artifacts only after successful restore. Failure to preserve an existing canonical file aborts restore.
-5. Build restored schema-v2 bytes from backup profiles. If canonical validates, set registry revision above both canonical and backup revisions and each restored profile revision above matching canonical/backup profile revisions. If canonical is missing or corrupt, it is never parsed as authority: registry and profile revisions advance from validated backup only. Full frontend/backend registry and definition caches are invalidated after restore in either case. Revision overflow aborts with `registry_write_failed`.
+4. If canonical exists, preserve its bytes, including corrupt bytes, in registry directory as `registry.pre-restore.<UTC timestamp>.<random suffix>.json` using exclusive private creation. Missing canonical needs no artifact and may be restored. Failure to preserve an existing canonical file aborts restore. Artifact pruning runs after every attempt's cleanup and keeps newest three completed artifacts; current in-progress artifact is excluded until success.
+5. Build restored schema-v2 bytes from backup profiles. If canonical validates, set registry revision above both canonical and backup revisions and each restored profile revision above matching canonical/backup profile revisions. If canonical is missing or corrupt, it is never parsed as authority: registry and profile revisions advance from validated backup only. Registry snapshot identity is `(registry_revision, canonical_content_sha256)` computed from validated canonical bytes. Readers and caches compare full identity, not revision alone, so reused historical revision cannot compare equal after recovery. Full frontend/backend registry and definition caches are invalidated after restore in either case. Revision overflow aborts with `registry_write_failed`.
 6. Atomically replace canonical through `JsonProfileRegistry`'s recovery capability and fsync the parent.
-7. Reread and validate canonical, publish its actual revision/health, invalidate all definition entries, and journal the result.
+7. Reread and validate canonical, publish its full snapshot identity/health, invalidate all definition entries, and journal result. If any failure occurs after pre-restore artifact creation but before successful canonical verification, delete that attempt's artifact before releasing locks; if deletion fails, classify it as completed failed-attempt artifact and prune completed artifacts to newest three.
 
 Cross-instance profile mutations are excluded by the registry lock. Backup replacement before lock acquisition is detected by hash comparison; canonical changes are serialized and the locked reread becomes restore authority. Restore never parses a corrupt canonical as authority, never silently repairs on startup/read, and never invokes Docker.
 
-Registry health is computed on each Diagnostics read from canonical parse first: `corrupt` has precedence over retained transient failures, then `missing`, then latest retained operation failure (`locked` or `write_failure`), otherwise `healthy`. Successful reads do not clear transient failure history. A later successful mutation, explicit backup, or restore clears it; corruption is always derived from current bytes and cannot be masked. Health includes operation and failure timestamps plus the stable typed error needed for UI recovery. Application startup invokes existing v1 import once where applicable and retains the result for Diagnostics. Malformed legacy data remains preserved and does not prevent the offline shell.
+Registry health is computed on each Diagnostics read from canonical access first: `permission_denied` or other read failure yields `unreadable` with typed cause; parse/schema failure yields `corrupt`; absent file yields `missing`; otherwise latest retained operation failure yields `locked` or `write_failure`, else `healthy`. Snapshot identity is `Some((revision, content_sha256))` only for validated canonical bytes and `None` for unreadable, corrupt, or missing states; discovery cache key uses this nullable tagged identity plus health state. Successful reads do not clear transient failure history. Later successful mutation, explicit backup, or restore clears it; current unreadable/corrupt state cannot be masked. Health includes operation/failure timestamps and stable typed error needed for UI recovery. Application startup invokes existing v1 import once where applicable and retains result for Diagnostics. Malformed legacy data remains preserved and does not prevent offline shell.
 
 ## 9. Standalone container actions
 
@@ -235,18 +251,21 @@ pub struct ContainerActionResult {
 pub enum ContainerActionObservation { ConfirmedInSession, IndeterminateAfterSessionChange }
 ```
 
-Commands accept `container_id`, action, and expected `runtime_session_id`; no names, endpoints, or paths. The use case rejects session mismatch before acquiring action lease and rechecks it immediately before Bollard mutation. It obtains an atomic container lease from extended `OperationLockManager`. Duplicate actions for one ID return `operation_conflict`; different container IDs may proceed concurrently. Existing profile lifecycle IPC remains strictly `{ profileId }`.
+Commands accept `container_id`, action, and expected `runtime_session_id`; no names, endpoints, or paths. Use case rejects session mismatch before acquiring action lease and rechecks immediately before Bollard mutation. Under lease it reads current coordinated inventory and requires matching session plus exact container ID membership in `standalone_containers`; absent, stale, or Compose-associated IDs return nonretryable `container_operation_failed` without Docker mutation. It obtains atomic container lease from extended `OperationLockManager`. Duplicate actions for one ID return `operation_conflict`; different container IDs may proceed concurrently. Existing profile lifecycle IPC remains strictly `{ profileId }`.
 
 Start, stop, and restart map directly to Bollard APIs. They do not invoke Compose. A missing/disappearing container and daemon errors map to `container_operation_failed` with container subject metadata and sanitized details.
 
-If Bollard reports daemon success, the action remains successful even when runtime session changes before response handling; result observation is marked `indeterminate_after_session_change` and exactly one coordinator refresh is still attempted against current session. After every daemon success, use case calls `InventoryCoordinator.refresh()` exactly once while its lease remains held. Because `refresh()` currently returns `Err` while retaining failure state, error path immediately reads `current_inventory()` and returns that retained stale/unavailable snapshot with typed observation error. Frontend publishes embedded inventory through existing generation structural sharing and performs no invalidation or follow-up refresh.
+If Bollard reports daemon success, action remains successful even when runtime session changes before response handling; result observation is marked `indeterminate_after_session_change`. Immediately after Docker response, use case asks coordinator to increment its own atomic observation-order counter and return marker. Every inventory list captures start order from same counter before Docker call. `InventoryCoordinator.refresh_after(marker)` may join only a list whose start order is greater than marker; if older list is in flight, it waits for that request and then starts one new observation. Shared coordinator counter, not wall clock, guarantees returned inventory cannot be pre-action. Use case calls `refresh_after` exactly once while lease remains held. Because refresh currently returns `Err` while retaining failure state, error path immediately reads `current_inventory()` and returns retained stale/unavailable snapshot with typed observation error. Frontend publishes embedded inventory through existing generation structural sharing and performs no invalidation or follow-up refresh.
 
 ## 10. Container logs
 
-Logs are explicit on-demand snapshots. Docker options are fixed: `stdout=true`, `stderr=true`, `follow=false`, `timestamps=false`, `since=0`, `until=0`, and `tail=all`. No polling, live follow, history, persistence, or query retry occurs. Cancellation drops the stream/client future without retaining partial text.
+Logs are explicit on-demand snapshots. Docker options are fixed: `stdout=true`, `stderr=true`, `follow=false`, `timestamps=false`, `since=0`, `until=0`, and server-side `tail=4096` lines. Request has a monotonic 10-second deadline and adapter stops consuming after 8 MiB transferred, returning typed retryable `container_operation_failed` rather than a misleading partial result. No polling, live follow, history, persistence, or query retry occurs. Cancellation drops stream/client future without retaining partial text.
 
 ```rust
-pub struct ContainerLogsRequest { pub container_id: ContainerId }
+pub struct ContainerLogsRequest {
+    pub container_id: ContainerId,
+    pub runtime_session_id: RuntimeSessionId,
+}
 
 pub struct ContainerLogs {
     pub container_id: ContainerId,
@@ -259,7 +278,7 @@ pub struct ContainerLogs {
 
 Ordering is Bollard `LogOutput` item arrival order for multiplexed streams and raw chunk arrival order for TTY streams. Adapter framing bytes are excluded from payload accounting. Chunks feed the ring incrementally; full output is never buffered first. A ring retains the newest `262_144` payload bytes across both streams. `truncated` is true exactly when at least one payload byte was discarded; output of exactly 262,144 bytes is not truncated. Decode occurs only after byte retention using UTF-8 replacement semantics. Every maximal invalid sequence, including a leading fragment caused by truncation or trailing partial code point from Docker, becomes `U+FFFD`. `retained_bytes` reports bytes before UTF-8 replacement.
 
-Session generation is checked before and after the request. Container disappearance returns `container_operation_failed`; no stale text is retained. Log text and container output never enter the session journal or diagnostics errors.
+Expected runtime session is checked before request, after gateway capture, and after stream completion. Session change returns nonretryable stale-session `container_operation_failed`; no text is returned or cached. Container disappearance returns `container_operation_failed`; no stale text is retained. Log text and container output never enter session journal or diagnostics errors.
 
 ## 11. Port binding policy
 
@@ -273,7 +292,7 @@ IPv6 hosts use brackets. Wildcard hosts remain `0.0.0.0` or `[::]` in display an
 
 Browser open is available only for complete TCP bindings where container port or host port belongs to `80`, `443`, `3000`, `5173`, `8000`, `8080`, or `8443`. Container port determines recognized service and scheme when recognized; otherwise recognized host port does. Effective service ports `443` and `8443` use `https`; others use `http`. URL authority always uses actual host port. UDP and unknown transports never become URLs. For URL construction only, `0.0.0.0` maps to `127.0.0.1` and `::` maps to `[::1]`; displayed/copied values remain unchanged. Nonwildcard IPv6 remains bracketed. Partial bindings retain exact partial display/copy forms above and disable browser open; no host component is guessed.
 
-URL derivation is a pure domain/application presentation policy with table-driven tests. Browser launch occurs through a narrow Tauri shell opener after URL validation; frontend cannot submit arbitrary URLs to that command.
+URL derivation is a pure domain/application presentation policy with table-driven tests. Browser command accepts only `container_id`, expected `runtime_session_id`, and binding index from current inventory DTO. Backend rereads matching current-session standalone container/binding, derives and validates URL, then calls narrow Tauri shell opener. Frontend cannot submit arbitrary URLs.
 
 ## 12. IPC and frontend contracts
 
@@ -291,12 +310,14 @@ Frontend transport remains exclusively in `src/ipc/`. Mock and Tauri responses p
 Primary navigation has working Projects and Diagnostics views. Projects contains registered profiles, discovery candidates/conflicts, and Other containers. Diagnostics owns no second inventory poller; the application shell owns the single visible-window inventory observer and shares its cache. Query keys use immutable IDs:
 
 - `inventoryKeys.snapshot()` remains the only inventory cache key and polling owner;
-- discovery is keyed by current runtime session ID and inventory generation;
-- diagnostics uses one read-only projection key;
-- logs use container ID and explicit request shape and are disabled until requested;
+- discovery is keyed by current runtime session ID, inventory generation, and full registry snapshot identity;
+- diagnostics uses one read-only projection key polled every two seconds only while document is visible, with immediate invalidation by operation/runtime/registry journal events;
+- logs use runtime session ID, container ID, and explicit request shape and are disabled until requested;
 - candidate/profile/container mutations use their immutable IDs for pending state.
 
-Registration success invalidates profile list and discovery projection. Ignore changes only discovery session projection. Runtime commands update runtime state; reconnect clears old discovery cache and publishes its one returned/refreshed inventory through the generation guard. Container action publishes embedded inventory directly.
+Create, update, remove, restore, and any registration success invalidate profile list and discovery projection because classification depends on registry identity. Ignore changes only discovery session projection. Runtime commands update runtime state; reconnect clears old discovery/log caches and publishes its one returned/refreshed inventory through generation guard. Container action publishes embedded inventory directly.
+
+Backend journal publication emits a lightweight monotonically sequenced `application_state_changed` Tauri event after auto-registration, profile/container operations, runtime transitions, and backup/restore commands. Read-only Diagnostics/health queries never emit events; externally caused permission/corruption changes are detected by visible-window polling. One app-shell subscriber invalidates affected profile/discovery/diagnostics keys and refetches active observers; event carries no authoritative payload. Missed events are repaired by polling and normal inventory/profile reads. Auto-registration therefore cannot leave frontend profile/discovery caches indefinitely stale.
 
 Views are responsive from narrow mobile width through desktop. Every action is keyboard reachable. Menus restore trigger focus; dialogs trap focus; destructive restore initially focuses Cancel and names the selected backup/path and consequences. Logs use a selectable preformatted region with an accessible truncation notice. Runtime/registry failures use stable-code recovery actions and expandable sanitized details. Offline profile navigation/edit/remove and Diagnostics registry data remain available without Docker.
 
