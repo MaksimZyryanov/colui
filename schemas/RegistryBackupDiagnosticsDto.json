@@ -126,7 +126,8 @@
         {
           "type": "null"
         }
-      ]
+      ],
+      "default": null
     },
     "state": {
       "$ref": "#/definitions/BackupValidationStateDto"

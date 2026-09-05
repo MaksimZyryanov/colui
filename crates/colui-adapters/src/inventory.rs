@@ -101,6 +101,7 @@ impl InventoryCoordinator {
         &self,
         profiles: Arc<dyn ProfileReader>,
         discovery: Arc<DiscoverySession>,
+        validity: Arc<dyn colui_app::DiscoverySessionValidity>,
     ) -> mpsc::Receiver<AutoRegistrationSchedule> {
         let mut publications = self.subscribe();
         let (scheduled, receiver) = mpsc::channel(16);
@@ -112,7 +113,7 @@ impl InventoryCoordinator {
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
                 let Ok(Some(schedule)) =
-                    ScheduleAutoRegistration::new(profiles.as_ref(), &discovery)
+                    ScheduleAutoRegistration::new(profiles.as_ref(), &discovery, validity.as_ref())
                         .execute(inventory)
                         .await
                 else {

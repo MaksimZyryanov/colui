@@ -249,6 +249,7 @@ impl AppState {
         let mut scheduled = self.inventory.start_auto_registration_scheduler(
             self.registry_diagnostics.clone(),
             self.discovery.clone(),
+            self.gateway.clone(),
         );
         let inventory = self.discovery_inventory();
         let registry = self.profiles.clone();
@@ -427,6 +428,192 @@ pub fn run() {
 #[cfg(test)]
 mod diagnostics_tests {
     use super::*;
+
+    struct DelayedProfiles {
+        inner: Arc<dyn ProfileStore>,
+        gate: std::sync::Mutex<
+            Option<(
+                tauri::async_runtime::Sender<()>,
+                tauri::async_runtime::Receiver<()>,
+            )>,
+        >,
+    }
+
+    impl colui_app::ProfileReader for DelayedProfiles {
+        fn load(&self) -> colui_app::StoreFuture<'_, colui_app::RegistrySnapshot> {
+            Box::pin(async move {
+                let snapshot = self.inner.load().await?;
+                let gate = self.gate.lock().unwrap().take();
+                if let Some((started, mut release)) = gate {
+                    started.send(()).await.unwrap();
+                    release.recv().await.unwrap();
+                }
+                Ok(snapshot)
+            })
+        }
+    }
+
+    impl ProfileStore for DelayedProfiles {
+        fn mutate(
+            &self,
+            mutation: colui_app::ProfileMutation,
+        ) -> colui_app::StoreFuture<'_, colui_app::RegistrySnapshot> {
+            self.inner.mutate(mutation)
+        }
+    }
+
+    fn delayed_discovery_install(publication: bool, reconnect: bool) {
+        use tauri::Manager;
+        let directory = std::env::temp_dir().join(format!(
+            "colui-delayed-discovery-{}-{publication}-{reconnect}",
+            std::process::id()
+        ));
+        let mut state =
+            tauri::async_runtime::block_on(AppState::initialize(directory.clone())).unwrap();
+        state.gateway = Arc::new(RuntimeGateway::new_for_tests(
+            Box::new(DiscoveryDocker),
+            Box::new(DiscoveryRunner),
+        ));
+        state.inventory = Arc::new(InventoryCoordinator::new(
+            state.gateway.clone(),
+            Arc::new(SystemClock(std::time::Instant::now())),
+        ));
+        state.runtime = Arc::new(RuntimeFacade::new(
+            state.gateway.clone(),
+            state.inventory.clone(),
+            state.definitions.clone(),
+        ));
+        let (started, mut entered) = tauri::async_runtime::channel(1);
+        let (release, resume) = tauri::async_runtime::channel(1);
+        let profiles = Arc::new(DelayedProfiles {
+            inner: state.profiles.clone(),
+            gate: std::sync::Mutex::new(Some((started, resume))),
+        });
+        state.profiles = profiles.clone();
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        tauri::async_runtime::block_on(async {
+            commands::runtime::connect_runtime(app.state())
+                .await
+                .unwrap();
+            let old = app.state::<AppState>().inventory.refresh().await.unwrap();
+            let old_id = colui_domain::classify_candidates(
+                old.runtime_session_id.unwrap(),
+                old.generation,
+                &old.compose_observation_groups,
+                &[],
+            )[0]
+            .candidate_id
+            .clone();
+            colui_app::ConfigureAutoRegistration::new(&app.state::<AppState>().discovery)
+                .execute(true)
+                .await;
+            let handle = app.handle().clone();
+            let delayed = tauri::async_runtime::spawn(async move {
+                if publication {
+                    let state = handle.state::<AppState>();
+                    colui_app::ScheduleAutoRegistration::new(
+                        profiles.as_ref(),
+                        &state.discovery,
+                        state.gateway.as_ref(),
+                    )
+                    .execute(old)
+                    .await
+                    .unwrap()
+                    .is_none()
+                } else {
+                    commands::discovery::list_discovery_candidates(handle.state())
+                        .await
+                        .unwrap()
+                        .candidates
+                        .is_empty()
+                }
+            });
+            entered.recv().await.unwrap();
+            let pending = if reconnect {
+                let result = commands::runtime::reconnect_runtime(app.state())
+                    .await
+                    .unwrap();
+                assert!(result.inventory.is_some());
+                let state = app.state::<AppState>();
+                let current = state.inventory.current_inventory().await.unwrap();
+                let schedule = colui_app::ScheduleAutoRegistration::new(
+                    state.registry_diagnostics.as_ref(),
+                    &state.discovery,
+                    state.gateway.as_ref(),
+                )
+                .execute(current)
+                .await
+                .unwrap()
+                .unwrap();
+                let candidate = state.discovery.claim_schedule(&schedule).await.remove(0);
+                assert!(
+                    colui_app::IgnoreCandidate::new(&state.discovery)
+                        .execute(candidate.candidate_id.clone())
+                        .await
+                );
+                Some((schedule, candidate))
+            } else {
+                commands::runtime::disconnect_runtime(app.state())
+                    .await
+                    .unwrap();
+                None
+            };
+            let before = app.state::<AppState>().discovery.candidates().await;
+            let journal = app.state::<AppState>().discovery.journal().await;
+            release.send(()).await.unwrap();
+            assert!(
+                delayed.await.unwrap(),
+                "invalidated observation must not return candidates or a schedule"
+            );
+            let state = app.state::<AppState>();
+            assert_eq!(
+                state.discovery.candidates().await,
+                before,
+                "late work must preserve current candidates and ignore state"
+            );
+            assert_eq!(state.discovery.journal().await, journal);
+            assert!(
+                !colui_app::IgnoreCandidate::new(&state.discovery)
+                    .execute(old_id)
+                    .await
+            );
+            if let Some((schedule, candidate)) = pending {
+                assert!(
+                    state
+                        .discovery
+                        .complete_auto_candidate(
+                            &schedule,
+                            &candidate,
+                            colui_app::AutoRegistrationOutcome::Succeeded
+                        )
+                        .await,
+                    "late work must preserve newer dedup state"
+                );
+            }
+        });
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn delayed_listing_after_disconnect_is_rejected() {
+        delayed_discovery_install(false, false);
+    }
+    #[test]
+    fn delayed_listing_after_reconnect_preserves_new_session() {
+        delayed_discovery_install(false, true);
+    }
+    #[test]
+    fn delayed_publication_after_disconnect_is_rejected() {
+        delayed_discovery_install(true, false);
+    }
+    #[test]
+    fn delayed_publication_after_reconnect_preserves_new_session() {
+        delayed_discovery_install(true, true);
+    }
 
     struct DiscoveryDocker;
     impl colui_adapters::runtime::DockerControl for DiscoveryDocker {

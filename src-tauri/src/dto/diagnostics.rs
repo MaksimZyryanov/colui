@@ -36,10 +36,10 @@ pub struct RegistryHealthDto {
     pub identity: Option<RegistrySnapshotIdentityDto>,
     pub error: Option<AppErrorDto>,
     #[schemars(with = "Option<super::Rfc3339Schema>")]
-    #[serde(deserialize_with = "super::deserialize_optional_rfc3339")]
+    #[serde(default, deserialize_with = "super::deserialize_optional_rfc3339")]
     pub last_operation_at: Option<String>,
     #[schemars(with = "Option<super::Rfc3339Schema>")]
-    #[serde(deserialize_with = "super::deserialize_optional_rfc3339")]
+    #[serde(default, deserialize_with = "super::deserialize_optional_rfc3339")]
     pub last_failure_at: Option<String>,
 }
 impl From<colui_app::RegistryHealth> for RegistryHealthDto {
@@ -70,10 +70,13 @@ pub struct RuntimeDiagnosticsDto {
     pub api_fingerprint: Option<DaemonFingerprintDto>,
     pub cli_fingerprint: Option<DaemonFingerprintDto>,
     #[schemars(with = "Option<super::UuidSchema>")]
-    #[serde(deserialize_with = "super::deserialize_optional_canonical_uuid")]
+    #[serde(
+        default,
+        deserialize_with = "super::deserialize_optional_canonical_uuid"
+    )]
     pub session_id: Option<String>,
     #[schemars(with = "Option<super::Rfc3339Schema>")]
-    #[serde(deserialize_with = "super::deserialize_optional_rfc3339")]
+    #[serde(default, deserialize_with = "super::deserialize_optional_rfc3339")]
     pub connected_at: Option<String>,
 }
 
@@ -110,7 +113,7 @@ pub enum BackupValidationStateDto {
 pub struct RegistryBackupDiagnosticsDto {
     pub exists: bool,
     #[schemars(with = "Option<super::Rfc3339Schema>")]
-    #[serde(deserialize_with = "super::deserialize_optional_rfc3339")]
+    #[serde(default, deserialize_with = "super::deserialize_optional_rfc3339")]
     pub modified_at: Option<String>,
     pub state: BackupValidationStateDto,
     pub error: Option<AppErrorDto>,
@@ -232,7 +235,10 @@ pub struct JournalEntryDto {
     #[serde(deserialize_with = "super::deserialize_rfc3339")]
     pub timestamp: String,
     #[schemars(with = "Option<super::UuidSchema>")]
-    #[serde(deserialize_with = "super::deserialize_optional_canonical_uuid")]
+    #[serde(
+        default,
+        deserialize_with = "super::deserialize_optional_canonical_uuid"
+    )]
     pub runtime_session_id: Option<String>,
     pub kind: JournalEventKindDto,
     pub severity: JournalSeverityDto,

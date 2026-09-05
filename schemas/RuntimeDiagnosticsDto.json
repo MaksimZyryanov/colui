@@ -281,7 +281,8 @@
         {
           "type": "null"
         }
-      ]
+      ],
+      "default": null
     },
     "resolvedEndpoint": {
       "type": [
@@ -297,7 +298,8 @@
         {
           "type": "null"
         }
-      ]
+      ],
+      "default": null
     },
     "state": {
       "$ref": "#/definitions/RuntimeStateDto"

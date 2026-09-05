@@ -26,7 +26,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "source": {
           "$ref": "#/definitions/DiscoveryConflictSourceDto"

@@ -12,6 +12,70 @@ use colui_tauri_lib::dto::{
 use colui_tauri_lib::schema_generation::{generate_all_schemas, write_schemas};
 use std::fs;
 
+fn optional_field_contract<T: serde::de::DeserializeOwned + serde::Serialize>(
+    schema: &str,
+    mut base: serde_json::Value,
+    field: &str,
+    valid: &str,
+) {
+    let schemas = generate_all_schemas();
+    assert!(!schemas[schema]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == field));
+    base[field] = serde_json::Value::Null;
+    let null = serde_json::to_value(serde_json::from_value::<T>(base.clone()).unwrap()).unwrap();
+    assert!(null[field].is_null());
+    base[field] = serde_json::json!(valid);
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<T>(base.clone()).unwrap()).unwrap()[field],
+        valid
+    );
+    for invalid in [
+        serde_json::json!("invalid"),
+        serde_json::json!(1),
+        serde_json::json!(false),
+    ] {
+        base[field] = invalid;
+        assert!(serde_json::from_value::<T>(base.clone()).is_err());
+    }
+    base.as_object_mut().unwrap().remove(field);
+    let missing = serde_json::from_value::<T>(base).unwrap_or_else(|error| {
+        panic!("{schema}.{field} schema permits omission but Serde rejected it: {error}")
+    });
+    assert_eq!(serde_json::to_value(missing).unwrap(), null);
+}
+
+macro_rules! optional_contract_test {
+    ($name:ident, $dto:ident, $base:tt, $field:literal, $valid:literal) => {
+        #[test]
+        fn $name() {
+            optional_field_contract::<colui_tauri_lib::dto::$dto>(
+                stringify!($dto),
+                serde_json::json!($base),
+                $field,
+                $valid,
+            );
+        }
+    };
+}
+
+optional_contract_test!(nullable_conflict_profile_id, DiscoveryConflictEvidenceDto,
+    {"source":"runtime_observation", "configFiles":[]}, "profileId", "00000000-0000-0000-0000-000000000001");
+optional_contract_test!(nullable_health_last_operation_at, RegistryHealthDto,
+    {"state":"healthy", "lastOperationAt":null, "lastFailureAt":null}, "lastOperationAt", "2026-09-05T00:00:00Z");
+optional_contract_test!(nullable_health_last_failure_at, RegistryHealthDto,
+    {"state":"healthy", "lastOperationAt":null, "lastFailureAt":null}, "lastFailureAt", "2026-09-05T00:00:00Z");
+optional_contract_test!(nullable_runtime_session_id, RuntimeDiagnosticsDto,
+    {"state":{"state":"disconnected"}, "sessionId":null, "connectedAt":null}, "sessionId", "00000000-0000-0000-0000-000000000001");
+optional_contract_test!(nullable_runtime_connected_at, RuntimeDiagnosticsDto,
+    {"state":{"state":"disconnected"}, "sessionId":null, "connectedAt":null}, "connectedAt", "2026-09-05T00:00:00Z");
+optional_contract_test!(nullable_backup_modified_at, RegistryBackupDiagnosticsDto,
+    {"exists":false, "state":"missing"}, "modifiedAt", "2026-09-05T00:00:00Z");
+optional_contract_test!(nullable_journal_runtime_session_id, JournalEntryDto,
+    {"sequence":1, "timestamp":"2026-09-05T00:00:00Z", "kind":"connect_started", "severity":"info", "message":"Connection started"}, "runtimeSessionId", "00000000-0000-0000-0000-000000000001");
+
 #[test]
 fn increment_five_errors_preserve_typed_subjects() {
     for (subject, expected) in [

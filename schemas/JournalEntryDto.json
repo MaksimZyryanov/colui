@@ -122,7 +122,8 @@
         {
           "type": "null"
         }
-      ]
+      ],
+      "default": null
     },
     "sequence": {
       "format": "uint64",

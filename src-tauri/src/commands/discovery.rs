@@ -22,6 +22,7 @@ pub async fn list_discovery_candidates(
         &state.discovery_inventory(),
         state.profiles.as_ref(),
         state.discovery.as_ref(),
+        state.gateway.as_ref(),
     )
     .execute()
     .await

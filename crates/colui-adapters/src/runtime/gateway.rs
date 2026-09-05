@@ -126,6 +126,15 @@ impl Drop for SessionClient {
         self.valid.store(false, Ordering::Release);
     }
 }
+
+impl colui_app::DiscoverySessionValidity for RuntimeGateway {
+    fn session_validator(
+        &self,
+        session: RuntimeSessionId,
+    ) -> colui_app::DiscoveryFuture<'_, colui_app::SessionValidator> {
+        Box::pin(self.api_session_validator(session))
+    }
+}
 struct Snapshot {
     generation: u64,
     state: RuntimeSessionState,

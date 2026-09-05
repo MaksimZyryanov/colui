@@ -18,6 +18,18 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Barrier;
 use uuid::Uuid;
 
+// These unit fixtures use immutable sessions. Race tests use invalidatable capabilities.
+struct ValidSessions;
+static VALID_SESSIONS: ValidSessions = ValidSessions;
+impl colui_app::DiscoverySessionValidity for ValidSessions {
+    fn session_validator(
+        &self,
+        _: RuntimeSessionId,
+    ) -> DiscoveryFuture<'_, colui_app::SessionValidator> {
+        Box::pin(async { Ok(Box::new(|| true) as colui_app::SessionValidator) })
+    }
+}
+
 struct MutationLocks;
 static MUTATION_LOCKS: MutationLocks = MutationLocks;
 impl OperationLockReader for MutationLocks {
@@ -151,7 +163,7 @@ async fn list_is_snapshot_only_and_never_mutates_registry() {
     };
     let state = DiscoverySession::new();
 
-    let candidates = ListDiscoveryCandidates::new(&inventory, &registry, &state)
+    let candidates = ListDiscoveryCandidates::new(&inventory, &registry, &state, &VALID_SESSIONS)
         .execute()
         .await
         .unwrap();
@@ -170,7 +182,11 @@ async fn list_is_snapshot_only_and_never_mutates_registry() {
 async fn ignore_is_idempotent_and_resets_on_reconnect_while_journal_survives() {
     let state = DiscoverySession::new();
     let first = state
-        .observe_inventory(inventory(Some(session(1)), 1, &["compose.yml"]), vec![])
+        .observe_inventory(
+            inventory(Some(session(1)), 1, &["compose.yml"]),
+            vec![],
+            &|| true,
+        )
         .await;
     let id = first[0].candidate_id.clone();
 
@@ -180,9 +196,39 @@ async fn ignore_is_idempotent_and_resets_on_reconnect_while_journal_survives() {
     assert!(state.candidates().await[0].ignored);
 
     state
-        .observe_inventory(inventory(Some(session(2)), 2, &["compose.yml"]), vec![])
+        .observe_inventory(
+            inventory(Some(session(2)), 2, &["compose.yml"]),
+            vec![],
+            &|| true,
+        )
         .await;
     assert!(!state.candidates().await[0].ignored);
+    assert_eq!(state.journal().await.entries.len(), 1);
+}
+
+#[tokio::test]
+async fn invalid_observation_capability_cannot_reset_current_session() {
+    let state = DiscoverySession::new();
+    let current = state
+        .observe_inventory(
+            inventory(Some(session(2)), 2, &["compose.yml"]),
+            vec![],
+            &|| true,
+        )
+        .await;
+    IgnoreCandidate::new(&state)
+        .execute(current[0].candidate_id.clone())
+        .await;
+    let before = state.candidates().await;
+    for session_id in [Some(session(1)), None] {
+        assert!(state
+            .observe_inventory(inventory(session_id, 1, &["compose.yml"]), vec![], &|| {
+                false
+            })
+            .await
+            .is_empty());
+        assert_eq!(state.candidates().await, before);
+    }
     assert_eq!(state.journal().await.entries.len(), 1);
 }
 
@@ -223,23 +269,27 @@ async fn auto_policy_defaults_disabled_deduplicates_and_cancels_pending_work() {
         profiles: vec![],
     };
     assert!(!state.auto_registration_enabled().await);
-    assert!(ScheduleAutoRegistration::new(&registry, &state)
-        .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
+            .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     assert!(ConfigureAutoRegistration::new(&state).execute(true).await);
-    let schedule = ScheduleAutoRegistration::new(&registry, &state)
+    let schedule = ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
         .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
         .await
         .unwrap()
         .unwrap();
-    assert!(ScheduleAutoRegistration::new(&registry, &state)
-        .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
+            .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(!ConfigureAutoRegistration::new(&state).execute(false).await);
     assert!(state.claim_schedule(&schedule).await.is_empty());
 }
@@ -253,7 +303,7 @@ async fn publication_claim_completion_lifecycle_controls_metadata_dedup() {
         profiles: vec![],
     };
     ConfigureAutoRegistration::new(&state).execute(true).await;
-    let first = ScheduleAutoRegistration::new(&registry, &state)
+    let first = ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
         .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
         .await
         .unwrap()
@@ -279,7 +329,7 @@ async fn publication_claim_completion_lifecycle_controls_metadata_dedup() {
             .await
     );
 
-    let retry = ScheduleAutoRegistration::new(&registry, &state)
+    let retry = ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
         .execute(inventory(Some(session(1)), 2, &["compose.yml"]))
         .await
         .unwrap()
@@ -290,16 +340,20 @@ async fn publication_claim_completion_lifecycle_controls_metadata_dedup() {
             .complete_auto_candidate(&retry, &retry_candidate, AutoRegistrationOutcome::Succeeded)
             .await
     );
-    assert!(ScheduleAutoRegistration::new(&registry, &state)
-        .execute(inventory(Some(session(1)), 3, &["compose.yml"]))
-        .await
-        .unwrap()
-        .is_none());
-    assert!(ScheduleAutoRegistration::new(&registry, &state)
-        .execute(inventory(Some(session(1)), 4, &["other.yml"]))
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
+            .execute(inventory(Some(session(1)), 3, &["compose.yml"]))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
+            .execute(inventory(Some(session(1)), 4, &["other.yml"]))
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -312,7 +366,7 @@ async fn registered_profile_suppresses_auto_registration() {
     };
     ConfigureAutoRegistration::new(&state).execute(true).await;
 
-    let schedule = ScheduleAutoRegistration::new(&registry, &state)
+    let schedule = ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
         .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
         .await
         .unwrap();
@@ -330,13 +384,13 @@ async fn late_completion_cannot_change_dedup_state() {
         profiles: vec![],
     };
     ConfigureAutoRegistration::new(&state).execute(true).await;
-    let first = ScheduleAutoRegistration::new(&registry, &state)
+    let first = ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
         .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
         .await
         .unwrap()
         .unwrap();
     let candidate = state.claim_schedule(&first).await.remove(0);
-    ScheduleAutoRegistration::new(&registry, &state)
+    ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
         .execute(inventory(Some(session(1)), 2, &["other.yml"]))
         .await
         .unwrap();
@@ -346,11 +400,13 @@ async fn late_completion_cannot_change_dedup_state() {
             .complete_auto_candidate(&first, &candidate, AutoRegistrationOutcome::Succeeded)
             .await
     );
-    assert!(ScheduleAutoRegistration::new(&registry, &state)
-        .execute(inventory(Some(session(1)), 3, &["compose.yml"]))
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        ScheduleAutoRegistration::new(&registry, &state, &VALID_SESSIONS)
+            .execute(inventory(Some(session(1)), 3, &["compose.yml"]))
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 struct RegistrationInventory {
@@ -481,7 +537,9 @@ async fn registration_fixture() -> (
 ) {
     let current = inventory(Some(session(9)), 3, &["compose.yml"]);
     let state = DiscoverySession::new();
-    let candidates = state.observe_inventory(current.clone(), vec![]).await;
+    let candidates = state
+        .observe_inventory(current.clone(), vec![], &|| true)
+        .await;
     (
         RegistrationInventory {
             inventory: Mutex::new(current),
@@ -718,7 +776,7 @@ async fn registration_preserves_corrupt_locked_and_write_failed_registry_errors(
 async fn auto_registration_retries_only_on_next_generation_and_manual_bypasses_dedup() {
     let (inventory, store, state, request) = registration_fixture().await;
     ConfigureAutoRegistration::new(&state).execute(true).await;
-    let schedule = ScheduleAutoRegistration::new(&store, &state)
+    let schedule = ScheduleAutoRegistration::new(&store, &state, &VALID_SESSIONS)
         .execute(inventory.inventory.lock().unwrap().clone())
         .await
         .unwrap()
@@ -744,13 +802,15 @@ async fn auto_registration_retries_only_on_next_generation_and_manual_bypasses_d
     );
 
     store.state.lock().unwrap().error = None;
-    assert!(ScheduleAutoRegistration::new(&store, &state)
-        .execute(inventory.inventory.lock().unwrap().clone())
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        ScheduleAutoRegistration::new(&store, &state, &VALID_SESSIONS)
+            .execute(inventory.inventory.lock().unwrap().clone())
+            .await
+            .unwrap()
+            .is_none()
+    );
     inventory.inventory.lock().unwrap().generation = 4;
-    let retry = ScheduleAutoRegistration::new(&store, &state)
+    let retry = ScheduleAutoRegistration::new(&store, &state, &VALID_SESSIONS)
         .execute(inventory.inventory.lock().unwrap().clone())
         .await
         .unwrap()
@@ -785,7 +845,7 @@ async fn auto_registration_retries_only_on_next_generation_and_manual_bypasses_d
 async fn concurrent_manual_and_auto_registration_converge_on_shared_store() {
     let (inventory, store, state, request) = registration_fixture().await;
     ConfigureAutoRegistration::new(&state).execute(true).await;
-    let schedule = ScheduleAutoRegistration::new(&store, &state)
+    let schedule = ScheduleAutoRegistration::new(&store, &state, &VALID_SESSIONS)
         .execute(inventory.inventory.lock().unwrap().clone())
         .await
         .unwrap()

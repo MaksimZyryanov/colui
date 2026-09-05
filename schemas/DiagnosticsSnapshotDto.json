@@ -344,7 +344,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "sequence": {
           "format": "uint64",
@@ -672,7 +673,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "state": {
           "$ref": "#/definitions/BackupValidationStateDto"
@@ -761,7 +763,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "lastOperationAt": {
           "anyOf": [
@@ -771,7 +774,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "state": {
           "$ref": "#/definitions/RegistryHealthStateDto"
@@ -845,7 +849,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "resolvedEndpoint": {
           "type": [
@@ -861,7 +866,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "state": {
           "$ref": "#/definitions/RuntimeStateDto"

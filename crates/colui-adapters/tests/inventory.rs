@@ -308,13 +308,16 @@ async fn successful_publication_drives_separate_auto_scheduler_consumer() {
         "/work/demo",
         &["compose.yml"],
     )])]));
-    let coordinator = InventoryCoordinator::new(source, test_clock());
+    let coordinator = InventoryCoordinator::new(source.clone(), test_clock());
     let discovery = Arc::new(DiscoverySession::new());
     ConfigureAutoRegistration::new(&discovery)
         .execute(true)
         .await;
-    let mut schedules =
-        coordinator.start_auto_registration_scheduler(Arc::new(EmptyProfiles), discovery.clone());
+    let mut schedules = coordinator.start_auto_registration_scheduler(
+        Arc::new(EmptyProfiles),
+        discovery.clone(),
+        source,
+    );
 
     let published = coordinator.refresh().await.unwrap();
     let schedule = schedules.recv().await.unwrap();
@@ -325,6 +328,92 @@ async fn successful_publication_drives_separate_auto_scheduler_consumer() {
     );
     assert_eq!(schedule.inventory_generation, published.generation);
     assert_eq!(discovery.claim_schedule(&schedule).await.len(), 1);
+}
+
+struct DelayedProfiles {
+    reads: AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+impl ProfileReader for DelayedProfiles {
+    fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
+        Box::pin(async move {
+            if self.reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.entered.notify_one();
+                self.release.acquire().await.unwrap().forget();
+            }
+            Ok(RegistrySnapshot {
+                registry_revision: 0,
+                profiles: vec![],
+            })
+        })
+    }
+}
+
+async fn delayed_scheduler_transition(reconnect: bool) {
+    let observing = gateway_with_summary(compose_summary("demo", "web")).await;
+    let gateway = Arc::new(observing.gateway);
+    let coordinator = InventoryCoordinator::new(gateway.clone(), test_clock());
+    let discovery = Arc::new(DiscoverySession::new());
+    ConfigureAutoRegistration::new(&discovery)
+        .execute(true)
+        .await;
+    let profiles = Arc::new(DelayedProfiles {
+        reads: AtomicUsize::new(0),
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let mut scheduled = coordinator.start_auto_registration_scheduler(
+        profiles.clone(),
+        discovery.clone(),
+        gateway.clone(),
+    );
+    let old = coordinator.refresh().await.unwrap();
+    profiles.entered.notified().await;
+    if reconnect {
+        gateway.reconnect_runtime(None).await.unwrap();
+    } else {
+        gateway.disconnect_runtime().await.unwrap();
+        discovery.observe_runtime_session(None).await;
+        gateway.connect_runtime(None).await.unwrap();
+    }
+    let current_session = colui_app::RuntimeStateReader::api_read_context(gateway.as_ref())
+        .await
+        .unwrap()
+        .session_id;
+    discovery
+        .observe_runtime_session(Some(current_session))
+        .await;
+    let current = coordinator.refresh().await.unwrap();
+    profiles.release.add_permits(1);
+    // The next publication is a completion fence for the subscriber's older work.
+    let next = tokio::time::timeout(Duration::from_secs(5), scheduled.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(next.runtime_session_id, old.runtime_session_id.unwrap());
+    assert_eq!(next.runtime_session_id, current_session);
+    assert_eq!(next.inventory_generation, current.generation);
+    assert!(scheduled.try_recv().is_err());
+    assert!(discovery
+        .candidates()
+        .await
+        .iter()
+        .all(|c| c.runtime_session_id == current_session));
+    assert_eq!(profiles.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(observing.docker.list_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(observing.docker.inspect_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn delayed_publication_subscriber_discards_disconnected_session() {
+    delayed_scheduler_transition(false).await;
+}
+
+#[tokio::test]
+async fn delayed_publication_subscriber_discards_replaced_session() {
+    delayed_scheduler_transition(true).await;
 }
 
 #[tokio::test]
@@ -634,6 +723,16 @@ impl colui_app::RuntimeStateReader for QueuedSource {
     fn session_state(&self) -> RuntimeFuture<'_, colui_domain::RuntimeSessionState> {
         let context = self.context.clone();
         Box::pin(async move { Ok(colui_domain::RuntimeSessionState::Ready(context)) })
+    }
+}
+
+impl colui_app::DiscoverySessionValidity for QueuedSource {
+    fn session_validator(
+        &self,
+        expected: colui_domain::RuntimeSessionId,
+    ) -> colui_app::DiscoveryFuture<'_, colui_app::SessionValidator> {
+        let matches = expected == self.context.session_id;
+        Box::pin(async move { Ok(Box::new(move || matches) as colui_app::SessionValidator) })
     }
 }
 

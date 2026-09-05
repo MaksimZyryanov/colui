@@ -15,6 +15,13 @@ const MESSAGE_LIMIT: usize = 500;
 
 pub type DiscoveryFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>;
 
+pub type SessionValidator = Box<dyn Fn() -> bool + Send + Sync>;
+
+pub trait DiscoverySessionValidity: Send + Sync {
+    fn session_validator(&self, session: RuntimeSessionId)
+        -> DiscoveryFuture<'_, SessionValidator>;
+}
+
 pub struct CandidateLease {
     _guard: Box<dyn Send + Sync>,
     validator: Box<dyn Fn() -> bool + Send + Sync>,
@@ -447,8 +454,13 @@ impl DiscoverySession {
         &self,
         inventory: RuntimeInventory,
         profiles: Vec<colui_domain::ProjectProfile>,
+        valid: &(dyn Fn() -> bool + Send + Sync),
     ) -> Vec<DiscoveryCandidate> {
         let mut state = self.state.lock().expect("discovery state poisoned");
+        // Validate under the installation lock, before any session reset or dedup change.
+        if !valid() {
+            return vec![];
+        }
         let Some(runtime_session_id) = inventory.runtime_session_id else {
             clear_session(&mut state);
             return vec![];
@@ -500,9 +512,13 @@ impl DiscoverySession {
         &self,
         inventory: RuntimeInventory,
         profiles: Vec<colui_domain::ProjectProfile>,
+        valid: &(dyn Fn() -> bool + Send + Sync),
     ) -> Option<AutoRegistrationSchedule> {
         let session = inventory.runtime_session_id?;
         let mut state = self.state.lock().expect("discovery state poisoned");
+        if !valid() {
+            return None;
+        }
         synchronize_session(&mut state, session);
         if !state.auto_enabled
             || state
@@ -623,21 +639,36 @@ impl crate::JournalReader for DiscoverySession {
 pub struct ScheduleAutoRegistration<'a, P: ?Sized> {
     profiles: &'a P,
     session: &'a DiscoverySession,
+    validity: &'a dyn DiscoverySessionValidity,
 }
 
 impl<'a, P: ProfileReader + ?Sized> ScheduleAutoRegistration<'a, P> {
-    pub fn new(profiles: &'a P, session: &'a DiscoverySession) -> Self {
-        Self { profiles, session }
+    pub fn new(
+        profiles: &'a P,
+        session: &'a DiscoverySession,
+        validity: &'a dyn DiscoverySessionValidity,
+    ) -> Self {
+        Self {
+            profiles,
+            session,
+            validity,
+        }
     }
 
     pub async fn execute(
         &self,
         inventory: RuntimeInventory,
     ) -> Result<Option<AutoRegistrationSchedule>, AppError> {
+        let Some(session) = inventory.runtime_session_id else {
+            return Ok(None);
+        };
+        let Ok(valid) = self.validity.session_validator(session).await else {
+            return Ok(None);
+        };
         let profiles = self.profiles.load().await?.profiles;
         Ok(self
             .session
-            .observe_successful_publication(inventory, profiles)
+            .observe_successful_publication(inventory, profiles, valid.as_ref())
             .await)
     }
 }
@@ -720,21 +751,37 @@ pub struct ListDiscoveryCandidates<'a, I: ?Sized, P: ?Sized> {
     inventory: &'a I,
     profiles: &'a P,
     session: &'a DiscoverySession,
+    validity: &'a dyn DiscoverySessionValidity,
 }
 
 impl<'a, I: InventoryReader + ?Sized, P: ProfileReader + ?Sized> ListDiscoveryCandidates<'a, I, P> {
-    pub fn new(inventory: &'a I, profiles: &'a P, session: &'a DiscoverySession) -> Self {
+    pub fn new(
+        inventory: &'a I,
+        profiles: &'a P,
+        session: &'a DiscoverySession,
+        validity: &'a dyn DiscoverySessionValidity,
+    ) -> Self {
         Self {
             inventory,
             profiles,
             session,
+            validity,
         }
     }
 
     pub async fn execute(&self) -> Result<Vec<DiscoveryCandidate>, AppError> {
         let inventory = self.inventory.current_inventory().await?;
+        let Some(session) = inventory.runtime_session_id else {
+            return Ok(vec![]);
+        };
+        let Ok(valid) = self.validity.session_validator(session).await else {
+            return Ok(vec![]);
+        };
         let profiles = self.profiles.load().await?.profiles;
-        Ok(self.session.observe_inventory(inventory, profiles).await)
+        Ok(self
+            .session
+            .observe_inventory(inventory, profiles, valid.as_ref())
+            .await)
     }
 }
 

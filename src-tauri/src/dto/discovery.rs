@@ -23,7 +23,10 @@ pub enum DiscoveryConflictSourceDto {
 pub struct DiscoveryConflictEvidenceDto {
     pub source: DiscoveryConflictSourceDto,
     #[schemars(with = "Option<super::UuidSchema>")]
-    #[serde(deserialize_with = "super::deserialize_optional_canonical_uuid")]
+    #[serde(
+        default,
+        deserialize_with = "super::deserialize_optional_canonical_uuid"
+    )]
     pub profile_id: Option<String>,
     pub working_directory: Option<String>,
     pub config_files: Vec<String>,
