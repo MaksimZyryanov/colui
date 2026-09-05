@@ -109,6 +109,12 @@ struct AutoKey {
     metadata_hash: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ScheduleKey {
+    session: RuntimeSessionId,
+    generation: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum AutoState {
     Pending,
@@ -125,6 +131,7 @@ struct State {
     ignored: BTreeSet<CandidateId>,
     auto_enabled: bool,
     last_scheduled_generation: Option<u64>,
+    scheduled: HashMap<ScheduleKey, Vec<DiscoveryCandidate>>,
     auto: HashMap<AutoKey, AutoState>,
     journal: VecDeque<JournalEntry>,
     next_sequence: u64,
@@ -198,9 +205,10 @@ impl DiscoverySession {
             .auto_enabled
     }
 
-    pub async fn observe_successful_publication(
+    async fn observe_successful_publication(
         &self,
-        inventory: &RuntimeInventory,
+        inventory: RuntimeInventory,
+        profiles: Vec<colui_domain::ProjectProfile>,
     ) -> Option<AutoRegistrationSchedule> {
         let session = inventory.runtime_session_id?;
         let mut state = self.state.lock().expect("discovery state poisoned");
@@ -212,42 +220,62 @@ impl DiscoverySession {
         {
             return None;
         }
-        let candidates = classify_candidates(
+        if state
+            .generation
+            .is_some_and(|generation| generation < inventory.generation)
+        {
+            state.auto.retain(|_, status| *status != AutoState::Pending);
+            state.scheduled.clear();
+        }
+        let mut candidates = classify_candidates(
             session,
             inventory.generation,
             &inventory.compose_observation_groups,
-            &[],
+            &profiles,
         );
-        let schedulable = candidates.iter().any(|candidate| {
-            candidate.classification == DiscoveryClassification::NewUnambiguous
-                && !state.ignored.contains(&candidate.candidate_id)
-                && auto_key_schedulable(&state, candidate, inventory.generation)
-        });
+        for candidate in &mut candidates {
+            candidate.ignored = state.ignored.contains(&candidate.candidate_id);
+        }
+        state.generation = Some(inventory.generation);
+        state.candidates = candidates.clone();
+        let scheduled: Vec<_> = candidates
+            .into_iter()
+            .filter(|candidate| {
+                candidate.classification == DiscoveryClassification::NewUnambiguous
+                    && !candidate.ignored
+                    && auto_key_schedulable(&state, candidate, inventory.generation)
+            })
+            .collect();
         state.last_scheduled_generation = Some(inventory.generation);
-        schedulable.then_some(AutoRegistrationSchedule {
+        if scheduled.is_empty() {
+            return None;
+        }
+        let schedule = AutoRegistrationSchedule {
             runtime_session_id: session,
             inventory_generation: inventory.generation,
-        })
+        };
+        state.scheduled.insert(schedule_key(&schedule), scheduled);
+        Some(schedule)
     }
 
-    pub async fn claim_schedule(&self, schedule: &AutoRegistrationSchedule) -> bool {
+    pub async fn claim_schedule(
+        &self,
+        schedule: &AutoRegistrationSchedule,
+    ) -> Vec<DiscoveryCandidate> {
         let mut state = self.state.lock().expect("discovery state poisoned");
         if !state.auto_enabled
             || state.active_session != Some(schedule.runtime_session_id)
-            || state.last_scheduled_generation != Some(schedule.inventory_generation)
+            || state.generation != Some(schedule.inventory_generation)
         {
-            return false;
+            return vec![];
         }
-        let candidates = state.candidates.clone();
-        for candidate in candidates {
-            if candidate.classification == DiscoveryClassification::NewUnambiguous
-                && !candidate.ignored
-                && auto_key_schedulable(&state, &candidate, schedule.inventory_generation)
-            {
-                state.auto.insert(auto_key(&candidate), AutoState::Pending);
-            }
+        let Some(candidates) = state.scheduled.remove(&schedule_key(schedule)) else {
+            return vec![];
+        };
+        for candidate in &candidates {
+            state.auto.insert(auto_key(candidate), AutoState::Pending);
         }
-        true
+        candidates
     }
 
     pub async fn complete_auto_candidate(
@@ -255,10 +283,16 @@ impl DiscoverySession {
         schedule: &AutoRegistrationSchedule,
         candidate: &DiscoveryCandidate,
         outcome: AutoRegistrationOutcome,
-    ) {
+    ) -> bool {
         let mut state = self.state.lock().expect("discovery state poisoned");
-        if state.active_session != Some(schedule.runtime_session_id) {
-            return;
+        let key = auto_key(candidate);
+        if state.active_session != Some(schedule.runtime_session_id)
+            || state.generation != Some(schedule.inventory_generation)
+            || candidate.runtime_session_id != schedule.runtime_session_id
+            || candidate.inventory_generation != schedule.inventory_generation
+            || state.auto.get(&key) != Some(&AutoState::Pending)
+        {
+            return false;
         }
         let status = match outcome {
             AutoRegistrationOutcome::Succeeded => AutoState::Succeeded,
@@ -267,7 +301,8 @@ impl DiscoverySession {
                 next_generation: schedule.inventory_generation.saturating_add(1),
             },
         };
-        state.auto.insert(auto_key(candidate), status);
+        state.auto.insert(key, status);
+        true
     }
 
     pub async fn record_counted_event(
@@ -285,6 +320,28 @@ impl DiscoverySession {
             None,
             message,
         );
+    }
+}
+
+pub struct ScheduleAutoRegistration<'a, P: ?Sized> {
+    profiles: &'a P,
+    session: &'a DiscoverySession,
+}
+
+impl<'a, P: ProfileReader + ?Sized> ScheduleAutoRegistration<'a, P> {
+    pub fn new(profiles: &'a P, session: &'a DiscoverySession) -> Self {
+        Self { profiles, session }
+    }
+
+    pub async fn execute(
+        &self,
+        inventory: RuntimeInventory,
+    ) -> Result<Option<AutoRegistrationSchedule>, AppError> {
+        let profiles = self.profiles.load().await?.profiles;
+        Ok(self
+            .session
+            .observe_successful_publication(inventory, profiles)
+            .await)
     }
 }
 
@@ -361,6 +418,7 @@ impl<'a> ConfigureAutoRegistration<'a> {
         state.auto_enabled = enabled;
         if !enabled {
             state.auto.retain(|_, value| *value != AutoState::Pending);
+            state.scheduled.clear();
         }
         enabled
     }
@@ -375,7 +433,15 @@ fn synchronize_session(state: &mut State, session: RuntimeSessionId) {
     state.candidates.clear();
     state.ignored.clear();
     state.auto.clear();
+    state.scheduled.clear();
     state.last_scheduled_generation = None;
+}
+
+fn schedule_key(schedule: &AutoRegistrationSchedule) -> ScheduleKey {
+    ScheduleKey {
+        session: schedule.runtime_session_id,
+        generation: schedule.inventory_generation,
+    }
 }
 
 fn auto_key(candidate: &DiscoveryCandidate) -> AutoKey {

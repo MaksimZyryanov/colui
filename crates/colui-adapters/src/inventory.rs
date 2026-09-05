@@ -1,6 +1,7 @@
 use colui_app::{
-    CandidateLease, Clock, DiscoveryFuture, DiscoveryReader, InventoryFuture, InventoryReader,
-    InventoryRefresher, RuntimeInventorySource,
+    AutoRegistrationSchedule, CandidateLease, Clock, DiscoveryFuture, DiscoveryReader,
+    DiscoverySession, InventoryFuture, InventoryReader, InventoryRefresher, ProfileReader,
+    RuntimeInventorySource, ScheduleAutoRegistration,
 };
 use colui_domain::{
     AppError, AppErrorCode, ComposeObservationGroup, ContainerObservation, InventoryFreshness,
@@ -10,7 +11,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, watch, Mutex, RwLock};
+use tokio::sync::{broadcast, mpsc, watch, Mutex, RwLock};
 
 type RefreshResult = Result<RuntimeInventory, AppError>;
 
@@ -73,6 +74,35 @@ impl InventoryCoordinator {
 
     pub fn subscribe_refresh_joins(&self) -> broadcast::Receiver<()> {
         self.joins.subscribe()
+    }
+
+    pub fn start_auto_registration_scheduler(
+        &self,
+        profiles: Arc<dyn ProfileReader>,
+        discovery: Arc<DiscoverySession>,
+    ) -> mpsc::Receiver<AutoRegistrationSchedule> {
+        let mut publications = self.subscribe();
+        let (scheduled, receiver) = mpsc::channel(16);
+        tokio::spawn(async move {
+            loop {
+                let inventory = match publications.recv().await {
+                    Ok(inventory) => inventory,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                let Ok(Some(schedule)) =
+                    ScheduleAutoRegistration::new(profiles.as_ref(), &discovery)
+                        .execute(inventory)
+                        .await
+                else {
+                    continue;
+                };
+                if scheduled.send(schedule).await.is_err() {
+                    break;
+                }
+            }
+        });
+        receiver
     }
 
     async fn refresh_inner(&self, automatic: bool) -> RefreshResult {

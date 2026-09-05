@@ -2,11 +2,12 @@ use colui_app::{
     AutoRegistrationOutcome, ConfigureAutoRegistration, DiscoverySession, IgnoreCandidate,
     InventoryFuture, InventoryReader, InventoryRefresher, JournalEventKind,
     ListDiscoveryCandidates, ProfileMutation, ProfileReader, ProfileStore, RegistrySnapshot,
-    StoreFuture,
+    ScheduleAutoRegistration, StoreFuture,
 };
 use colui_domain::{
     ComposeObservationGroup, ContainerId, DaemonFingerprint, DiscoveryClassification,
-    InventoryFreshness, RuntimeInventory, RuntimeSessionId, Timestamp,
+    InventoryFreshness, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin,
+    RuntimeInventory, RuntimeSessionId, Timestamp,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use uuid::Uuid;
@@ -32,6 +33,7 @@ impl InventoryRefresher for CountingInventory {
 struct CountingRegistry {
     reads: AtomicUsize,
     writes: AtomicUsize,
+    profiles: Vec<ProjectProfile>,
 }
 
 impl ProfileReader for CountingRegistry {
@@ -40,7 +42,7 @@ impl ProfileReader for CountingRegistry {
         Box::pin(async {
             Ok(RegistrySnapshot {
                 registry_revision: 0,
-                profiles: vec![],
+                profiles: self.profiles.clone(),
             })
         })
     }
@@ -55,6 +57,21 @@ impl ProfileStore for CountingRegistry {
 
 fn session(value: u128) -> RuntimeSessionId {
     RuntimeSessionId::new(Uuid::from_u128(value))
+}
+
+fn registered_profile() -> ProjectProfile {
+    ProjectProfile::from_draft(
+        ProfileId::parse("00000000-0000-0000-0000-000000000001").unwrap(),
+        ProfileDraft {
+            display_name: "Demo".try_into().unwrap(),
+            compose_project_name: "demo".try_into().unwrap(),
+            working_directory: "/work/demo".into(),
+            compose_files: vec!["compose.yml".into()],
+            environment_files: vec![],
+            registration_origin: RegistrationOrigin::Manual,
+        },
+    )
+    .unwrap()
 }
 
 fn inventory(
@@ -92,6 +109,7 @@ async fn list_is_snapshot_only_and_never_mutates_registry() {
     let registry = CountingRegistry {
         reads: AtomicUsize::new(0),
         writes: AtomicUsize::new(0),
+        profiles: vec![],
     };
     let state = DiscoverySession::new();
 
@@ -161,66 +179,138 @@ async fn journal_is_exact_fifo_and_uses_closed_redacted_templates() {
 #[tokio::test]
 async fn auto_policy_defaults_disabled_deduplicates_and_cancels_pending_work() {
     let state = DiscoverySession::new();
+    let registry = CountingRegistry {
+        reads: AtomicUsize::new(0),
+        writes: AtomicUsize::new(0),
+        profiles: vec![],
+    };
     assert!(!state.auto_registration_enabled().await);
-    assert!(state
-        .observe_successful_publication(&inventory(Some(session(1)), 1, &["compose.yml"]))
+    assert!(ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
         .await
+        .unwrap()
         .is_none());
 
     assert!(ConfigureAutoRegistration::new(&state).execute(true).await);
-    let schedule = state
-        .observe_successful_publication(&inventory(Some(session(1)), 1, &["compose.yml"]))
+    let schedule = ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
         .await
+        .unwrap()
         .unwrap();
-    assert!(state
-        .observe_successful_publication(&inventory(Some(session(1)), 1, &["compose.yml"]))
+    assert!(ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
         .await
+        .unwrap()
         .is_none());
     assert!(!ConfigureAutoRegistration::new(&state).execute(false).await);
-    assert!(!state.claim_schedule(&schedule).await);
+    assert!(state.claim_schedule(&schedule).await.is_empty());
 }
 
 #[tokio::test]
-async fn metadata_hash_and_outcomes_control_rescheduling() {
+async fn publication_claim_completion_lifecycle_controls_metadata_dedup() {
     let state = DiscoverySession::new();
+    let registry = CountingRegistry {
+        reads: AtomicUsize::new(0),
+        writes: AtomicUsize::new(0),
+        profiles: vec![],
+    };
     ConfigureAutoRegistration::new(&state).execute(true).await;
-    let first_inventory = inventory(Some(session(1)), 1, &["compose.yml"]);
-    state
-        .observe_inventory(first_inventory.clone(), vec![])
-        .await;
-    let first = state
-        .observe_successful_publication(&first_inventory)
+    let first = ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
         .await
+        .unwrap()
         .unwrap();
-    let candidate = state.candidates().await.remove(0);
-    state
-        .complete_auto_candidate(
-            &first,
-            &candidate,
-            AutoRegistrationOutcome::RetryableFailure,
-        )
-        .await;
+    let unclaimed = state.candidates().await.remove(0);
+    assert!(
+        !state
+            .complete_auto_candidate(
+                &first,
+                &unclaimed,
+                AutoRegistrationOutcome::RetryableFailure,
+            )
+            .await
+    );
+    let candidate = state.claim_schedule(&first).await.remove(0);
+    assert!(
+        state
+            .complete_auto_candidate(
+                &first,
+                &candidate,
+                AutoRegistrationOutcome::RetryableFailure
+            )
+            .await
+    );
 
-    let next = inventory(Some(session(1)), 2, &["compose.yml"]);
-    assert!(state.observe_successful_publication(&next).await.is_some());
-    state.observe_inventory(next.clone(), vec![]).await;
-    let retry = state
-        .observe_successful_publication(&inventory(Some(session(1)), 3, &["compose.yml"]))
+    let retry = ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 2, &["compose.yml"]))
+        .await
+        .unwrap()
+        .unwrap();
+    let retry_candidate = state.claim_schedule(&retry).await.remove(0);
+    assert!(
+        state
+            .complete_auto_candidate(&retry, &retry_candidate, AutoRegistrationOutcome::Succeeded)
+            .await
+    );
+    assert!(ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 3, &["compose.yml"]))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 4, &["other.yml"]))
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn registered_profile_suppresses_auto_registration() {
+    let state = DiscoverySession::new();
+    let registry = CountingRegistry {
+        reads: AtomicUsize::new(0),
+        writes: AtomicUsize::new(0),
+        profiles: vec![registered_profile()],
+    };
+    ConfigureAutoRegistration::new(&state).execute(true).await;
+
+    let schedule = ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
         .await
         .unwrap();
-    state
-        .complete_auto_candidate(
-            &retry,
-            &state.candidates().await[0],
-            AutoRegistrationOutcome::Succeeded,
-        )
-        .await;
-    assert!(state
-        .observe_successful_publication(&inventory(Some(session(1)), 4, &["compose.yml"]))
+
+    assert!(schedule.is_none());
+    assert_eq!(registry.reads.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn late_completion_cannot_change_dedup_state() {
+    let state = DiscoverySession::new();
+    let registry = CountingRegistry {
+        reads: AtomicUsize::new(0),
+        writes: AtomicUsize::new(0),
+        profiles: vec![],
+    };
+    ConfigureAutoRegistration::new(&state).execute(true).await;
+    let first = ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 1, &["compose.yml"]))
         .await
-        .is_none());
-    assert!(state
-        .observe_successful_publication(&inventory(Some(session(1)), 5, &["other.yml"]))
+        .unwrap()
+        .unwrap();
+    let candidate = state.claim_schedule(&first).await.remove(0);
+    ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 2, &["other.yml"]))
         .await
+        .unwrap();
+
+    assert!(
+        !state
+            .complete_auto_candidate(&first, &candidate, AutoRegistrationOutcome::Succeeded)
+            .await
+    );
+    assert!(ScheduleAutoRegistration::new(&registry, &state)
+        .execute(inventory(Some(session(1)), 3, &["compose.yml"]))
+        .await
+        .unwrap()
         .is_some());
 }

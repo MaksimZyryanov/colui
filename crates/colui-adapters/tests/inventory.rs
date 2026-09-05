@@ -2,8 +2,9 @@ use bollard::models::ContainerSummary;
 use colui_adapters::runtime::{normalize_container_summary, DockerControl, RuntimeGateway};
 use colui_adapters::InventoryCoordinator;
 use colui_app::{
-    Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, RuntimeConnector,
-    RuntimeFuture,
+    Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, ConfigureAutoRegistration,
+    DiscoverySession, DockerApi, ProfileReader, RegistrySnapshot, RuntimeConnector, RuntimeFuture,
+    StoreFuture,
 };
 use colui_domain::{
     AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerObservation, DaemonFingerprint,
@@ -300,6 +301,33 @@ async fn successful_refresh_notifies_subscriber_once() {
 }
 
 #[tokio::test]
+async fn successful_publication_drives_separate_auto_scheduler_consumer() {
+    let source = Arc::new(QueuedSource::new(vec![Ok(vec![compose_observation(
+        "demo-web",
+        "demo",
+        "/work/demo",
+        &["compose.yml"],
+    )])]));
+    let coordinator = InventoryCoordinator::new(source, test_clock());
+    let discovery = Arc::new(DiscoverySession::new());
+    ConfigureAutoRegistration::new(&discovery)
+        .execute(true)
+        .await;
+    let mut schedules =
+        coordinator.start_auto_registration_scheduler(Arc::new(EmptyProfiles), discovery.clone());
+
+    let published = coordinator.refresh().await.unwrap();
+    let schedule = schedules.recv().await.unwrap();
+
+    assert_eq!(
+        schedule.runtime_session_id,
+        published.runtime_session_id.unwrap()
+    );
+    assert_eq!(schedule.inventory_generation, published.generation);
+    assert_eq!(discovery.claim_schedule(&schedule).await.len(), 1);
+}
+
+#[tokio::test]
 async fn refresh_failure_retains_snapshot_and_automatic_backoff() {
     let source = Arc::new(QueuedSource::new(vec![
         Ok(vec![observation("first", Some("checkout"))]),
@@ -457,6 +485,19 @@ struct QueuedSource {
     calls: AtomicUsize,
     inspect_calls: AtomicUsize,
     context: colui_domain::SessionContext,
+}
+
+struct EmptyProfiles;
+
+impl ProfileReader for EmptyProfiles {
+    fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
+        Box::pin(async {
+            Ok(RegistrySnapshot {
+                registry_revision: 0,
+                profiles: vec![],
+            })
+        })
+    }
 }
 
 struct BlockingSource {
