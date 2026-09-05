@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { DiagnosticsView } from '../features/diagnostics/DiagnosticsView';
 import { useDiagnostics } from '../features/diagnostics/hooks';
 import { ProjectsView } from '../features/projects/ProjectsView';
@@ -13,6 +13,11 @@ export function AppShell() {
   const [route, setRoute] = useState<Route>(initial);
   useInventory();
   useDiagnostics();
+  useEffect(() => {
+    const routeChanged = () => setRoute(location.hash === '#diagnostics' ? 'diagnostics' : 'projects');
+    window.addEventListener('hashchange', routeChanged);
+    return () => window.removeEventListener('hashchange', routeChanged);
+  }, []);
   const navigate = (next: Route) => { location.hash = next; setRoute(next); };
   return <div className="app-shell"><aside className="sidebar"><div className="brand"><span>Co</span>LUI</div><Navigation route={route} onNavigate={navigate} /></aside><div className="app-content">{route === 'projects' ? <ProjectsView /> : <DiagnosticsView />}</div><Navigation mobile route={route} onNavigate={navigate} /></div>;
 }

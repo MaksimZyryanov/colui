@@ -8,6 +8,7 @@ import { mockBackend } from '../../../ipc/mock-backend';
 import { DiagnosticsView } from '../DiagnosticsView';
 import { useDiagnostics } from '../hooks';
 import { diagnosticsKeys } from '../query-keys';
+import { AppErrorException } from '../../../ipc/errors';
 
 function TestShell() { useDiagnostics(); return <DiagnosticsView />; }
 
@@ -47,5 +48,52 @@ describe('DiagnosticsView', () => {
     expect(screen.getByRole('button', { name: 'Connect' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Reconnect' })).toBeVisible();
+  });
+
+  it.each([
+    ['Connect', 'connect_runtime'],
+    ['Disconnect', 'disconnect_runtime'],
+    ['Reconnect', 'reconnect_runtime'],
+  ])('shows typed %s failure and sanitized expandable details', async (label, command) => {
+    const user = userEvent.setup();
+    mockBackend.setErrorOverride(command, new AppErrorException({ code: 'runtime_connection_failed', operation: command, subject: null, message: 'Runtime unavailable', details: 'Socket access denied', retryable: true }));
+    render(<QueryClientProvider client={client}><TestShell /></QueryClientProvider>);
+    await user.click(await screen.findByRole('button', { name: label }));
+    const alert = await screen.findByRole('alert', { name: `${label} failed` });
+    expect(alert).toHaveTextContent('runtime_connection_failed');
+    expect(alert).toHaveTextContent('Runtime unavailable');
+    expect(screen.getByText('Socket access denied').closest('details')).not.toHaveAttribute('open');
+    await user.click(screen.getByText('Technical details'));
+    expect(screen.getByText('Socket access denied').closest('details')).toHaveAttribute('open');
+    expect(alert).toHaveTextContent('Socket access denied');
+  });
+
+  it('announces runtime and registry recovery successes', async () => {
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><TestShell /></QueryClientProvider>);
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+    expect(await screen.findByRole('status', { name: 'Connect succeeded' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(await screen.findByRole('status', { name: 'Disconnect succeeded' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Reconnect' }));
+    expect(await screen.findByRole('status', { name: 'Reconnect succeeded' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Create or replace backup' }));
+    await user.click(screen.getByRole('button', { name: 'Create backup' }));
+    expect(await screen.findByRole('status', { name: 'Backup succeeded' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Restore backup' }));
+    await user.click(screen.getByRole('button', { name: 'Restore backup' }));
+    expect(await screen.findByRole('status', { name: 'Restore succeeded' })).toBeVisible();
+  });
+
+  it.each([
+    ['Create or replace backup', 'Create backup', 'create_registry_backup', 'Backup'],
+    ['Restore backup', 'Restore backup', 'restore_registry_backup', 'Restore'],
+  ])('shows typed %s failure', async (trigger, confirm, command, action) => {
+    const user = userEvent.setup();
+    mockBackend.setErrorOverride(command, new AppErrorException({ code: 'recovery_conflict', operation: command, subject: { kind: 'registry', id: 'canonical' }, message: 'Recovery blocked', details: 'Active operation', retryable: true }));
+    render(<QueryClientProvider client={client}><TestShell /></QueryClientProvider>);
+    await user.click(await screen.findByRole('button', { name: trigger }));
+    await user.click(screen.getByRole('button', { name: confirm }));
+    expect(await screen.findByRole('alert', { name: `${action} failed` })).toHaveTextContent('recovery_conflict');
   });
 });

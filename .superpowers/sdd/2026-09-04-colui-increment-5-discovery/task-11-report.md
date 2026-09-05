@@ -94,3 +94,69 @@ Tests 23 passed (23)
 - Existing Vitest suites emit Node experimental localStorage warnings and intentional React error-boundary stderr; all tests exit 0.
 - Browser smoke uses mock IPC and headless Firefox. Live Tauri, Docker daemon, and native OS opener remain outside Task 11.
 - Existing mock definitions stay `unchecked`; browser smoke therefore does not repeat Compose lifecycle coverage already provided by focused ActionMenu tests.
+
+## Task 11 Fix Round 1
+
+Status: **DONE**
+
+Base: `f1bc4c07eb16bf8bcb2d7b8b2979e7c42eb651d9`.
+No subagents, push, merge, amend, or Git configuration changes.
+
+### Findings And Fixes
+
+1. Added shared accessible operation feedback. Diagnostics now announces named connect, disconnect, reconnect, backup, and restore failures with stable error codes and expandable sanitized details; each success has a named `role=status`.
+2. Replaced Discovery's priority-based single pending candidate with independent immutable-ID registration and ignore sets. Same-candidate duplicate/conflicting controls disable together while other candidates remain actionable.
+3. Added named success and failure feedback for registration, ignore, automatic-registration configuration, and explicit automatic registration.
+4. Added AppShell `hashchange` synchronization and cleanup so Back/Forward navigation changes working views and `aria-current` state.
+5. Added clipboard and port-open success statuses plus named failure alerts. Open failures preserve typed code/details through shared feedback.
+6. Replaced generic container action failure copy with stable typed code/message, expandable details, and distinct recovery for stale sessions, active conflicts, retryable daemon failures, and disappeared/rejected containers.
+
+### RED Evidence
+
+Exact focused command:
+
+```sh
+npx --yes pnpm@9.15.5 test -- src/features/diagnostics/__tests__/DiagnosticsView.test.tsx src/features/discovery/__tests__/DiscoverySection.test.tsx src/features/containers/__tests__/OtherContainers.test.tsx src/features/projects/__tests__/ProjectsView.test.tsx
+```
+
+Relevant actual output:
+
+```text
+Test Files 4 failed (4)
+Tests 17 failed | 23 passed (40)
+Unable to find role="alert" and name "Connect failed"
+Unable to find role="alert" and name "Ignore failed"
+Unable to find role="status" and name "Registration succeeded"
+Unable to find role="heading" and name "Diagnostics"
+Unable to find role="alert" and name "Open port failed"
+```
+
+### GREEN Evidence
+
+Exact final chain:
+
+```sh
+npx --yes pnpm@9.15.5 test -- src/features/diagnostics/__tests__/DiagnosticsView.test.tsx src/features/discovery/__tests__/DiscoverySection.test.tsx src/features/containers/__tests__/OtherContainers.test.tsx src/features/projects/__tests__/ProjectsView.test.tsx && npx --yes pnpm@9.15.5 test && npx --yes pnpm@9.15.5 typecheck && npx --yes pnpm@9.15.5 lint && npx --yes pnpm@9.15.5 build && npx --yes pnpm@9.15.5 test:browser && git diff --check
+```
+
+```text
+Test Files 4 passed (4)
+Tests 42 passed (42)
+Test Files 15 passed (15)
+Tests 142 passed (142)
+> tsc --noEmit
+> tsc --noEmit
+207 modules transformed
+✓ built in 542ms
+Test Files 1 passed (1)
+Tests 2 passed (2)
+Browser mock smoke OK
+```
+
+### Self-Review And Concerns
+
+- Verified feedback is user-visible, named for assistive technology, and details remain collapsed until requested.
+- Verified each Discovery pending transition removes only its own immutable candidate ID in `finally`, including failures and concurrent different-operation requests.
+- Verified hash listener uses current location, updates route on browser history navigation, and is removed on unmount.
+- Verified port copy/open and container action paths still use Task 10 hooks or browser clipboard only; production contains no direct IPC invoke.
+- Existing Node localStorage warnings and intentional React error-boundary stderr remain. Live Tauri/Docker/native opener testing remains outside this frontend round.

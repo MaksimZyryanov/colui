@@ -42,6 +42,20 @@ describe('ProjectsView', () => {
     expect(screen.getAllByRole('main')).toHaveLength(1);
   });
 
+  it('follows browser Back and Forward hash changes and removes its listener', async () => {
+    location.hash = '#projects';
+    const remove = vi.spyOn(window, 'removeEventListener');
+    const { unmount } = render(<QueryClientProvider client={client}><AppShell /></QueryClientProvider>);
+    location.hash = '#diagnostics';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(await screen.findByRole('heading', { name: 'Diagnostics' })).toBeVisible();
+    location.hash = '#projects';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeVisible();
+    unmount();
+    expect(remove).toHaveBeenCalledWith('hashchange', expect.any(Function));
+  });
+
   it('renders running as one label and expands independent details', async () => {
     const draft = { displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', composeFiles: ['compose.yml'], environmentFiles: [] };
     mockBackend.setResponseOverride('list_profiles', [{ id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
