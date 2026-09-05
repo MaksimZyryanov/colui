@@ -234,7 +234,7 @@ async fn standalone_inventory_exposes_published_tcp_binding() {
     assert!(container.compose.is_none());
     assert!(container.instance.published_ports.iter().any(|binding| {
         binding.host_ip.as_deref() == Some("127.0.0.1")
-            && binding.host_port.is_some()
+            && binding.host_port.is_some_and(|port| port > 0)
             && binding.container_port == 8080
             && binding.protocol == "tcp"
     }));
