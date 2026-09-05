@@ -1,0 +1,7 @@
+{
+  "code": "operation_conflict",
+  "operation": "run_container_action",
+  "subject": { "kind": "container", "id": "opaque-container-id" },
+  "message": "Container operation already active",
+  "retryable": true
+}

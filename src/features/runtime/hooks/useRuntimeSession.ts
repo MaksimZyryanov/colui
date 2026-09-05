@@ -42,6 +42,8 @@ export function useDisconnectRuntime() {
 export function useReconnectRuntime() {
   const client = useQueryClient();
   return useMutation({ mutationFn: reconnectRuntime, onSuccess: result => {
+    client.removeQueries({ queryKey: discoveryKeys.all() });
+    client.removeQueries({ queryKey: logKeys.all() });
     publishRuntimeState(client, result.runtimeState);
     if (result.inventory) client.setQueryData(inventoryKeys.snapshot(), (old: RuntimeInventory | undefined) => inventoryStructuralSharing(old, result.inventory!));
   } });

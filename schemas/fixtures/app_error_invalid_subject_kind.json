@@ -1,0 +1,7 @@
+{
+  "code": "candidate_stale",
+  "operation": "register_candidate",
+  "subject": { "kind": "daemon", "id": "candidate-id" },
+  "message": "Candidate is stale",
+  "retryable": false
+}

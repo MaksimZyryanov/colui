@@ -170,6 +170,15 @@ describe('application state coherence', () => {
     expect(client.getQueryData(runtimeKeys.state())).toMatchObject(operation === 'disconnect' ? { state: 'disconnected' } : ready(nextSession));
   });
 
+  it('clears discovery and logs after successful same-session reconnect', async () => {
+    seed();
+    mockBackend.setResponseOverride('reconnect_runtime', { runtimeState: ready(session), inventory: inventory(2) });
+    const { result } = renderHook(useReconnectRuntime, { wrapper });
+    await act(async () => { await result.current.mutateAsync(); });
+    expect(client.getQueriesData({ queryKey: discoveryKeys.all() })).toHaveLength(0);
+    expect(client.getQueriesData({ queryKey: logKeys.all() })).toHaveLength(0);
+  });
+
   it('discovery observes keyed projection without starting another diagnostics or inventory observer', async () => {
     renderHook(() => useDiscovery(session, 1, health), { wrapper }); await flush();
     expect(mockBackend.getInvocations().map(v => v.command)).toEqual(['list_discovery_candidates']);

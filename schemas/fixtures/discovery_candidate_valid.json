@@ -1,0 +1,12 @@
+{
+  "candidateId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runtimeSessionId": "00000000-0000-0000-0000-000000000001",
+  "inventoryGeneration": 1,
+  "composeProjectName": "demo",
+  "workingDirectory": null,
+  "configFiles": [],
+  "containerCount": 1,
+  "classification": "incomplete_metadata",
+  "conflicts": [],
+  "ignored": false
+}

@@ -28,6 +28,11 @@ const dtoManifest = [
 ] as const;
 const fixtureManifest: Array<[string, { safeParse: (value: unknown) => { success: boolean } }, boolean]> = [
   ['app_error_invalid_code.json', appErrorSchema, false], ['app_error_missing_retryable.json', appErrorSchema, false],
+  ['app_error_invalid_subject_kind.json', appErrorSchema, false], ['app_error_typed_subject_valid.json', appErrorSchema, true],
+  ['discovery_candidate_invalid_enum.json', s.discoveryCandidateSchema, false], ['discovery_candidate_invalid_identity.json', s.discoveryCandidateSchema, false],
+  ['discovery_candidate_invalid_session.json', s.discoveryCandidateSchema, false], ['discovery_candidate_valid.json', s.discoveryCandidateSchema, true],
+  ['registry_snapshot_identity_invalid_hash.json', s.registrySnapshotIdentitySchema, false], ['registry_snapshot_identity_valid.json', s.registrySnapshotIdentitySchema, true],
+  ['inventory_invalid_missing_observation_groups.json', s.inventorySchema, false],
   ['inventory_pre_observation_invalid_snapshot.json', s.inventorySchema, false], ['inventory_pre_observation_valid.json', s.inventorySchema, true],
   ['lifecycle_result_invalid_missing_success.json', lifecycleResultSchema, false], ['lifecycle_result_valid.json', lifecycleResultSchema, true],
   ['profile_details_invalid_missing_required.json', profileDetailsSchema, false], ['profile_summary_invalid_enum.json', profileSummarySchema, false],
@@ -221,21 +226,21 @@ describe('IPC contracts', () => {
   });
 
   it('preserves typed subjects and retryability without pretending container IDs are profile UUIDs', () => {
-    for (const kind of ['profile', 'candidate', 'container', 'registry']) {
-      const raw = { code: 'operation_conflict', operation: 'action', subject: { kind, id: 'opaque-id' }, message: 'Busy', retryable: true };
-      expect(decodeResponse(appErrorSchema, raw, 'action')).toEqual(raw);
-    }
-    expect(appErrorSchema.safeParse({ code: 'candidate_stale', operation: 'register', message: 'Stale', retryable: false, subject: { kind: 'daemon', id: 'x' } }).success).toBe(false);
+    const fixture = (name: string) => JSON.parse(readFileSync(resolve(fixtureRoot, name), 'utf8'));
+    const valid = fixture('app_error_typed_subject_valid.json');
+    expect(decodeResponse(appErrorSchema, valid, 'run_container_action')).toEqual(valid);
+    expect(() => decodeResponse(appErrorSchema, fixture('app_error_invalid_subject_kind.json'), 'register_candidate')).toThrowError(expect.objectContaining({ code: 'protocol_mismatch', retryable: false }));
   });
 
   it('validates discovery identity, session, enums and strict immutable requests', () => {
-    const candidate = { candidateId: 'a'.repeat(64), runtimeSessionId: '00000000-0000-0000-0000-000000000001', inventoryGeneration: 1, composeProjectName: 'demo', workingDirectory: null, configFiles: [], containerCount: 1, classification: 'incomplete_metadata', conflicts: [], ignored: false };
+    const fixture = (name: string) => JSON.parse(readFileSync(resolve(fixtureRoot, name), 'utf8'));
+    const candidate = fixture('discovery_candidate_valid.json');
     expect(s.discoveryCandidateSchema.parse(candidate)).toEqual(candidate);
-    for (const patch of [{ candidateId: 'A'.repeat(64) }, { runtimeSessionId: 'not-a-session' }, { inventoryGeneration: -1 }, { classification: 'new' }]) {
-      expect(() => decodeResponse(s.discoveryCandidateSchema, { ...candidate, ...patch }, 'list_discovery_candidates')).toThrowError(expect.objectContaining({ code: 'protocol_mismatch', retryable: false }));
+    for (const name of ['discovery_candidate_invalid_identity.json', 'discovery_candidate_invalid_session.json', 'discovery_candidate_invalid_enum.json']) {
+      expect(() => decodeResponse(s.discoveryCandidateSchema, fixture(name), 'list_discovery_candidates')).toThrowError(expect.objectContaining({ code: 'protocol_mismatch', retryable: false }));
     }
-    expect(s.registrySnapshotIdentitySchema.safeParse({ registryRevision: 0, canonicalContentSha256: 'a'.repeat(64) }).success).toBe(true);
-    expect(s.registrySnapshotIdentitySchema.safeParse({ registryRevision: 1, canonicalContentSha256: 'bad' }).success).toBe(false);
+    expect(s.registrySnapshotIdentitySchema.safeParse(fixture('registry_snapshot_identity_valid.json')).success).toBe(true);
+    expect(() => decodeResponse(s.registrySnapshotIdentitySchema, fixture('registry_snapshot_identity_invalid_hash.json'), 'create_registry_backup')).toThrowError(expect.objectContaining({ code: 'protocol_mismatch', retryable: false }));
     const request = { containerId: 'opaque', runtimeSessionId: candidate.runtimeSessionId };
     expect(s.containerLogsRequestSchema.parse(request)).toEqual(request);
     expect(s.containerLogsRequestSchema.safeParse({ ...request, path: '/tmp/log' }).success).toBe(false);
@@ -245,7 +250,7 @@ describe('IPC contracts', () => {
 
   it('requires observation evidence and backend port actions in inventory', () => {
     const inventory = JSON.parse(readFileSync(resolve(fixtureRoot, 'inventory_pre_observation_valid.json'), 'utf8'));
-    expect(s.inventorySchema.safeParse({ ...inventory, composeObservationGroups: undefined }).success).toBe(false);
+    expect(() => decodeResponse(s.inventorySchema, JSON.parse(readFileSync(resolve(fixtureRoot, 'inventory_invalid_missing_observation_groups.json'), 'utf8')), 'get_inventory')).toThrowError(expect.objectContaining({ code: 'protocol_mismatch', retryable: false }));
     expect(s.inventorySchema.safeParse({ ...inventory, composeObservationGroups: [{ composeProjectName: 'demo', workingDirectory: null, configFiles: [], containerIds: ['id'] }] }).success).toBe(false);
     expect(s.portBindingSchema.safeParse({ containerPort: 80, protocol: 'tcp' }).success).toBe(false);
     expect(s.portBindingSchema.parse({ containerPort: 80, protocol: 'tcp', action: { copy: '80/tcp', url: null } }).action.url).toBeNull();
