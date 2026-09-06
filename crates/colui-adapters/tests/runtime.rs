@@ -40,21 +40,31 @@ fn inherited_fixture_env() -> BTreeMap<String, String> {
 }
 
 #[test]
-fn endpoint_resolution_prefers_explicit_then_docker_host_then_socket() {
+fn endpoint_resolution_prefers_explicit_then_docker_host_then_context_then_socket() {
     assert_eq!(
-        resolve_endpoint(Some("unix:///explicit"), Some("unix:///env"))
-            .unwrap()
-            .as_str(),
+        resolve_endpoint(
+            Some("unix:///explicit"),
+            Some("unix:///env"),
+            Some("unix:///context"),
+        )
+        .unwrap()
+        .as_str(),
         "unix:///explicit"
     );
     assert_eq!(
-        resolve_endpoint(None, Some("unix:///env"))
+        resolve_endpoint(None, Some("unix:///env"), Some("unix:///context"))
             .unwrap()
             .as_str(),
         "unix:///env"
     );
     assert_eq!(
-        resolve_endpoint(None, None).unwrap().as_str(),
+        resolve_endpoint(None, None, Some("unix:///context"))
+            .unwrap()
+            .as_str(),
+        "unix:///context"
+    );
+    assert_eq!(
+        resolve_endpoint(None, None, None).unwrap().as_str(),
         "unix:///var/run/docker.sock"
     );
 }
@@ -382,6 +392,21 @@ async fn gateway_matching_fingerprints_reuses_one_client_and_allows_reads() {
     ));
     assert_eq!(gateway.created_client_count(), 1);
     assert!(gateway.list_containers().await.is_ok());
+}
+
+#[tokio::test]
+async fn gateway_without_environment_uses_active_docker_context_endpoint() {
+    let gateway = RuntimeGateway::new_for_tests_with_environment(
+        Box::new(FakeDocker::new("same")),
+        Box::new(ContextRunner),
+        BTreeMap::new(),
+    );
+
+    let state = gateway.connect_runtime(None).await.unwrap();
+    let RuntimeSessionState::Ready(context) = state else {
+        panic!("expected ready runtime state");
+    };
+    assert_eq!(context.endpoint.as_str(), "unix:///context/docker.sock");
 }
 
 #[tokio::test]
@@ -1317,6 +1342,29 @@ impl colui_adapters::runtime::DockerControl for StaleDocker {
 
 struct FakeRunner {
     fingerprint: String,
+}
+
+struct ContextRunner;
+
+impl ComposeRunner for ContextRunner {
+    fn invoke(
+        &self,
+        invocation: ComposeInvocation,
+    ) -> colui_app::RuntimeFuture<'_, ComposeProcessResult> {
+        Box::pin(async move {
+            let stdout = if invocation.args.first().map(String::as_str) == Some("context") {
+                "unix:///context/docker.sock\n"
+            } else {
+                "ID: same\nServer Version: 1\nOSType: linux\nArchitecture: x86_64\n"
+            };
+            Ok(ComposeProcessResult::completed(
+                0,
+                stdout,
+                "",
+                Duration::from_millis(1),
+            ))
+        })
+    }
 }
 
 #[derive(Default)]

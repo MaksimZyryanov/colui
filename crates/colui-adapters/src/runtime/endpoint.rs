@@ -24,9 +24,11 @@ const CLEARED_VARIABLES: &[&str] = &[
 pub fn resolve_endpoint(
     explicit: Option<&str>,
     docker_host: Option<&str>,
+    context_host: Option<&str>,
 ) -> Result<DockerEndpoint, &'static str> {
     explicit
         .or(docker_host)
+        .or(context_host)
         .unwrap_or(DEFAULT_ENDPOINT)
         .try_into()
 }

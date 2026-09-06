@@ -42,7 +42,8 @@ impl ComposeProcessRunner {
         ));
 
         let started = Instant::now();
-        let mut command = Command::new(&invocation.executable);
+        let executable = resolve_executable(&invocation.executable, &invocation.environment);
+        let mut command = Command::new(executable);
         command
             .args(&invocation.args)
             .current_dir(&invocation.working_directory)
@@ -128,6 +129,36 @@ impl ComposeProcessRunner {
             })
         }
     }
+}
+
+fn resolve_executable(
+    executable: &std::path::Path,
+    environment: &std::collections::BTreeMap<String, String>,
+) -> std::path::PathBuf {
+    if executable.components().count() == 1 {
+        if let Some(path) = environment.get("PATH") {
+            for directory in std::env::split_paths(path) {
+                let candidate = directory.join(executable);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if executable == std::path::Path::new("docker") {
+        for candidate in [
+            "/opt/homebrew/bin/docker",
+            "/usr/local/bin/docker",
+            "/Applications/Docker.app/Contents/Resources/bin/docker",
+        ] {
+            let candidate = std::path::PathBuf::from(candidate);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    executable.to_owned()
 }
 
 impl Default for ComposeProcessRunner {

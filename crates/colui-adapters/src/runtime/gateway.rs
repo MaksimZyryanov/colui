@@ -13,6 +13,7 @@ use colui_domain::{
     DockerEndpoint, MismatchDetails, RuntimeInventory, RuntimeSessionId, RuntimeSessionState,
     SessionContext, Timestamp,
 };
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
@@ -148,6 +149,7 @@ pub struct RuntimeGateway {
     transition: Mutex<TransitionState>,
     gate: Arc<ComposeExecutionGate>,
     created: AtomicUsize,
+    environment: BTreeMap<String, String>,
 }
 
 impl RuntimeGateway {
@@ -187,6 +189,22 @@ impl RuntimeGateway {
             runner.into(),
         )
     }
+    #[doc(hidden)]
+    #[cfg(feature = "test-support")]
+    pub fn new_for_tests_with_environment(
+        docker: Box<dyn DockerControl>,
+        runner: Box<dyn ComposeRunner>,
+        environment: BTreeMap<String, String>,
+    ) -> Self {
+        let mut gateway = Self::with_factory(
+            Arc::new(FixedFactory {
+                docker: docker.into(),
+            }),
+            runner.into(),
+        );
+        gateway.environment = environment;
+        gateway
+    }
     pub fn new_for_tests_with_gate(
         docker: Box<dyn DockerControl>,
         runner: Box<dyn ComposeRunner>,
@@ -220,6 +238,7 @@ impl RuntimeGateway {
             transition: Mutex::new(TransitionState::default()),
             gate,
             created: AtomicUsize::new(0),
+            environment: std::env::vars().collect(),
         }
     }
 
@@ -266,7 +285,7 @@ impl RuntimeGateway {
             executable: "docker".into(),
             args,
             working_directory: profile.working_directory,
-            environment: build_cli_environment(endpoint.as_str(), std::env::vars().collect()),
+            environment: build_cli_environment(endpoint.as_str(), self.environment.clone()),
             deadline: Instant::now() + Duration::from_secs(120),
         };
         let runner = self.runner.lock().await.clone();
@@ -524,9 +543,34 @@ impl RuntimeGateway {
             snapshot.generation += 1;
             snapshot.client = None;
         }
+        let docker_host = self.environment.get("DOCKER_HOST").cloned();
+        let runner = self.runner.lock().await.clone();
+        let context_host = if preference.is_none() && docker_host.is_none() {
+            runner
+                .invoke(ComposeInvocation {
+                    executable: "docker".into(),
+                    args: vec![
+                        "context".into(),
+                        "inspect".into(),
+                        "--format".into(),
+                        "{{.Endpoints.docker.Host}}".into(),
+                    ],
+                    working_directory: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+                    environment: self.environment.clone(),
+                    deadline: Instant::now() + Duration::from_secs(30),
+                })
+                .await
+                .ok()
+                .filter(|result| !result.timed_out() && result.exit_code() == Some(0))
+                .map(|result| result.stdout().trim().to_owned())
+                .filter(|host| !host.is_empty())
+        } else {
+            None
+        };
         let endpoint = match resolve_endpoint(
             preference.as_ref().map(DockerEndpoint::as_str),
-            std::env::var("DOCKER_HOST").ok().as_deref(),
+            docker_host.as_deref(),
+            context_host.as_deref(),
         ) {
             Ok(endpoint) => endpoint,
             Err(message) => {
@@ -558,13 +602,12 @@ impl RuntimeGateway {
                 ))
             }
         };
-        let runner = self.runner.lock().await.clone();
         let cli = runner
             .invoke(ComposeInvocation {
                 executable: "docker".into(),
                 args: vec!["info".into()],
                 working_directory: std::env::current_dir().unwrap_or_else(|_| ".".into()),
-                environment: build_cli_environment(endpoint.as_str(), std::env::vars().collect()),
+                environment: build_cli_environment(endpoint.as_str(), self.environment.clone()),
                 deadline: Instant::now() + Duration::from_secs(30),
             })
             .await;
