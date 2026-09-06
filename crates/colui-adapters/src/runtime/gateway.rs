@@ -182,12 +182,17 @@ impl RuntimeGateway {
     }
 
     pub fn new_for_tests(docker: Box<dyn DockerControl>, runner: Box<dyn ComposeRunner>) -> Self {
-        Self::with_factory(
+        let mut gateway = Self::with_factory(
             Arc::new(FixedFactory {
                 docker: docker.into(),
             }),
             runner.into(),
-        )
+        );
+        gateway.environment.insert(
+            "DOCKER_HOST".to_owned(),
+            "unix:///var/run/docker.sock".to_owned(),
+        );
+        gateway
     }
     #[doc(hidden)]
     #[cfg(feature = "test-support")]
@@ -210,13 +215,18 @@ impl RuntimeGateway {
         runner: Box<dyn ComposeRunner>,
         gate: Arc<ComposeExecutionGate>,
     ) -> Self {
-        Self::with_factory_and_gate(
+        let mut gateway = Self::with_factory_and_gate(
             Arc::new(FixedFactory {
                 docker: docker.into(),
             }),
             runner.into(),
             gate,
-        )
+        );
+        gateway.environment.insert(
+            "DOCKER_HOST".to_owned(),
+            "unix:///var/run/docker.sock".to_owned(),
+        );
+        gateway
     }
     pub fn with_factory(factory: Arc<dyn DockerFactory>, runner: Arc<dyn ComposeRunner>) -> Self {
         Self::with_factory_and_gate(factory, runner, Arc::new(ComposeExecutionGate::new()))
