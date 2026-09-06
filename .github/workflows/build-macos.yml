@@ -60,6 +60,16 @@ jobs:
       - name: Build DMG
         run: pnpm tauri:build
 
+      - name: Verify app signature
+        run: |
+          mount_dir="${RUNNER_TEMP}/colui-dmg"
+          mkdir -p "${mount_dir}"
+          hdiutil attach -readonly -nobrowse \
+            -mountpoint "${mount_dir}" \
+            target/release/bundle/dmg/*.dmg
+          trap 'hdiutil detach "${mount_dir}"' EXIT
+          codesign --verify --deep --strict --verbose=2 "${mount_dir}/CoLUI.app"
+
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:

@@ -8,6 +8,9 @@
   "bundle": {
     "active": true,
     "targets": ["dmg"],
-    "icon": ["icons/icon.png"]
+    "icon": ["icons/icon.png"],
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }
