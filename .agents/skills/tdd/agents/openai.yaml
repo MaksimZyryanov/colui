@@ -1,0 +1,14 @@
+interface:
+  display_name: CoLUI TDD
+  short_description: Разработка CoLUI через падающий тест и минимальный код
+  default_prompt: 'Используй $colui-tdd: сначала напиши и запусти падающий тест для
+    задачи CoLUI, затем реализуй изменение и проверь результат.'
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true
