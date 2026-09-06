@@ -494,6 +494,9 @@ async fn missing_registry_loads_empty_without_writing() {
     let (directory, registry) = test_registry();
     let snapshot = registry.load().await.unwrap();
     assert_eq!(snapshot.registry_revision, 0);
+    let (canonical, identity) = registry.load_canonical().await.unwrap();
+    assert_eq!(canonical, snapshot);
+    assert!(identity.is_none());
     assert!(!directory.path().join("registry.json").exists());
 }
 

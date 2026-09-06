@@ -32,6 +32,30 @@ describe('DiagnosticsView', () => {
     expect(restore).toHaveFocus();
   });
 
+  it('renders retained import, definition failures, and journal metadata accessibly offline', async () => {
+    const base = await mockBackend.invoke('get_diagnostics') as Record<string, unknown>;
+    client.setQueryData(diagnosticsKeys.snapshot(), {
+      ...base,
+      runtime: { state: { state: 'disconnected' }, resolvedEndpoint: null, apiFingerprint: null, cliFingerprint: null, sessionId: null, connectedAt: null },
+      import: { sourcePath: '/legacy/projects.json', importedCount: 2, sourcePreserved: true, error: { code: 'registry_corrupt', operation: 'import_registry', subject: { kind: 'registry', id: 'legacy' }, message: 'Import failed', retryable: false } },
+      definitions: { generation: 4, profiles: [{ profileId: '00000000-0000-0000-0000-000000000001', definition: { profileId: '00000000-0000-0000-0000-000000000001', definitionRevision: 'abc', loadedAt: '2026-09-05T10:00:00.000Z', state: 'stale', services: [], issues: [] }, error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: '00000000-0000-0000-0000-000000000001' }, message: 'Definition failed', retryable: true } }] },
+      journal: { entries: [{ sequence: 7, timestamp: '2026-09-05T11:00:00.000Z', runtimeSessionId: null, kind: 'restore_failed', severity: 'error', subject: { kind: 'registry', id: 'canonical' }, errorCode: 'recovery_conflict', message: 'Registry restore failed' }] },
+    });
+
+    render(<QueryClientProvider client={client}><DiagnosticsView /></QueryClientProvider>);
+
+    expect(await screen.findByRole('heading', { name: 'Import' })).toBeVisible();
+    expect(screen.getByText('/legacy/projects.json')).toBeVisible();
+    expect(screen.getByText('registry_corrupt')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Definitions' })).toBeVisible();
+    expect(screen.getByText('00000000-0000-0000-0000-000000000001').closest('li')).toHaveTextContent('Stale');
+    expect(screen.getByText('definition_failed')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Journal' })).toBeVisible();
+    expect(screen.getByText('2026-09-05T11:00:00.000Z')).toBeVisible();
+    expect(screen.getByText(/registry: canonical/i)).toBeVisible();
+    expect(screen.getByText('recovery_conflict')).toBeVisible();
+  });
+
   it('explains context mismatch with endpoint and both fingerprints', async () => {
     const base = await mockBackend.invoke('get_diagnostics') as Record<string, unknown>;
     client.setQueryData(diagnosticsKeys.snapshot(), { ...base, runtime: { state: { state: 'contextMismatch', details: { endpoint: 'unix:///api.sock', apiFingerprint: { daemonId: 'api-id', serverVersion: '27', osType: 'linux', architecture: 'arm64' }, cliFingerprint: { daemonId: 'cli-id', serverVersion: '26', osType: 'linux', architecture: 'amd64' } } }, resolvedEndpoint: 'unix:///api.sock', apiFingerprint: { daemonId: 'api-id', serverVersion: '27', osType: 'linux', architecture: 'arm64' }, cliFingerprint: { daemonId: 'cli-id', serverVersion: '26', osType: 'linux', architecture: 'amd64' }, sessionId: null, connectedAt: null } });

@@ -18,6 +18,20 @@ pub struct RegistrySnapshot {
 
 pub trait ProfileReader: Send + Sync {
     fn load(&self) -> StoreFuture<'_, RegistrySnapshot>;
+
+    fn load_canonical(
+        &self,
+    ) -> StoreFuture<'_, (RegistrySnapshot, Option<crate::RegistrySnapshotIdentity>)> {
+        Box::pin(async move {
+            let snapshot = self.load().await?;
+            let identity = crate::RegistrySnapshotIdentity {
+                registry_revision: snapshot.registry_revision,
+                canonical_content_sha256:
+                    "0000000000000000000000000000000000000000000000000000000000000000".into(),
+            };
+            Ok((snapshot, Some(identity)))
+        })
+    }
 }
 
 pub trait ProfileStore: ProfileReader {

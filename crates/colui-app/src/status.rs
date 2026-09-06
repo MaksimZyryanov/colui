@@ -101,6 +101,7 @@ struct RuntimeAssociationContext {
     profile_counts: BTreeMap<AssociationTuple, usize>,
     profile_tuples: HashMap<ProfileId, Option<AssociationTuple>>,
     observation_counts: BTreeMap<AssociationTuple, usize>,
+    observation_name_counts: HashMap<String, usize>,
 }
 
 impl RuntimeAssociationContext {
@@ -115,7 +116,11 @@ impl RuntimeAssociationContext {
             profile_tuples.insert(profile.id.clone(), tuple);
         }
         let mut observation_counts = BTreeMap::new();
+        let mut observation_name_counts = HashMap::new();
         for group in &inventory.compose_observation_groups {
+            *observation_name_counts
+                .entry(group.compose_project_name.clone())
+                .or_insert(0) += 1;
             if let Some(working_directory) = &group.working_directory {
                 *observation_counts
                     .entry((
@@ -130,6 +135,7 @@ impl RuntimeAssociationContext {
             profile_counts,
             profile_tuples,
             observation_counts,
+            observation_name_counts,
         }
     }
 
@@ -143,8 +149,16 @@ impl RuntimeAssociationContext {
         let Some(tuple) = self.profile_tuple(profile) else {
             return true;
         };
+        let observations = self.observation_counts.get(tuple).copied().unwrap_or(0);
         self.profile_counts.get(tuple).copied().unwrap_or(0) != 1
-            || self.observation_counts.get(tuple).copied().unwrap_or(0) != 1
+            || observations > 1
+            || (observations == 1
+                && self
+                    .observation_name_counts
+                    .get(&tuple.0)
+                    .copied()
+                    .unwrap_or(0)
+                    != 1)
     }
 }
 
@@ -158,6 +172,7 @@ fn project_status_from_associations(
         .filter(|tuple| {
             associations.profile_counts.get(*tuple) == Some(&1)
                 && associations.observation_counts.get(*tuple) == Some(&1)
+                && associations.observation_name_counts.get(&tuple.0) == Some(&1)
         })
         .and_then(|tuple| {
             inventory.compose_observation_groups.iter().find(|group| {

@@ -115,6 +115,7 @@ async fn fixture_labels_feed_inventory_and_profile_change_updates_definition_rev
             std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
         )),
         Arc::new(ComposeExecutionGate::new()),
+        Arc::new(SingleProfile(fixture.profile.clone())),
     );
     let before = cache
         .refresh_definition(fixture.profile.clone())
@@ -277,6 +278,19 @@ struct TempComposeFixture {
 impl ProfileReader for TempComposeFixture {
     fn load(&self) -> colui_app::StoreFuture<'_, RegistrySnapshot> {
         let profile = self.profile.clone();
+        Box::pin(async move {
+            Ok(RegistrySnapshot {
+                registry_revision: 1,
+                profiles: vec![profile],
+            })
+        })
+    }
+}
+
+struct SingleProfile(ProjectProfile);
+impl ProfileReader for SingleProfile {
+    fn load(&self) -> colui_app::StoreFuture<'_, RegistrySnapshot> {
+        let profile = self.0.clone();
         Box::pin(async move {
             Ok(RegistrySnapshot {
                 registry_revision: 1,

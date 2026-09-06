@@ -393,3 +393,93 @@ async fn lifecycle_runtime_failure_releases_guard() {
     );
     assert!(!locks.is_busy(&profile_id("id-1")));
 }
+
+struct RestoredReader {
+    profile: Arc<Mutex<ProjectProfile>>,
+}
+
+impl ProfileReader for RestoredReader {
+    fn load(&self) -> colui_app::StoreFuture<'_, RegistrySnapshot> {
+        let profile = self.profile.lock().unwrap().clone();
+        Box::pin(async move {
+            Ok(RegistrySnapshot {
+                registry_revision: profile.revision.value(),
+                profiles: vec![profile],
+            })
+        })
+    }
+}
+
+struct RestoreOnLeaseLocks {
+    restored: ProjectProfile,
+    current: Arc<Mutex<ProjectProfile>>,
+}
+
+impl OperationLockReader for RestoreOnLeaseLocks {
+    fn is_busy(&self, _: &ProfileId) -> bool {
+        false
+    }
+}
+
+impl OperationLockManager for RestoreOnLeaseLocks {
+    fn acquire_lifecycle(
+        &self,
+        _: ProfileId,
+        _: OperationKind,
+    ) -> OperationFuture<'_, LifecycleOperationGuard> {
+        *self.current.lock().unwrap() = self.restored.clone();
+        Box::pin(async { Ok(LifecycleOperationGuard::new(|| {})) })
+    }
+
+    fn acquire_definition(
+        &self,
+        _: ProfileId,
+    ) -> Result<colui_app::DefinitionLoadGuard, colui_app::DefinitionBusy> {
+        unreachable!()
+    }
+}
+
+struct ProfileRecordingRuntime(Arc<Mutex<Vec<PathBuf>>>);
+
+impl LifecycleRuntime for ProfileRecordingRuntime {
+    fn run_profile(
+        &self,
+        profile: ProjectProfile,
+        _: LifecycleOperation,
+    ) -> LifecycleFuture<'_, LifecycleResult> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(profile.working_directory.clone());
+        Box::pin(async move {
+            Ok(LifecycleResult {
+                profile_id: profile.id,
+                success: false,
+                inventory: RuntimeInventory::unavailable(),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn restore_between_request_and_lease_uses_profile_reread_under_lease() {
+    let old = profile("id-1");
+    let mut restored = old.clone();
+    restored.working_directory = PathBuf::from("/tmp/restored");
+    restored.revision = restored.revision.next().unwrap();
+    let current = Arc::new(Mutex::new(old));
+    let reader = RestoredReader {
+        profile: current.clone(),
+    };
+    let locks = RestoreOnLeaseLocks { restored, current };
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let runtime = ProfileRecordingRuntime(paths.clone());
+    let inventory = fixture().3;
+
+    ApplyProject::new_with_dependencies(&reader, &runtime, &locks, &inventory)
+        .execute(profile_id("id-1"))
+        .await
+        .unwrap();
+
+    assert_eq!(*paths.lock().unwrap(), vec![PathBuf::from("/tmp/restored")]);
+}

@@ -157,7 +157,7 @@ fn ambiguous_runtime_full_tuple_match_projects_only_matching_containers() {
 }
 
 #[test]
-fn ambiguous_runtime_same_name_distinct_tuple_projects_unique_full_tuple_match() {
+fn same_name_distinct_runtime_tuple_makes_matching_profile_ambiguous() {
     let profile = profile();
     let registry = RegistrySnapshot {
         registry_revision: 1,
@@ -171,13 +171,16 @@ fn ambiguous_runtime_same_name_distinct_tuple_projects_unique_full_tuple_match()
     let status =
         project_status_from_registry_inventory_and_definition(&profile, &registry, inventory, None);
 
-    assert_eq!(status.runtime.presence, RuntimePresence::Present);
-    assert_eq!(status.runtime.container_count, 1);
-    assert!(status.issues.is_empty());
+    assert_eq!(status.runtime.presence, RuntimePresence::Absent);
+    assert_eq!(status.runtime.container_count, 0);
+    assert_eq!(
+        status.issues[0].field.as_deref(),
+        Some(IssueCode::AmbiguousRuntimeAssociation.as_str())
+    );
 }
 
 #[test]
-fn ambiguous_runtime_zero_matching_full_tuple_projects_no_containers_and_reports_issue() {
+fn zero_matching_full_tuple_is_absent_without_ambiguity() {
     let profile = profile();
     let registry = RegistrySnapshot {
         registry_revision: 1,
@@ -195,10 +198,7 @@ fn ambiguous_runtime_zero_matching_full_tuple_projects_no_containers_and_reports
 
     assert_eq!(status.runtime.presence, RuntimePresence::Absent);
     assert_eq!(status.runtime.container_count, 0);
-    assert_eq!(
-        status.issues[0].field.as_deref(),
-        Some(IssueCode::AmbiguousRuntimeAssociation.as_str())
-    );
+    assert!(status.issues.is_empty());
 }
 
 #[test]

@@ -218,6 +218,31 @@ impl ProfileReader for JsonProfileRegistry {
             .map_err(|error| write_error("load_registry", error))?
         })
     }
+
+    fn load_canonical(
+        &self,
+    ) -> StoreFuture<'_, (RegistrySnapshot, Option<RegistrySnapshotIdentity>)> {
+        let config = self.config.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || match fs::read(&config.canonical_path) {
+                Ok(bytes) => {
+                    let snapshot = decode(&bytes)?;
+                    let identity = identity(&snapshot, &bytes);
+                    Ok((snapshot, Some(identity)))
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((
+                    RegistrySnapshot {
+                        registry_revision: 0,
+                        profiles: Vec::new(),
+                    },
+                    None,
+                )),
+                Err(error) => Err(io_error("read_registry", error)),
+            })
+            .await
+            .map_err(|error| write_error("load_registry", error))?
+        })
+    }
 }
 
 impl ProfileStore for JsonProfileRegistry {

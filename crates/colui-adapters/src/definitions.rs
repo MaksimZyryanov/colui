@@ -1,7 +1,8 @@
 use crate::runtime::{build_cli_environment, ComposeExecutionGate};
 use colui_app::{
     Clock, ComposeInvocation, ComposeRunner, DefinitionBusy, DefinitionFuture,
-    DefinitionProjection, DefinitionReader, DefinitionRefresher, RuntimeStateReader,
+    DefinitionProjection, DefinitionReader, DefinitionRefresher, ProfileReader,
+    RegistrySnapshotIdentity, RuntimeStateReader,
 };
 use colui_domain::{
     AppError, AppErrorCode, DefinitionRevision, DefinitionState, Issue, ProjectDefinition,
@@ -32,6 +33,7 @@ struct State {
     epoch: HashMap<colui_domain::ProfileId, u64>,
     revisions: HashMap<colui_domain::ProfileId, colui_domain::Revision>,
     generation: u64,
+    registry_identity: Option<Option<RegistrySnapshotIdentity>>,
 }
 
 pub struct DefinitionCache {
@@ -40,6 +42,7 @@ pub struct DefinitionCache {
     clock: Arc<dyn Clock>,
     locks: Arc<dyn colui_app::OperationLockManager>,
     compose_gate: Arc<ComposeExecutionGate>,
+    profiles: Arc<dyn ProfileReader>,
     state: Arc<Mutex<State>>,
 }
 
@@ -50,6 +53,7 @@ impl DefinitionCache {
         clock: Arc<dyn Clock>,
         locks: Arc<dyn colui_app::OperationLockManager>,
         compose_gate: Arc<ComposeExecutionGate>,
+        profiles: Arc<dyn ProfileReader>,
     ) -> Self {
         Self {
             runner,
@@ -57,11 +61,13 @@ impl DefinitionCache {
             clock,
             locks,
             compose_gate,
+            profiles,
             state: Arc::new(Mutex::new(State {
                 entries: HashMap::new(),
                 epoch: HashMap::new(),
                 revisions: HashMap::new(),
                 generation: 0,
+                registry_identity: None,
             })),
         }
     }
@@ -74,22 +80,9 @@ impl DefinitionCache {
         let id = profile.id.clone();
         let now = self.clock.monotonic();
         let cached = {
-            let mut state = lock(&self.state);
-            let previous_revision = state.revisions.insert(id.clone(), profile.revision);
-            if previous_revision.is_some_and(|revision| revision != profile.revision)
-                && state.entries.remove(&id).is_some()
-            {
-                state.generation = state.generation.wrapping_add(1);
-            }
+            let state = lock(&self.state);
             state.entries.get(&id).cloned()
         };
-        if !force
-            && cached.as_ref().is_some_and(|e| {
-                e.profile_revision == profile.revision && now.saturating_sub(e.loaded_mono) < TTL
-            })
-        {
-            return Ok(to_projection(&id, cached.unwrap()));
-        }
         let guard = match self.locks.acquire_definition(id.clone()) {
             Ok(guard) => guard,
             Err(busy @ (DefinitionBusy::LifecyclePending | DefinitionBusy::DefinitionActive)) => {
@@ -100,6 +93,42 @@ impl DefinitionCache {
                 ))
             }
         };
+        let (registry, identity) = self.profiles.load_canonical().await?;
+        let profile = registry
+            .profiles
+            .into_iter()
+            .find(|current| current.id == id)
+            .ok_or_else(|| {
+                AppError::new(
+                    AppErrorCode::ProfileNotFound,
+                    "definition",
+                    Some(id.clone()),
+                    "profile not found",
+                )
+            })?;
+        {
+            let mut state = lock(&self.state);
+            if state.registry_identity.as_ref() != Some(&identity) {
+                state.entries.clear();
+                state.revisions.clear();
+                for epoch in state.epoch.values_mut() {
+                    *epoch += 1;
+                }
+                state.registry_identity = Some(identity);
+                state.generation = state.generation.wrapping_add(1);
+            }
+            state.revisions.insert(id.clone(), profile.revision);
+        }
+        let cached = lock(&self.state).entries.get(&id).cloned();
+        if !force
+            && cached.as_ref().is_some_and(|entry| {
+                entry.profile_revision == profile.revision
+                    && now.saturating_sub(entry.loaded_mono) < TTL
+            })
+        {
+            drop(guard);
+            return Ok(to_projection(&id, cached.unwrap()));
+        }
         let epoch = lock(&self.state).epoch.get(&id).copied().unwrap_or(0);
         let result = self.load(&profile).await;
         let completed_mono = self.clock.monotonic();

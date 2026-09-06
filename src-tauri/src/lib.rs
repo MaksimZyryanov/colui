@@ -156,6 +156,7 @@ impl AppState {
             Arc::new(SystemClock(std::time::Instant::now())),
             locks.clone(),
             compose_gate,
+            profiles.clone(),
         ));
         let runtime = Arc::new(RuntimeFacade::new(
             gateway.clone(),

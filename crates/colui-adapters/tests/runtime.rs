@@ -10,8 +10,8 @@ use colui_adapters::runtime::{ComposeProcessRunner, TerminationConfig};
 use colui_adapters::{DefinitionCache, InventoryCoordinator, OperationLockManager};
 use colui_app::{
     Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, DefinitionRefresher, DockerApi,
-    LifecycleOperation, LifecycleRuntime, RuntimeConnector, RuntimeDiagnosticsReader,
-    RuntimeStateReader,
+    LifecycleOperation, LifecycleRuntime, ProfileReader, RegistrySnapshot, RuntimeConnector,
+    RuntimeDiagnosticsReader, RuntimeStateReader,
 };
 use colui_domain::AppErrorCode;
 use colui_domain::{
@@ -976,6 +976,19 @@ fn test_profile() -> ProjectProfile {
     .unwrap()
 }
 
+struct SingleProfile(ProjectProfile);
+impl ProfileReader for SingleProfile {
+    fn load(&self) -> colui_app::StoreFuture<'_, RegistrySnapshot> {
+        let profile = self.0.clone();
+        Box::pin(async move {
+            Ok(RegistrySnapshot {
+                registry_revision: 1,
+                profiles: vec![profile],
+            })
+        })
+    }
+}
+
 #[tokio::test]
 async fn gateway_rejects_unsuccessful_or_timed_out_cli_info() {
     for result in [
@@ -1150,6 +1163,7 @@ async fn shared_compose_gate_serializes_lifecycle_and_definition_across_profiles
             std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
         )),
         gate,
+        Arc::new(SingleProfile(test_profile())),
     ));
 
     let lifecycle = tokio::spawn({
