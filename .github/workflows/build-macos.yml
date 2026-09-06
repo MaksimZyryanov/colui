@@ -82,18 +82,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view latest >/dev/null 2>&1; then
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" \
-              -f sha="${GITHUB_SHA}" \
-              -F force=true
-            gh release edit latest \
-              --title "Latest macOS build" \
-              --notes "Unsigned macOS build from commit ${GITHUB_SHA}." \
-              --latest
-            gh release upload latest target/release/bundle/dmg/*.dmg --clobber
-          else
-            gh release create latest target/release/bundle/dmg/*.dmg \
-              --target "${GITHUB_SHA}" \
-              --title "Latest macOS build" \
-              --notes "Unsigned macOS build from commit ${GITHUB_SHA}." \
-              --latest
+            gh release delete latest --cleanup-tag --yes
           fi
+          gh release create latest target/release/bundle/dmg/*.dmg \
+            --target "${GITHUB_SHA}" \
+            --title "Latest macOS build" \
+            --notes "Ad-hoc signed macOS build from commit ${GITHUB_SHA}." \
+            --latest
