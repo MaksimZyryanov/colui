@@ -1,0 +1,4 @@
+interface:
+  display_name: "CoLUI Systematic Debugging"
+  short_description: "Поиск корневых причин ошибок в CoLUI"
+  default_prompt: "Используй $colui-systematic-debugging, чтобы воспроизвести проблему в CoLUI, подтвердить корневую причину и подготовить исправление через TDD."
