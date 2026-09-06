@@ -47,6 +47,9 @@ jobs:
       - name: Typecheck frontend
         run: pnpm typecheck
 
+      - name: Build frontend
+        run: pnpm build
+
       - name: Test Rust workspace
         run: cargo test --workspace
 
