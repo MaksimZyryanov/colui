@@ -2,7 +2,7 @@
 
 **Status:** approved design
 **Date:** 2026-09-01
-**Source:** `CoLUI_architecture_audit_v2.md`
+**Source:** [`../history/origins.md`](../history/origins.md)
 
 ## 1. Scope and decisions
 

@@ -3,7 +3,7 @@
 **Status:** design approved in conversation; written spec awaiting user review
 **Date:** 2026-09-02
 **Scope:** Tauri IPC, DTO contracts, browser mock, and first usable Projects UI
-**Depends on:** `docs/superpowers/specs/2026-09-01-colui-2-design.md`, Increment 1, and Increment 2
+**Depends on:** [`2026-09-01-colui-2-design.md`](2026-09-01-colui-2-design.md), Increment 1, and Increment 2
 
 ## 1. Goal and scope
 

@@ -2,7 +2,7 @@
 
 **Status:** approved conversational design; written spec awaiting user review
 **Date:** 2026-09-02
-**Source:** `docs/superpowers/specs/2026-09-01-colui-2-design.md`, `CoLUI_architecture_audit_v2.md`
+**Source:** [`2026-09-01-colui-2-design.md`](2026-09-01-colui-2-design.md), [`../history/origins.md`](../history/origins.md)
 
 ## 1. Scope and decisions
 

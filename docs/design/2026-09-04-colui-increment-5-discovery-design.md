@@ -2,7 +2,7 @@
 
 **Status:** design approved in conversation; written specification pending user review
 **Date:** 2026-09-04
-**Depends on:** `docs/superpowers/specs/2026-09-01-colui-2-design.md`, Increment 2 runtime design, Increment 3 IPC/UI design, and Increment 4 inventory design
+**Depends on:** [`2026-09-01-colui-2-design.md`](2026-09-01-colui-2-design.md), Increment 2 runtime design, Increment 3 IPC/UI design, and Increment 4 inventory design
 
 ## 1. Goal and scope
 
