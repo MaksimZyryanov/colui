@@ -26,6 +26,21 @@ describe('DiscoverySection', () => {
     expect(screen.getAllByRole('button', { name: /^Register .*app$/ })).toHaveLength(1);
   });
 
+  it('keeps the current project list mounted while a newer inventory generation loads', async () => {
+    let finishRefresh!: (value: unknown) => void;
+    mockBackend.setResponseOverride('list_discovery_candidates', { candidates: [candidate('1', 'new_unambiguous')], autoRegistrationEnabled: false });
+    const view = render(<QueryClientProvider client={client}><DiscoverySection runtimeSessionId={session} inventoryGeneration={4} registryHealth={null} /></QueryClientProvider>);
+    expect(await screen.findByText('new_unambiguous-app')).toBeVisible();
+
+    mockBackend.setResponseOverride('list_discovery_candidates', new Promise(resolve => { finishRefresh = resolve; }));
+    view.rerender(<QueryClientProvider client={client}><DiscoverySection runtimeSessionId={session} inventoryGeneration={5} registryHealth={null} /></QueryClientProvider>);
+
+    expect(screen.getByText('new_unambiguous-app')).toBeVisible();
+    expect(screen.getByRole('button', { name: /register new_unambiguous-app/i })).toBeDisabled();
+    finishRefresh({ candidates: [], autoRegistrationEnabled: false });
+    await waitFor(() => expect(screen.queryByText('new_unambiguous-app')).not.toBeInTheDocument());
+  });
+
   it('supports ignore, manual registration, and explicit auto-registration', async () => {
     const user = userEvent.setup();
     mockBackend.setResponseOverride('list_discovery_candidates', { candidates: [candidate('1', 'new_unambiguous')], autoRegistrationEnabled: false });

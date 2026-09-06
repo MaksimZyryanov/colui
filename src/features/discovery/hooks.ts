@@ -1,11 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { autoRegisterCandidates, configureAutoRegistration, getAutoRegistrationConfiguration, ignoreCandidate, listDiscoveryCandidates, registerCandidate } from '../../ipc/commands';
 import type { RegistryHealth } from '../../ipc/types';
 import { discoveryKeys } from './query-keys';
 import { invalidateApplicationState } from '../runtime/useApplicationStateEvents';
 
 export function useDiscovery(runtimeSessionId: string | null, inventoryGeneration: number, health: RegistryHealth | null) {
-  return useQuery({ queryKey: discoveryKeys.list(runtimeSessionId, inventoryGeneration, health), queryFn: listDiscoveryCandidates, enabled: runtimeSessionId !== null });
+  return useQuery({ queryKey: discoveryKeys.list(runtimeSessionId, inventoryGeneration, health), queryFn: listDiscoveryCandidates, enabled: runtimeSessionId !== null, placeholderData: keepPreviousData });
 }
 
 export function useAutoRegistrationConfiguration() {
