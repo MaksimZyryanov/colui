@@ -1,10 +1,11 @@
-use colui_app::IdGenerator;
+use colui_app::{IdGenerator, ImportDiagnostics, ImportDiagnosticsReader};
 use colui_domain::{
     AppError, AppErrorCode, ComposeProjectName, DisplayName, ProfileDraft, ProjectProfile,
     RegistrationOrigin,
 };
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 #[derive(Deserialize)]
 struct LegacyProject {
@@ -48,10 +49,39 @@ pub fn import_v1(source: &[u8], ids: &impl IdGenerator) -> Result<Vec<ProjectPro
         .collect()
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ImportDiagnostics {
-    pub imported_profiles: usize,
-    pub error: Option<AppError>,
+#[derive(Clone, Default)]
+pub struct RetainedImportResult(Arc<Mutex<Option<ImportDiagnostics>>>);
+
+impl RetainedImportResult {
+    pub fn retain(&self, result: ImportDiagnostics) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
+    }
+
+    pub fn current(&self) -> Option<ImportDiagnostics> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+impl ImportDiagnosticsReader for RetainedImportResult {
+    fn import_diagnostics(&self) -> colui_app::DiagnosticsFuture<'_, ImportDiagnostics> {
+        let result = self.current();
+        Box::pin(async move {
+            result.ok_or_else(|| {
+                AppError::new(
+                    AppErrorCode::RegistryCorrupt,
+                    "import_diagnostics",
+                    None,
+                    "startup import result unavailable",
+                )
+            })
+        })
+    }
 }
 
 pub async fn import_v1_if_needed<G: IdGenerator + Clone + Send + Sync + 'static>(
@@ -64,6 +94,8 @@ pub async fn import_v1_if_needed<G: IdGenerator + Clone + Send + Sync + 'static>
     let legacy_path = legacy_path.to_owned();
     let backup_path = backup_path.to_owned();
     let ids = ids.clone();
+    let source_path = legacy_path.clone();
+    let source_preserved = legacy_path.exists();
     let result = tokio::task::spawn_blocking(move || {
         let registry = crate::registry::format::JsonProfileRegistry::new(config)?;
         registry.run_import(&legacy_path, &backup_path, |source| import_v1(source, &ids))
@@ -79,15 +111,21 @@ pub async fn import_v1_if_needed<G: IdGenerator + Clone + Send + Sync + 'static>
     })??;
     match result {
         crate::registry::format::ImportResult::Skipped => Ok(ImportDiagnostics {
-            imported_profiles: 0,
+            source_path,
+            imported_count: 0,
+            source_preserved,
             error: None,
         }),
         crate::registry::format::ImportResult::Imported(count) => Ok(ImportDiagnostics {
-            imported_profiles: count,
+            source_path,
+            imported_count: count,
+            source_preserved: true,
             error: None,
         }),
         crate::registry::format::ImportResult::Malformed(error) => Ok(ImportDiagnostics {
-            imported_profiles: 0,
+            source_path,
+            imported_count: 0,
+            source_preserved: true,
             error: Some(error),
         }),
     }

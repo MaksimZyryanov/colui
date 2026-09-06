@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ContainerActionDto": {
+      "enum": [
+        "start",
+        "stop",
+        "restart"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "action": {
+      "$ref": "#/definitions/ContainerActionDto"
+    },
+    "containerId": {
+      "type": "string"
+    },
+    "runtimeSessionId": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "action",
+    "containerId",
+    "runtimeSessionId"
+  ],
+  "title": "ContainerActionRequestDto",
+  "type": "object"
+}

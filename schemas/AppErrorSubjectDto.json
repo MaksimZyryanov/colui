@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "AppErrorSubjectKindDto": {
+      "enum": [
+        "profile",
+        "candidate",
+        "container",
+        "registry"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/definitions/AppErrorSubjectKindDto"
+    }
+  },
+  "required": [
+    "id",
+    "kind"
+  ],
+  "title": "AppErrorSubjectDto",
+  "type": "object"
+}

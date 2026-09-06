@@ -1,18 +1,27 @@
 use colui_app::{
-    Clock, InventoryFuture, InventoryReader, InventoryRefresher, RuntimeInventorySource,
+    AutoRegistrationSchedule, CandidateLease, Clock, DiscoveryFuture, DiscoveryReader,
+    DiscoverySession, InventoryFuture, InventoryReader, InventoryRefresher, ObservationOrder,
+    ProfileReader, RuntimeInventorySource, ScheduleAutoRegistration,
 };
 use colui_domain::{
-    AppError, AppErrorCode, ContainerObservation, InventoryFreshness, ProjectRuntimeSnapshot,
-    RuntimeInventory, RuntimeSessionState, SessionContext, Timestamp,
+    AppError, AppErrorCode, ComposeObservationGroup, ContainerObservation, InventoryFreshness,
+    ProjectRuntimeSnapshot, RuntimeInventory, SessionContext, Timestamp,
 };
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::Duration;
-use tokio::sync::{broadcast, watch, Mutex};
+use tokio::sync::{broadcast, mpsc, watch, Mutex, RwLock};
 
 type RefreshResult = Result<RuntimeInventory, AppError>;
+type ComposeGroupMap =
+    BTreeMap<(String, Option<String>, Vec<String>), Vec<colui_domain::ContainerId>>;
 
 struct InFlight {
+    start_order: ObservationOrder,
     completed: watch::Sender<Option<RefreshResult>>,
 }
 
@@ -28,8 +37,10 @@ pub struct InventoryCoordinator {
     api: Arc<dyn RuntimeInventorySource>,
     clock: Arc<dyn Clock>,
     state: Arc<Mutex<State>>,
+    publication_gate: Arc<RwLock<()>>,
     subscribers: broadcast::Sender<RuntimeInventory>,
     joins: broadcast::Sender<()>,
+    observation_order: AtomicU64,
 }
 
 impl InventoryCoordinator {
@@ -46,8 +57,10 @@ impl InventoryCoordinator {
                 failures: 0,
                 retry_at: None,
             })),
+            publication_gate: Arc::new(RwLock::new(())),
             subscribers,
             joins,
+            observation_order: AtomicU64::new(0),
         }
     }
 
@@ -56,11 +69,26 @@ impl InventoryCoordinator {
     }
 
     pub fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
-        Box::pin(self.refresh_inner(false))
+        Box::pin(self.refresh_inner(false, None))
     }
 
     pub fn refresh_automatic(&self) -> InventoryFuture<'_, RuntimeInventory> {
-        Box::pin(self.refresh_inner(true))
+        Box::pin(self.refresh_inner(true, None))
+    }
+
+    pub fn observation_marker(&self) -> ObservationOrder {
+        ObservationOrder(
+            self.observation_order
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |order| {
+                    order.checked_add(1)
+                })
+                .expect("inventory observation order exhausted")
+                + 1,
+        )
+    }
+
+    pub fn refresh_after(&self, marker: ObservationOrder) -> InventoryFuture<'_, RuntimeInventory> {
+        Box::pin(self.refresh_inner(false, Some(marker)))
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<RuntimeInventory> {
@@ -71,47 +99,99 @@ impl InventoryCoordinator {
         self.joins.subscribe()
     }
 
-    async fn refresh_inner(&self, automatic: bool) -> RefreshResult {
-        let (creator, mut completed) = {
-            let mut state = self.state.lock().await;
-            if automatic
-                && state
-                    .retry_at
-                    .is_some_and(|deadline| self.clock.monotonic() < deadline)
-            {
-                return Err(state
-                    .current
-                    .error
-                    .clone()
-                    .expect("automatic backoff follows a retained refresh error"));
+    pub fn start_auto_registration_scheduler(
+        &self,
+        profiles: Arc<dyn ProfileReader>,
+        discovery: Arc<DiscoverySession>,
+        validity: Arc<dyn colui_app::DiscoverySessionValidity>,
+    ) -> mpsc::Receiver<AutoRegistrationSchedule> {
+        let mut publications = self.subscribe();
+        let (scheduled, receiver) = mpsc::channel(16);
+        tokio::spawn(async move {
+            loop {
+                let inventory = match publications.recv().await {
+                    Ok(inventory) => inventory,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                let Ok(Some(schedule)) =
+                    ScheduleAutoRegistration::new(profiles.as_ref(), &discovery, validity.as_ref())
+                        .execute(inventory)
+                        .await
+                else {
+                    continue;
+                };
+                if scheduled.send(schedule).await.is_err() {
+                    break;
+                }
             }
-            if let Some(in_flight) = &state.in_flight {
-                let _ = self.joins.send(());
-                (false, in_flight.completed.subscribe())
-            } else {
-                let (sender, receiver) = watch::channel(None);
-                state.in_flight = Some(InFlight { completed: sender });
-                (true, receiver)
-            }
-        };
+        });
+        receiver
+    }
 
-        if creator {
-            let api = self.api.clone();
-            let clock = self.clock.clone();
-            let state = self.state.clone();
-            let subscribers = self.subscribers.clone();
-            tokio::spawn(async move {
-                let observed = observe(&api).await;
-                let mut state = state.lock().await;
-                let result = complete_refresh(&clock, &subscribers, &mut state, observed);
-                let in_flight = state
-                    .in_flight
-                    .take()
-                    .expect("refresh worker owns installed in-flight state");
-                in_flight.completed.send_replace(Some(result));
-            });
+    async fn refresh_inner(
+        &self,
+        automatic: bool,
+        after: Option<ObservationOrder>,
+    ) -> RefreshResult {
+        loop {
+            let (creator, eligible, mut completed) = {
+                let mut state = self.state.lock().await;
+                if automatic
+                    && state
+                        .retry_at
+                        .is_some_and(|deadline| self.clock.monotonic() < deadline)
+                {
+                    return Err(state
+                        .current
+                        .error
+                        .clone()
+                        .expect("automatic backoff follows a retained refresh error"));
+                }
+                if let Some(in_flight) = &state.in_flight {
+                    let _ = self.joins.send(());
+                    (
+                        false,
+                        after.is_none_or(|marker| in_flight.start_order > marker),
+                        in_flight.completed.subscribe(),
+                    )
+                } else {
+                    let (sender, receiver) = watch::channel(None);
+                    // Reserve order before any Docker work; a marker after reservation
+                    // conservatively requires another list even if this worker is delayed.
+                    let start_order = self.observation_marker();
+                    state.in_flight = Some(InFlight {
+                        start_order,
+                        completed: sender,
+                    });
+                    (true, true, receiver)
+                }
+            };
+
+            if creator {
+                let api = self.api.clone();
+                let clock = self.clock.clone();
+                let state = self.state.clone();
+                let publication_gate = self.publication_gate.clone();
+                let subscribers = self.subscribers.clone();
+                tokio::spawn(async move {
+                    let observed = observe(&api).await;
+                    let _publication = publication_gate.write().await;
+                    let mut state = state.lock().await;
+                    let result = complete_refresh(&clock, &subscribers, &mut state, observed);
+                    let in_flight = state
+                        .in_flight
+                        .take()
+                        .expect("refresh worker owns installed in-flight state");
+                    in_flight.completed.send_replace(Some(result));
+                });
+            }
+            let result = wait_for_result(&mut completed).await;
+            if eligible {
+                return result;
+            }
+            // An older request's success or failure cannot satisfy causal refresh.
         }
-        wait_for_result(&mut completed).await
     }
 }
 
@@ -165,9 +245,9 @@ fn complete_refresh(
 async fn observe(
     api: &Arc<dyn RuntimeInventorySource>,
 ) -> Result<(SessionContext, Vec<ContainerObservation>), AppError> {
-    let captured = ready_context(api.session_state().await?, "runtime unavailable")?;
+    let captured = api.api_read_context().await?;
     let observations = api.list_containers().await?;
-    let after = ready_context(api.session_state().await?, "runtime session changed")?;
+    let after = api.api_read_context().await?;
     if captured.session_id != after.session_id
         || captured.daemon_fingerprint != after.daemon_fingerprint
     {
@@ -204,11 +284,32 @@ fn normalize(
     observations: Vec<ContainerObservation>,
 ) -> RuntimeInventory {
     let mut projects = BTreeMap::<String, ProjectRuntimeSnapshot>::new();
+    let mut groups = ComposeGroupMap::new();
     let mut containers = Vec::with_capacity(observations.len());
     let mut standalone = Vec::new();
     for observation in observations {
-        add_observation(observation, &mut containers, &mut standalone, &mut projects);
+        add_observation(
+            observation,
+            &mut containers,
+            &mut standalone,
+            &mut projects,
+            &mut groups,
+        );
     }
+    let compose_observation_groups = groups
+        .into_iter()
+        .map(
+            |((compose_project_name, working_directory, config_files), mut container_ids)| {
+                container_ids.sort_by(|left, right| left.0.cmp(&right.0));
+                ComposeObservationGroup {
+                    compose_project_name,
+                    working_directory,
+                    config_files,
+                    container_ids,
+                }
+            },
+        )
+        .collect();
     RuntimeInventory {
         generation,
         has_snapshot: true,
@@ -219,20 +320,9 @@ fn normalize(
         last_successful_observed_at: Some(now),
         containers,
         project_snapshots: projects.into_values().collect(),
+        compose_observation_groups,
         standalone_containers: standalone,
         error: None,
-    }
-}
-
-fn ready_context(state: RuntimeSessionState, message: &str) -> Result<SessionContext, AppError> {
-    match state {
-        RuntimeSessionState::Ready(context) => Ok(context),
-        _ => Err(AppError::new(
-            AppErrorCode::RuntimeUnavailable,
-            "inventory",
-            None,
-            message,
-        )),
     }
 }
 
@@ -241,10 +331,20 @@ fn add_observation(
     all: &mut Vec<colui_domain::ContainerInstance>,
     standalone: &mut Vec<colui_domain::ContainerInstance>,
     projects: &mut BTreeMap<String, ProjectRuntimeSnapshot>,
+    groups: &mut ComposeGroupMap,
 ) {
     let instance = observation.instance;
     all.push(instance.clone());
     if let Some(metadata) = observation.compose {
+        let group_tuple = normalize_compose_tuple(
+            &metadata.project,
+            metadata.working_directory.as_deref(),
+            &metadata.config_files,
+        );
+        groups
+            .entry(group_tuple)
+            .or_default()
+            .push(instance.id.clone());
         let project =
             projects
                 .entry(metadata.project.clone())
@@ -260,6 +360,53 @@ fn add_observation(
     }
 }
 
+fn normalize_compose_tuple(
+    project: &str,
+    working_directory: Option<&str>,
+    config_files: &[String],
+) -> (String, Option<String>, Vec<String>) {
+    let working_directory = working_directory
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .and_then(|path| normalize_absolute_path(Path::new(path)));
+    let mut seen = HashSet::new();
+    let config_files = config_files
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .filter_map(|path| {
+            let path = Path::new(path);
+            if path.is_absolute() {
+                normalize_absolute_path(path)
+            } else {
+                working_directory.as_ref().and_then(|directory| {
+                    normalize_absolute_path(&PathBuf::from(directory).join(path))
+                })
+            }
+        })
+        .filter(|path| seen.insert(path.clone()))
+        .collect();
+    (project.trim().to_owned(), working_directory, config_files)
+}
+
+fn normalize_absolute_path(path: &Path) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    normalized.to_str().map(str::to_owned)
+}
+
 impl InventoryReader for InventoryCoordinator {
     fn current_inventory(&self) -> InventoryFuture<'_, RuntimeInventory> {
         self.current_inventory()
@@ -269,5 +416,36 @@ impl InventoryReader for InventoryCoordinator {
 impl InventoryRefresher for InventoryCoordinator {
     fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
         self.refresh()
+    }
+    fn observation_marker(&self) -> ObservationOrder {
+        self.observation_marker()
+    }
+    fn refresh_after(&self, marker: ObservationOrder) -> InventoryFuture<'_, RuntimeInventory> {
+        self.refresh_after(marker)
+    }
+}
+
+impl DiscoveryReader for InventoryCoordinator {
+    fn lease_candidate(
+        &self,
+        runtime_session_id: colui_domain::RuntimeSessionId,
+        inventory_generation: u64,
+    ) -> DiscoveryFuture<'_, CandidateLease> {
+        let gate = self.publication_gate.clone();
+        Box::pin(async move {
+            let guard = gate.read_owned().await;
+            let current = self.state.lock().await.current.clone();
+            if current.runtime_session_id != Some(runtime_session_id)
+                || current.generation != inventory_generation
+            {
+                return Err(AppError::new(
+                    AppErrorCode::RuntimeUnavailable,
+                    "lease_candidate",
+                    None,
+                    "discovery evidence changed",
+                ));
+            }
+            Ok(CandidateLease::hold(guard))
+        })
     }
 }

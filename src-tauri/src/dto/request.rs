@@ -20,7 +20,7 @@ pub struct RemoveProfileRequestDto {
     pub expected_revision: u64,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileIdRequestDto {
     #[schemars(schema_with = "super::uuid_schema")]
     #[serde(deserialize_with = "super::deserialize_canonical_uuid")]

@@ -49,6 +49,19 @@ where
     let _guard = locks
         .acquire_lifecycle(profile.id.clone(), operation)
         .await?;
+    run_lifecycle_locked(runtime, inventory, profile, operation).await
+}
+
+async fn run_lifecycle_locked<R, I>(
+    runtime: &R,
+    inventory: &I,
+    profile: ProjectProfile,
+    operation: LifecycleOperation,
+) -> Result<LifecycleResult, AppError>
+where
+    R: LifecycleRuntime + ?Sized,
+    I: InventoryRefresher + ?Sized,
+{
     let result = runtime.run_profile(profile, operation).await?;
     let inventory = if result.success {
         match inventory.refresh().await {
@@ -109,26 +122,14 @@ where
         L: OperationLockManager,
         I: InventoryRefresher,
     {
-        let profile = self
-            .reader
-            .load()
-            .await?
-            .profiles
-            .into_iter()
-            .find(|profile| profile.id == id)
-            .ok_or_else(|| {
-                AppError::new(
-                    AppErrorCode::ProfileNotFound,
-                    lifecycle_name(self.operation),
-                    Some(id),
-                    "profile not found",
-                )
-            })?;
         match (self.locks, self.inventory) {
             (Some(locks), Some(inventory)) => {
-                run_lifecycle(self.runtime, locks, inventory, profile, self.operation).await
+                let _guard = locks.acquire_lifecycle(id.clone(), self.operation).await?;
+                let (registry, _identity) = self.reader.load_canonical().await?;
+                let profile = find_profile(registry, id, self.operation)?;
+                run_lifecycle_locked(self.runtime, inventory, profile, self.operation).await
             }
-            _ => self.runtime.run_profile(profile, self.operation).await,
+            _ => unreachable!("locked lifecycle dependencies are incomplete"),
         }
     }
 
@@ -150,6 +151,25 @@ where
             })?;
         self.runtime.run_profile(profile, self.operation).await
     }
+}
+
+fn find_profile(
+    registry: crate::RegistrySnapshot,
+    id: ProfileId,
+    operation: LifecycleOperation,
+) -> Result<ProjectProfile, AppError> {
+    registry
+        .profiles
+        .into_iter()
+        .find(|profile| profile.id == id)
+        .ok_or_else(|| {
+            AppError::new(
+                AppErrorCode::ProfileNotFound,
+                lifecycle_name(operation),
+                Some(id),
+                "profile not found",
+            )
+        })
 }
 
 macro_rules! lifecycle_wrapper {

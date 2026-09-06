@@ -1,0 +1,138 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "DiscoveryCandidateDto": {
+      "properties": {
+        "candidateId": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "classification": {
+          "$ref": "#/definitions/DiscoveryClassificationDto"
+        },
+        "composeProjectName": {
+          "type": "string"
+        },
+        "configFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "conflicts": {
+          "items": {
+            "$ref": "#/definitions/DiscoveryConflictEvidenceDto"
+          },
+          "type": "array"
+        },
+        "containerCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "ignored": {
+          "type": "boolean"
+        },
+        "inventoryGeneration": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "runtimeSessionId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "workingDirectory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "candidateId",
+        "classification",
+        "composeProjectName",
+        "configFiles",
+        "conflicts",
+        "containerCount",
+        "ignored",
+        "inventoryGeneration",
+        "runtimeSessionId"
+      ],
+      "type": "object"
+    },
+    "DiscoveryClassificationDto": {
+      "enum": [
+        "new_unambiguous",
+        "name_conflict",
+        "incomplete_metadata",
+        "already_registered"
+      ],
+      "type": "string"
+    },
+    "DiscoveryConflictEvidenceDto": {
+      "properties": {
+        "configFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "profileId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UuidSchema"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source": {
+          "$ref": "#/definitions/DiscoveryConflictSourceDto"
+        },
+        "workingDirectory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "configFiles",
+        "source"
+      ],
+      "type": "object"
+    },
+    "DiscoveryConflictSourceDto": {
+      "enum": [
+        "runtime_observation",
+        "registered_profile"
+      ],
+      "type": "string"
+    },
+    "UuidSchema": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "autoRegistrationEnabled": {
+      "type": "boolean"
+    },
+    "candidates": {
+      "items": {
+        "$ref": "#/definitions/DiscoveryCandidateDto"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "autoRegistrationEnabled",
+    "candidates"
+  ],
+  "title": "DiscoveryListDto",
+  "type": "object"
+}

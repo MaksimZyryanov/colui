@@ -7,15 +7,16 @@ use colui_adapters::runtime::{
 };
 use colui_adapters::runtime::{ComposeOperation, RuntimeGateway};
 use colui_adapters::runtime::{ComposeProcessRunner, TerminationConfig};
-use colui_adapters::{DefinitionCache, OperationLockManager};
+use colui_adapters::{DefinitionCache, InventoryCoordinator, OperationLockManager};
 use colui_app::{
     Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, DefinitionRefresher, DockerApi,
-    LifecycleOperation, LifecycleRuntime, RuntimeConnector, RuntimeStateReader,
+    LifecycleOperation, LifecycleRuntime, ProfileReader, RegistrySnapshot, RuntimeConnector,
+    RuntimeDiagnosticsReader, RuntimeStateReader,
 };
 use colui_domain::AppErrorCode;
 use colui_domain::{
     AppError, ContainerDetails, ContainerId, ContainerObservation, DaemonFingerprint, ProfileDraft,
-    ProfileId, ProjectProfile, RegistrationOrigin,
+    ProfileId, ProjectProfile, RegistrationOrigin, RuntimeSessionState,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -551,6 +552,415 @@ async fn gateway_profile_lookup_waits_for_connect_operation_gate() {
     assert!(invoke.await.unwrap().is_ok());
 }
 
+#[tokio::test]
+async fn concurrent_connect_joins_one_transition_and_one_session() {
+    let runner = Arc::new(BlockingInfoRunner::default());
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(BlockingInfoRunner {
+            started: runner.started.clone(),
+            release: runner.release.clone(),
+            calls: runner.calls.clone(),
+        }),
+    ));
+    let first = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
+    let second = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::task::yield_now().await;
+    runner.release.notify_one();
+
+    let first = first.await.unwrap().unwrap();
+    let second = second.await.unwrap().unwrap();
+    assert_eq!(first, second);
+    assert_eq!(gateway.created_client_count(), 1);
+}
+
+#[tokio::test]
+async fn disconnect_cancels_active_connect_without_publishing_ready() {
+    let runner = Arc::new(BlockingInfoRunner::default());
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(BlockingInfoRunner {
+            started: runner.started.clone(),
+            release: runner.release.clone(),
+            calls: runner.calls.clone(),
+        }),
+    ));
+    let connect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
+    let disconnect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.disconnect_runtime().await }
+    });
+    tokio::task::yield_now().await;
+    runner.release.notify_one();
+
+    assert_eq!(
+        connect.await.unwrap().unwrap(),
+        RuntimeSessionState::Disconnected
+    );
+    disconnect.await.unwrap().unwrap();
+    assert_eq!(
+        gateway.session_state().await.unwrap(),
+        RuntimeSessionState::Disconnected
+    );
+}
+
+#[tokio::test]
+async fn reconnect_cancels_active_connect_then_owns_one_fresh_connect() {
+    let runner = Arc::new(BlockingInfoRunner::default());
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(BlockingInfoRunner {
+            started: runner.started.clone(),
+            release: runner.release.clone(),
+            calls: runner.calls.clone(),
+        }),
+    ));
+    let connect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
+    let reconnect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.reconnect_runtime(None).await }
+    });
+    tokio::task::yield_now().await;
+    runner.release.notify_one();
+
+    assert_eq!(
+        connect.await.unwrap().unwrap(),
+        RuntimeSessionState::Disconnected
+    );
+    assert!(matches!(
+        reconnect.await.unwrap().unwrap(),
+        RuntimeSessionState::Ready(_)
+    ));
+    assert_eq!(gateway.created_client_count(), 2);
+}
+
+#[tokio::test]
+async fn late_connect_during_reconnect_takeover_joins_cancelled_connect_result() {
+    let runner = Arc::new(BlockingInfoRunner::default());
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(BlockingInfoRunner {
+            started: runner.started.clone(),
+            release: runner.release.clone(),
+            calls: runner.calls.clone(),
+        }),
+    ));
+    let connect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
+    let reconnect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.reconnect_runtime(None).await }
+    });
+    tokio::task::yield_now().await;
+    let late_connect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    tokio::task::yield_now().await;
+    runner.release.notify_one();
+
+    assert_eq!(
+        connect.await.unwrap().unwrap(),
+        RuntimeSessionState::Disconnected
+    );
+    assert_eq!(
+        late_connect.await.unwrap().unwrap(),
+        RuntimeSessionState::Disconnected
+    );
+    assert!(matches!(
+        reconnect.await.unwrap().unwrap(),
+        RuntimeSessionState::Ready(_)
+    ));
+}
+
+#[tokio::test]
+async fn reconnect_active_joins_connect_and_reconnect_but_rejects_disconnect() {
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(FakeRunner::new("same")),
+    ));
+    gateway.connect_runtime(None).await.unwrap();
+    let runner = Arc::new(BlockingInfoRunner::default());
+    gateway.replace_runner_for_tests(Box::new(BlockingInfoRunner {
+        started: runner.started.clone(),
+        release: runner.release.clone(),
+        calls: runner.calls.clone(),
+    }));
+    let reconnect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.reconnect_runtime(None).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
+    let connect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.connect_runtime(None).await }
+    });
+    let joined_reconnect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.reconnect_runtime(None).await }
+    });
+    let disconnect = tokio::time::timeout(Duration::from_millis(100), gateway.disconnect_runtime())
+        .await
+        .expect("disconnect conflict must not wait")
+        .unwrap_err();
+    assert_eq!(disconnect.code, AppErrorCode::OperationConflict);
+    runner.release.notify_one();
+
+    let owner = reconnect.await.unwrap().unwrap();
+    assert_eq!(connect.await.unwrap().unwrap(), owner);
+    assert_eq!(joined_reconnect.await.unwrap().unwrap(), owner);
+    assert_eq!(gateway.created_client_count(), 2);
+}
+
+#[tokio::test]
+async fn reconnect_invalidates_api_context_before_fresh_connect_completes() {
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(FakeRunner::new("same")),
+    ));
+    gateway.connect_runtime(None).await.unwrap();
+    let runner = Arc::new(BlockingInfoRunner::default());
+    gateway.replace_runner_for_tests(Box::new(BlockingInfoRunner {
+        started: runner.started.clone(),
+        release: runner.release.clone(),
+        calls: runner.calls.clone(),
+    }));
+    let reconnect = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.reconnect_runtime(None).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        gateway.list_containers().await.unwrap_err().code,
+        AppErrorCode::RuntimeUnavailable
+    );
+    runner.release.notify_one();
+    assert!(matches!(
+        reconnect.await.unwrap().unwrap(),
+        RuntimeSessionState::Ready(_)
+    ));
+}
+
+#[tokio::test]
+async fn diagnostics_and_inventory_refresh_read_during_active_lifecycle() {
+    let runner = LifecycleBlockingRunner::default();
+    let gateway = Arc::new(RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(runner.clone()),
+    ));
+    gateway.connect_runtime(None).await.unwrap();
+    let lifecycle = tokio::spawn({
+        let gateway = gateway.clone();
+        async move {
+            gateway
+                .run_profile(test_profile(), LifecycleOperation::Stop)
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(1), runner.started.notified())
+        .await
+        .unwrap();
+    let inventory = InventoryCoordinator::new(gateway.clone(), Arc::new(FixedClock));
+
+    let diagnostics =
+        tokio::time::timeout(Duration::from_millis(100), gateway.runtime_diagnostics())
+            .await
+            .expect("diagnostics read must not join lifecycle")
+            .unwrap();
+    assert!(matches!(diagnostics.state, RuntimeSessionState::Ready(_)));
+    tokio::time::timeout(Duration::from_millis(100), inventory.refresh())
+        .await
+        .expect("inventory refresh must not join lifecycle")
+        .unwrap();
+
+    runner.release.notify_one();
+    lifecycle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn idle_state_transition_table_rows() {
+    let disconnected_reconnect = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(FakeRunner::new("same")),
+    );
+    assert!(matches!(
+        disconnected_reconnect
+            .reconnect_runtime(None)
+            .await
+            .unwrap(),
+        RuntimeSessionState::Ready(_)
+    ));
+
+    let ready = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(FakeRunner::new("same")),
+    );
+    ready.disconnect_runtime().await.unwrap();
+    let first = ready.connect_runtime(None).await.unwrap();
+    assert_eq!(ready.connect_runtime(None).await.unwrap(), first);
+    assert_eq!(ready.created_client_count(), 1);
+    let reconnected = ready.reconnect_runtime(None).await.unwrap();
+    assert_ne!(ready_session(&first), ready_session(&reconnected));
+    ready.disconnect_runtime().await.unwrap();
+    assert_eq!(
+        ready.session_state().await.unwrap(),
+        RuntimeSessionState::Disconnected
+    );
+
+    let mismatch = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("api")),
+        Box::new(FakeRunner::new("cli")),
+    );
+    assert!(matches!(
+        mismatch.connect_runtime(None).await.unwrap(),
+        RuntimeSessionState::ContextMismatch(_)
+    ));
+    assert!(matches!(
+        mismatch.connect_runtime(None).await.unwrap(),
+        RuntimeSessionState::ContextMismatch(_)
+    ));
+    assert_eq!(mismatch.created_client_count(), 2);
+    mismatch.disconnect_runtime().await.unwrap();
+
+    let mismatch_reconnect = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("api")),
+        Box::new(FakeRunner::new("cli")),
+    );
+    mismatch_reconnect.connect_runtime(None).await.unwrap();
+    assert!(matches!(
+        mismatch_reconnect.reconnect_runtime(None).await.unwrap(),
+        RuntimeSessionState::ContextMismatch(_)
+    ));
+
+    let failed = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(StatusRunner {
+            result: ComposeProcessResult::completed(1, "", "", Duration::ZERO),
+        }),
+    );
+    assert!(matches!(
+        failed.connect_runtime(None).await.unwrap(),
+        RuntimeSessionState::Failed(_)
+    ));
+    failed.disconnect_runtime().await.unwrap();
+
+    let failed_connect = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(StatusRunner {
+            result: ComposeProcessResult::completed(1, "", "", Duration::ZERO),
+        }),
+    );
+    failed_connect.connect_runtime(None).await.unwrap();
+    failed_connect.replace_runner_for_tests(Box::new(FakeRunner::new("same")));
+    assert!(matches!(
+        failed_connect.connect_runtime(None).await.unwrap(),
+        RuntimeSessionState::Ready(_)
+    ));
+
+    let failed_reconnect = RuntimeGateway::new_for_tests(
+        Box::new(FakeDocker::new("same")),
+        Box::new(StatusRunner {
+            result: ComposeProcessResult::completed(1, "", "", Duration::ZERO),
+        }),
+    );
+    assert!(matches!(
+        failed_reconnect.connect_runtime(None).await.unwrap(),
+        RuntimeSessionState::Failed(_)
+    ));
+    failed_reconnect.replace_runner_for_tests(Box::new(FakeRunner::new("same")));
+    assert!(matches!(
+        failed_reconnect.reconnect_runtime(None).await.unwrap(),
+        RuntimeSessionState::Ready(_)
+    ));
+}
+
+fn ready_session(state: &RuntimeSessionState) -> uuid::Uuid {
+    match state {
+        RuntimeSessionState::Ready(context) => *context.session_id.as_uuid(),
+        state => panic!("expected ready state, got {state:?}"),
+    }
+}
+
+#[tokio::test]
+async fn connect_and_reconnect_wait_for_active_disconnect_then_start_fresh_connect() {
+    for reconnect in [false, true] {
+        let compose = LifecycleBlockingRunner::default();
+        let gateway = Arc::new(RuntimeGateway::new_for_tests(
+            Box::new(FakeDocker::new("same")),
+            Box::new(compose.clone()),
+        ));
+        gateway.connect_runtime(None).await.unwrap();
+        let invocation = tokio::spawn({
+            let gateway = gateway.clone();
+            async move { gateway.invoke_backend_for_tests(fake_invocation()).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), compose.started.notified())
+            .await
+            .unwrap();
+        let disconnect = tokio::spawn({
+            let gateway = gateway.clone();
+            async move { gateway.disconnect_runtime().await }
+        });
+        let joined_disconnect = tokio::spawn({
+            let gateway = gateway.clone();
+            async move { gateway.disconnect_runtime().await }
+        });
+        tokio::task::yield_now().await;
+        let next = tokio::spawn({
+            let gateway = gateway.clone();
+            async move {
+                if reconnect {
+                    gateway.reconnect_runtime(None).await
+                } else {
+                    gateway.connect_runtime(None).await
+                }
+            }
+        });
+        tokio::task::yield_now().await;
+        assert!(!next.is_finished());
+        compose.release.notify_one();
+        invocation.await.unwrap().unwrap();
+        disconnect.await.unwrap().unwrap();
+        joined_disconnect.await.unwrap().unwrap();
+        assert!(matches!(
+            next.await.unwrap().unwrap(),
+            RuntimeSessionState::Ready(_)
+        ));
+        assert_eq!(gateway.created_client_count(), 2);
+    }
+}
+
 fn test_profile() -> ProjectProfile {
     ProjectProfile::from_draft(
         ProfileId::new(uuid::Uuid::from_u128(3)),
@@ -564,6 +974,19 @@ fn test_profile() -> ProjectProfile {
         },
     )
     .unwrap()
+}
+
+struct SingleProfile(ProjectProfile);
+impl ProfileReader for SingleProfile {
+    fn load(&self) -> colui_app::StoreFuture<'_, RegistrySnapshot> {
+        let profile = self.0.clone();
+        Box::pin(async move {
+            Ok(RegistrySnapshot {
+                registry_revision: 1,
+                profiles: vec![profile],
+            })
+        })
+    }
 }
 
 #[tokio::test]
@@ -736,8 +1159,11 @@ async fn shared_compose_gate_serializes_lifecycle_and_definition_across_profiles
         Arc::new(DefinitionCountingRunner(definition_calls.clone())),
         gateway.clone(),
         Arc::new(FixedClock),
-        Arc::new(OperationLockManager::new()),
+        Arc::new(OperationLockManager::new(
+            std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+        )),
         gate,
+        Arc::new(SingleProfile(test_profile())),
     ));
 
     let lifecycle = tokio::spawn({
@@ -788,7 +1214,7 @@ async fn reconnect_invalidates_old_api_observation() {
     tokio::time::timeout(Duration::from_secs(1), docker.started.notified())
         .await
         .unwrap();
-    gateway.connect_runtime(None).await.unwrap();
+    gateway.reconnect_runtime(None).await.unwrap();
     let new_session = ready_session_id(&gateway).await;
     docker.release.notify_one();
 
@@ -814,6 +1240,19 @@ impl FakeDocker {
     }
 }
 impl colui_adapters::runtime::DockerControl for FakeDocker {
+    fn logs(
+        &self,
+        _: colui_domain::ContainerId,
+    ) -> colui_app::RuntimeFuture<'_, colui_app::ContainerLogs> {
+        panic!("no logs")
+    }
+    fn action(
+        &self,
+        _: colui_domain::ContainerId,
+        _: colui_app::ContainerAction,
+    ) -> colui_app::RuntimeFuture<'_, ()> {
+        panic!("not a container action test")
+    }
     fn info(&self) -> colui_app::RuntimeFuture<'_, DaemonFingerprint> {
         let fp = self.fingerprint.clone();
         Box::pin(async move { Ok(fp_for(&fp)) })
@@ -834,6 +1273,19 @@ impl colui_adapters::runtime::DockerControl for FakeDocker {
 }
 
 impl colui_adapters::runtime::DockerControl for StaleDocker {
+    fn logs(
+        &self,
+        _: colui_domain::ContainerId,
+    ) -> colui_app::RuntimeFuture<'_, colui_app::ContainerLogs> {
+        panic!("no logs")
+    }
+    fn action(
+        &self,
+        _: colui_domain::ContainerId,
+        _: colui_app::ContainerAction,
+    ) -> colui_app::RuntimeFuture<'_, ()> {
+        panic!("not a container action test")
+    }
     fn info(&self) -> colui_app::RuntimeFuture<'_, DaemonFingerprint> {
         Box::pin(async { Ok(fp_for("same")) })
     }
@@ -886,7 +1338,12 @@ impl ComposeRunner for BlockingInfoRunner {
         let call = self.calls.fetch_add(1, Ordering::AcqRel);
         Box::pin(async move {
             if call > 0 {
-                return Ok(ComposeProcessResult::completed(0, "", "", Duration::ZERO));
+                return Ok(ComposeProcessResult::completed(
+                    0,
+                    "ID: same\nServer Version: 1\nOSType: linux\nArchitecture: x86_64\n",
+                    "",
+                    Duration::ZERO,
+                ));
             }
             started.notify_one();
             tokio::time::timeout(Duration::from_secs(1), release.notified())

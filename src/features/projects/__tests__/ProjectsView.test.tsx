@@ -1,15 +1,20 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ProjectsView } from '../ProjectsView';
 import { StatusDetails } from '../components/StatusDetails';
 import { mockBackend } from '../../../ipc/mock-backend';
+import { useInventory } from '../../runtime/hooks/useInventory';
+import type { ReactNode } from 'react';
+import { AppShell } from '../../../app/AppShell';
+import { projectKeys } from '../query-keys';
 
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-const renderProjects = () => render(<QueryClientProvider client={client}><ProjectsView /></QueryClientProvider>);
+function TestShell({ children }: { children: ReactNode }) { useInventory(); return children; }
+const renderProjects = () => render(<QueryClientProvider client={client}><TestShell><ProjectsView /></TestShell></QueryClientProvider>);
 
 describe('ProjectsView', () => {
   beforeEach(() => {
@@ -27,10 +32,35 @@ describe('ProjectsView', () => {
     expect(screen.getByRole('dialog', { name: /add project/i })).toBeVisible();
   });
 
+  it('provides working desktop and mobile Projects/Diagnostics navigation with one main landmark', async () => {
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><AppShell /></QueryClientProvider>);
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeVisible();
+    expect(screen.getAllByRole('link', { name: 'Projects' })).toHaveLength(2);
+    expect(screen.getAllByRole('link', { name: 'Diagnostics' })).toHaveLength(2);
+    await user.click(screen.getAllByRole('link', { name: 'Diagnostics' })[0]);
+    expect(await screen.findByRole('heading', { name: 'Diagnostics' })).toBeVisible();
+    expect(screen.getAllByRole('main')).toHaveLength(1);
+  });
+
+  it('follows browser Back and Forward hash changes and removes its listener', async () => {
+    location.hash = '#projects';
+    const remove = vi.spyOn(window, 'removeEventListener');
+    const { unmount } = render(<QueryClientProvider client={client}><AppShell /></QueryClientProvider>);
+    location.hash = '#diagnostics';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(await screen.findByRole('heading', { name: 'Diagnostics' })).toBeVisible();
+    location.hash = '#projects';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeVisible();
+    unmount();
+    expect(remove).toHaveBeenCalledWith('hashchange', expect.any(Function));
+  });
+
   it('renders running as one label and expands independent details', async () => {
     const draft = { displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', composeFiles: ['compose.yml'], environmentFiles: [] };
     mockBackend.setResponseOverride('list_profiles', [{ id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
-    mockBackend.setResponseOverride('get_inventory', { generation: 1, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [{ id: 'one', name: 'demo-web-1', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'two', name: 'demo-web-2', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'three', name: 'demo-web-3', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }], projects: [{ composeProjectName: 'demo', workingDirectory: '/tmp', configFiles: ['compose.yml'], containers: [{ id: 'one', name: 'demo-web-1', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'two', name: 'demo-web-2', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'three', name: 'demo-web-3', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }]}], standaloneContainers: [], error: null });
+    mockBackend.setResponseOverride('get_inventory', { generation: 1, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [{ id: 'one', name: 'demo-web-1', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'two', name: 'demo-web-2', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'three', name: 'demo-web-3', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }], projects: [{ composeProjectName: 'demo', workingDirectory: '/tmp', configFiles: ['compose.yml'], containers: [{ id: 'one', name: 'demo-web-1', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'two', name: 'demo-web-2', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'three', name: 'demo-web-3', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }]}], composeObservationGroups: [], standaloneContainers: [], error: null });
     void draft;
     const user = userEvent.setup();
     renderProjects();
@@ -52,6 +82,35 @@ describe('ProjectsView', () => {
     expect(addEventListener.mock.calls.filter(([type]) => type === 'visibilitychange')).toHaveLength(1);
   });
 
+  it('keeps valid profile visible beside invalid definition in same projection', async () => {
+    const acceptanceClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const invalidId = '00000000-0000-0000-0000-000000000001';
+    const validId = '00000000-0000-0000-0000-000000000002';
+    const profiles = [
+      { id: invalidId, revision: 1, displayName: 'Invalid Project', composeProjectName: 'invalid', workingDirectory: '/tmp/invalid', registrationOrigin: 'manual' as const },
+      { id: validId, revision: 1, displayName: 'Valid Project', composeProjectName: 'valid', workingDirectory: '/tmp/valid', registrationOrigin: 'manual' as const },
+    ];
+    mockBackend.setResponseOverride('list_profiles', profiles);
+    mockBackend.setResponseOverride('get_inventory', {
+      generation: 1, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [], composeObservationGroups: [], standaloneContainers: [], error: null,
+      projects: profiles.map(profile => ({ composeProjectName: profile.composeProjectName, workingDirectory: profile.workingDirectory, configFiles: ['compose.yml'], containers: [{ id: `${profile.composeProjectName}-web`, name: `${profile.composeProjectName}-web-1`, image: 'nginx', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }] })),
+    });
+    for (const [profile, state] of [[profiles[0], 'invalid'], [profiles[1], 'valid']] as const) {
+      acceptanceClient.setQueryData(projectKeys.definition(profile.id), {
+        profile: { profile, composeFiles: ['compose.yml'], environmentFiles: [] },
+        definition: { profileId: profile.id, definitionRevision: `${state}-revision`, loadedAt: '2026-09-02T00:00:00.000Z', state, services: state === 'valid' ? [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }] : [], issues: state === 'invalid' ? [{ field: 'services.web', message: 'invalid service' }] : [], error: null },
+        runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: '2026-09-02T00:00:00.000Z' },
+      });
+    }
+
+    render(<QueryClientProvider client={acceptanceClient}><TestShell><ProjectsView /></TestShell></QueryClientProvider>);
+
+    const invalidCard = (await screen.findByRole('heading', { name: 'Invalid Project' })).closest('section')!;
+    const validCard = screen.getByRole('heading', { name: 'Valid Project' }).closest('section')!;
+    expect(within(invalidCard).getByLabelText('Project status')).toHaveTextContent('Invalid definition');
+    expect(within(validCard).getByLabelText('Project status')).toHaveTextContent('Running');
+  });
+
   it('shows query errors without collapsing project route', async () => {
     mockBackend.setErrorOverride('list_profiles', new Error('offline'));
     renderProjects();
@@ -62,7 +121,7 @@ describe('ProjectsView', () => {
   it('keeps card and retained definition visible beside separate definition error', async () => {
     const profileId = '00000000-0000-0000-0000-000000000001';
     mockBackend.setResponseOverride('list_profiles', [{ id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
-    mockBackend.setResponseOverride('get_project_details', { profile: { profile: { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: 'retained', loadedAt: '2026-09-03T00:00:00Z', state: 'stale', services: [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }], issues: [], error: { code: 'definition_failed', operation: 'definition', subjectId: profileId, message: 'compose config failed', details: null, retryable: false } }, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null } });
+    mockBackend.setResponseOverride('get_project_details', { profile: { profile: { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: 'retained', loadedAt: '2026-09-03T00:00:00Z', state: 'stale', services: [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }], issues: [], error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: profileId }, message: 'compose config failed', details: null, retryable: false } }, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null } });
     renderProjects();
 
     expect(await screen.findByText('Demo')).toBeVisible();
@@ -127,7 +186,7 @@ describe('ProjectsView', () => {
     mockBackend.setResponseOverride('list_profiles', [{ id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
     mockBackend.setResponseOverride('get_project_status', new Promise(() => {}));
     renderProjects();
-    expect(await screen.findByRole('status', { name: /loading project status/i })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('status', { name: /loading project status/i })).toBeVisible());
   });
 
   it('keeps user edits while fresh profile details replace stale hydration', async () => {

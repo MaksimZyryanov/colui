@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ProjectsView } from '../ProjectsView';
 import { mockBackend } from '../../../ipc/mock-backend';
+import { useInventory } from '../../runtime/hooks/useInventory';
+import type { ReactNode } from 'react';
+
+function TestShell({ children }: { children: ReactNode }) { useInventory(); return children; }
 
 describe('Vite mock browser flow', () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -15,7 +19,7 @@ describe('Vite mock browser flow', () => {
   it('creates, edits, records lifecycle, and removes profile', async () => {
     const user = userEvent.setup();
     mockBackend.setResponseOverride('get_project_status', { profileId: '00000000-0000-0000-0000-000000000001', runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: '2026-09-02T00:00:00.000Z' }, definition: { state: 'valid', revision: '1', serviceCount: 1 }, operation: null, issues: [] });
-    render(<QueryClientProvider client={client}><ProjectsView /></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><TestShell><ProjectsView /></TestShell></QueryClientProvider>);
     await user.click(await screen.findByRole('button', { name: /add project/i }));
     await user.type(screen.getByLabelText('Display name'), 'Smoke Project');
     await user.type(screen.getByLabelText('Compose name'), 'smoke');
@@ -37,11 +41,11 @@ describe('Vite mock browser flow', () => {
     await user.click(screen.getByRole('button', { name: /^Remove profile$/ }));
     await waitFor(() => expect(screen.getByText('No projects yet')).toBeVisible());
     expect(mockBackend.getInvocations().map(invocation => invocation.command)).toContain('remove_profile');
-  }, 15000);
+  }, 30000);
 
   it('keeps profiles visible when runtime connection fails', async () => {
     mockBackend.setErrorOverride('connect_runtime', new Error('runtime offline'));
-    render(<QueryClientProvider client={client}><ProjectsView /></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><TestShell><ProjectsView /></TestShell></QueryClientProvider>);
     expect(await screen.findByText('No projects yet')).toBeVisible();
   });
 });

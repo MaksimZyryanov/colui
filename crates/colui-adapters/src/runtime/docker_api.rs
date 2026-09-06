@@ -1,27 +1,38 @@
 use crate::runtime::bollard_fingerprint;
-use bollard::container::{InspectContainerOptions, ListContainersOptions};
+use bollard::container::{
+    InspectContainerOptions, ListContainersOptions, RestartContainerOptions, StartContainerOptions,
+    StopContainerOptions,
+};
 use bollard::models::{ContainerInspectResponse, ContainerSummary};
 use bollard::Docker;
-use colui_app::RuntimeFuture;
+use colui_app::{container_logs_error, ContainerLogs, LogByteRing};
+use colui_app::{container_operation_error, ContainerAction, RuntimeFuture};
 use colui_domain::{
     AppError, AppErrorCode, ComposeContainerMetadata, ContainerDetails, ContainerId,
     ContainerInstance, ContainerObservation, ContainerState, DaemonFingerprint, PortBinding,
 };
+use colui_domain::{DockerEndpoint, Timestamp};
+use http_body_util::{BodyExt, Empty};
+use hyper::body::Bytes;
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 pub trait DockerControl: Send + Sync {
     fn info(&self) -> RuntimeFuture<'_, DaemonFingerprint>;
     fn list(&self) -> RuntimeFuture<'_, Vec<ContainerObservation>>;
     fn inspect(&self, id: &ContainerId) -> RuntimeFuture<'_, ContainerDetails>;
+    fn action(&self, id: ContainerId, action: ContainerAction) -> RuntimeFuture<'_, ()>;
+    fn logs(&self, id: ContainerId) -> RuntimeFuture<'_, ContainerLogs>;
 }
 
 pub struct DockerApiAdapter {
     docker: Docker,
+    endpoint: DockerEndpoint,
 }
 
 impl DockerApiAdapter {
-    pub fn new(docker: Docker) -> Self {
-        Self { docker }
+    pub fn new(docker: Docker, endpoint: DockerEndpoint) -> Self {
+        Self { docker, endpoint }
     }
     pub fn docker(&self) -> &Docker {
         &self.docker
@@ -29,6 +40,138 @@ impl DockerApiAdapter {
 }
 
 impl DockerControl for DockerApiAdapter {
+    fn logs(&self, id: ContainerId) -> RuntimeFuture<'_, ContainerLogs> {
+        Box::pin(async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            let read = async {
+                // Only opaque Docker IDs may become path segments.
+                if id.0.is_empty() || !id.0.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                    return Err(container_logs_error(&id, false));
+                }
+                let path = format!("/containers/{}/logs?stdout=true&stderr=true&follow=false&timestamps=false&since=0&until=0&tail=4096", id.0);
+                let builder = hyper_util::client::legacy::Client::builder(
+                    hyper_util::rt::TokioExecutor::new(),
+                );
+                let endpoint = self.endpoint.as_str();
+                let response = if let Some(socket) = endpoint.strip_prefix("unix://") {
+                    let client = builder.build::<_, Empty<Bytes>>(hyperlocal::UnixConnector);
+                    client.get(hyperlocal::Uri::new(socket, &path).into()).await
+                } else {
+                    let endpoint = endpoint
+                        .strip_prefix("tcp://")
+                        .map(|e| format!("http://{e}"))
+                        .unwrap_or_else(|| endpoint.to_owned());
+                    let uri = format!("{}{path}", endpoint.trim_end_matches('/'))
+                        .parse()
+                        .map_err(|_| container_logs_error(&id, false))?;
+                    let client = builder.build_http::<Empty<Bytes>>();
+                    client.get(uri).await
+                }
+                .map_err(|_| container_logs_error(&id, true))?;
+                if !response.status().is_success() {
+                    return Err(container_logs_error(
+                        &id,
+                        response.status().is_server_error(),
+                    ));
+                }
+                // Unversioned requests use the daemon default advertised in API-Version.
+                // Before 1.42, raw-stream can also mean multiplexed; never sniff payloads.
+                let distinct_media_types = response
+                    .headers()
+                    .get("api-version")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.strip_prefix("1."))
+                    .and_then(|minor| minor.parse::<u32>().ok())
+                    .is_some_and(|minor| minor >= 42);
+                if !distinct_media_types {
+                    return Err(container_logs_error(&id, false));
+                }
+                // Bypass Bollard's line/full-frame decoder so limits apply before buffering.
+                let multiplexed = match response
+                    .headers()
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.split(';').next().unwrap_or("").trim())
+                {
+                    Some("application/vnd.docker.raw-stream") => false,
+                    Some("application/vnd.docker.multiplexed-stream") => true,
+                    _ => return Err(container_logs_error(&id, false)),
+                };
+                let mut body = response.into_body();
+                let mut ring = LogByteRing::default();
+                let mut transferred = 0_usize;
+                let mut header = [0_u8; 8];
+                let mut header_len = 0;
+                let mut remaining = 0_usize;
+                while let Some(frame) = body.frame().await {
+                    let frame = frame.map_err(|_| container_logs_error(&id, true))?;
+                    let Ok(data) = frame.into_data() else {
+                        continue;
+                    };
+                    transferred = transferred.saturating_add(data.len());
+                    if transferred >= 8 * 1024 * 1024 {
+                        return Err(container_logs_error(&id, true));
+                    }
+                    if !multiplexed {
+                        ring.push(&data);
+                        continue;
+                    }
+                    let mut bytes = data.as_ref();
+                    while !bytes.is_empty() {
+                        if remaining != 0 {
+                            let length = remaining.min(bytes.len());
+                            ring.push(&bytes[..length]);
+                            remaining -= length;
+                            bytes = &bytes[length..];
+                        } else {
+                            let length = (8 - header_len).min(bytes.len());
+                            header[header_len..header_len + length]
+                                .copy_from_slice(&bytes[..length]);
+                            header_len += length;
+                            bytes = &bytes[length..];
+                            if header_len == 8 {
+                                if !matches!(header[0], 1 | 2) || header[1..4] != [0, 0, 0] {
+                                    return Err(container_logs_error(&id, false));
+                                }
+                                remaining =
+                                    u32::from_be_bytes(header[4..8].try_into().unwrap()) as usize;
+                                header_len = 0;
+                            }
+                        }
+                    }
+                }
+                if header_len != 0 || remaining != 0 {
+                    return Err(container_logs_error(&id, true));
+                }
+                Ok(ring.finish(id.clone(), Timestamp(chrono::Utc::now().to_rfc3339())))
+            };
+            tokio::time::timeout_at(deadline, read)
+                .await
+                .map_err(|_| container_logs_error(&id, true))?
+        })
+    }
+    fn action(&self, id: ContainerId, action: ContainerAction) -> RuntimeFuture<'_, ()> {
+        Box::pin(async move {
+            let result = match action {
+                ContainerAction::Start => {
+                    self.docker
+                        .start_container(&id.0, None::<StartContainerOptions<String>>)
+                        .await
+                }
+                ContainerAction::Stop => {
+                    self.docker
+                        .stop_container(&id.0, None::<StopContainerOptions>)
+                        .await
+                }
+                ContainerAction::Restart => {
+                    self.docker
+                        .restart_container(&id.0, None::<RestartContainerOptions>)
+                        .await
+                }
+            };
+            result.map_err(|_| container_operation_error(&id, "container operation failed"))
+        })
+    }
     fn info(&self) -> RuntimeFuture<'_, DaemonFingerprint> {
         Box::pin(async move {
             self.docker
@@ -142,13 +285,11 @@ fn summary(value: ContainerSummary) -> ContainerInstance {
             .ports
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|p| {
-                Some(PortBinding {
-                    host_ip: p.ip.unwrap_or_default(),
-                    host_port: p.public_port?,
-                    container_port: p.private_port,
-                    protocol: p.typ.map(|value| value.to_string()).unwrap_or_default(),
-                })
+            .map(|p| PortBinding {
+                host_ip: p.ip,
+                host_port: p.public_port,
+                container_port: p.private_port,
+                protocol: p.typ.map(|value| value.to_string()).unwrap_or_default(),
             })
             .collect(),
     }
@@ -202,17 +343,23 @@ fn inspect_ports(settings: Option<&bollard::models::NetworkSettings>) -> Vec<Por
             let Ok(container_port) = port.parse::<u16>() else {
                 return vec![];
             };
+            if bindings.as_ref().is_none_or(Vec::is_empty) {
+                return vec![PortBinding {
+                    host_ip: None,
+                    host_port: None,
+                    container_port,
+                    protocol: protocol.to_ascii_lowercase(),
+                }];
+            }
             bindings
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
-                .filter_map(move |binding| {
-                    Some(PortBinding {
-                        host_ip: binding.host_ip.clone().unwrap_or_default(),
-                        host_port: binding.host_port.as_deref()?.parse().ok()?,
-                        container_port,
-                        protocol: protocol.to_owned(),
-                    })
+                .map(move |binding| PortBinding {
+                    host_ip: binding.host_ip.clone(),
+                    host_port: binding.host_port.as_deref().and_then(|p| p.parse().ok()),
+                    container_port,
+                    protocol: protocol.to_ascii_lowercase(),
                 })
                 .collect::<Vec<_>>()
         })
@@ -332,6 +479,24 @@ mod tests {
     }
 
     #[test]
+    fn inspect_ports_preserves_partial_and_unpublished_entries() {
+        let settings = serde_json::from_str(r#"{"Ports":{"80/TCP":[{"HostIp":"::"},{"HostPort":"8080"},{}],"53/udp":null,"443/tcp":[]}}"#).unwrap();
+        let ports = inspect_ports(Some(&settings));
+        assert_eq!(ports.len(), 5);
+        assert!(ports.iter().any(|p| p.host_ip.as_deref() == Some("::")
+            && p.host_port.is_none()
+            && p.protocol == "tcp"));
+        assert!(ports
+            .iter()
+            .any(|p| p.host_ip.is_none() && p.host_port == Some(8080)));
+        for service in [53, 443] {
+            assert!(ports.iter().any(|p| p.container_port == service
+                && p.host_ip.is_none()
+                && p.host_port.is_none()));
+        }
+    }
+
+    #[test]
     fn inspect_ports_maps_multiple_hosts_and_protocols() {
         let settings: bollard::models::NetworkSettings = serde_json::from_str(
             r#"{"Ports":{"80/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"},{"HostIp":"0.0.0.0","HostPort":"18080"}],"53/udp":[{"HostIp":"127.0.0.1","HostPort":"5353"}]}}"#,
@@ -340,18 +505,18 @@ mod tests {
         assert_eq!(ports.len(), 3);
         assert!(ports.iter().any(|port| {
             port.container_port == 80
-                && port.host_port == 8080
-                && port.host_ip == "127.0.0.1"
+                && port.host_port == Some(8080)
+                && port.host_ip.as_deref() == Some("127.0.0.1")
                 && port.protocol == "tcp"
         }));
         assert!(ports.iter().any(|port| {
             port.container_port == 80
-                && port.host_port == 18080
-                && port.host_ip == "0.0.0.0"
+                && port.host_port == Some(18080)
+                && port.host_ip.as_deref() == Some("0.0.0.0")
                 && port.protocol == "tcp"
         }));
         assert!(ports.iter().any(|port| port.container_port == 53
-            && port.host_port == 5353
+            && port.host_port == Some(5353)
             && port.protocol == "udp"));
     }
 }

@@ -1,0 +1,12 @@
+{
+  "candidateId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runtimeSessionId": "not-a-session",
+  "inventoryGeneration": 1,
+  "composeProjectName": "demo",
+  "workingDirectory": null,
+  "configFiles": [],
+  "containerCount": 1,
+  "classification": "new_unambiguous",
+  "conflicts": [],
+  "ignored": false
+}

@@ -1,0 +1,1174 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ActiveOperationDto": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/definitions/ActiveOperationPhaseDto"
+        },
+        "startedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "subjectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "phase",
+        "startedAt",
+        "subjectId"
+      ],
+      "type": "object"
+    },
+    "ActiveOperationPhaseDto": {
+      "enum": [
+        "pending",
+        "active"
+      ],
+      "type": "string"
+    },
+    "AppErrorCodeDto": {
+      "enum": [
+        "runtime_unavailable",
+        "runtime_connection_failed",
+        "runtime_context_mismatch",
+        "candidate_stale",
+        "discovery_conflict",
+        "profile_not_found",
+        "profile_already_registered",
+        "profile_revision_conflict",
+        "profile_invalid",
+        "definition_failed",
+        "compose_failed",
+        "container_operation_failed",
+        "operation_conflict",
+        "operation_timeout",
+        "registry_corrupt",
+        "registry_locked",
+        "registry_write_failed",
+        "recovery_conflict",
+        "permission_denied",
+        "protocol_mismatch"
+      ],
+      "type": "string"
+    },
+    "AppErrorDto": {
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/AppErrorCodeDto"
+        },
+        "details": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorSubjectDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "operation",
+        "retryable"
+      ],
+      "type": "object"
+    },
+    "AppErrorSubjectDto": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/AppErrorSubjectKindDto"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AppErrorSubjectKindDto": {
+      "enum": [
+        "profile",
+        "candidate",
+        "container",
+        "registry"
+      ],
+      "type": "string"
+    },
+    "BackupValidationStateDto": {
+      "enum": [
+        "missing",
+        "valid",
+        "corrupt",
+        "unreadable"
+      ],
+      "type": "string"
+    },
+    "ComposeObservationGroupDto": {
+      "properties": {
+        "composeProjectName": {
+          "type": "string"
+        },
+        "configFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "containerIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workingDirectory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "composeProjectName",
+        "configFiles",
+        "containerIds"
+      ],
+      "type": "object"
+    },
+    "ContainerInstanceDto": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "publishedPorts": {
+          "items": {
+            "$ref": "#/definitions/PortBindingDto"
+          },
+          "type": "array"
+        },
+        "serviceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/ContainerStateDto"
+        },
+        "statusText": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "image",
+        "name",
+        "publishedPorts",
+        "state",
+        "statusText"
+      ],
+      "type": "object"
+    },
+    "ContainerStateDto": {
+      "enum": [
+        "running",
+        "stopped",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "DaemonFingerprintDto": {
+      "properties": {
+        "architecture": {
+          "type": "string"
+        },
+        "daemonId": {
+          "type": "string"
+        },
+        "osType": {
+          "type": "string"
+        },
+        "serverVersion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "architecture",
+        "daemonId",
+        "osType",
+        "serverVersion"
+      ],
+      "type": "object"
+    },
+    "DefinitionStateDto": {
+      "enum": [
+        "unchecked",
+        "valid",
+        "invalid",
+        "stale"
+      ],
+      "type": "string"
+    },
+    "DefinitionsDiagnosticsDto": {
+      "properties": {
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "profiles": {
+          "items": {
+            "$ref": "#/definitions/ProfileDefinitionDiagnosticsDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "generation",
+        "profiles"
+      ],
+      "type": "object"
+    },
+    "ImportDiagnosticsDto": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "importedCount": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sourcePath": {
+          "type": "string"
+        },
+        "sourcePreserved": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "importedCount",
+        "sourcePath",
+        "sourcePreserved"
+      ],
+      "type": "object"
+    },
+    "InventoryFreshnessDto": {
+      "enum": [
+        "fresh",
+        "stale",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "IssueDto": {
+      "properties": {
+        "field": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "JournalEntryDto": {
+      "properties": {
+        "errorCode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorCodeDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/JournalEventKindDto"
+        },
+        "message": {
+          "maxLength": 500,
+          "type": "string"
+        },
+        "runtimeSessionId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UuidSchema"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "severity": {
+          "$ref": "#/definitions/JournalSeverityDto"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorSubjectDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timestamp": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "message",
+        "sequence",
+        "severity",
+        "timestamp"
+      ],
+      "type": "object"
+    },
+    "JournalEventKindDto": {
+      "enum": [
+        "connect_started",
+        "connect_succeeded",
+        "connect_failed",
+        "disconnect_started",
+        "disconnect_succeeded",
+        "disconnect_failed",
+        "reconnect_started",
+        "reconnect_succeeded",
+        "reconnect_failed",
+        "manual_registration_started",
+        "manual_registration_succeeded",
+        "manual_registration_failed",
+        "auto_registration_started",
+        "auto_registration_succeeded",
+        "auto_registration_failed",
+        "backup_started",
+        "backup_succeeded",
+        "backup_failed",
+        "restore_started",
+        "restore_succeeded",
+        "restore_failed",
+        "profile_lifecycle_started",
+        "profile_lifecycle_succeeded",
+        "profile_lifecycle_failed",
+        "container_action_started",
+        "container_action_succeeded",
+        "container_action_failed",
+        "candidate_ignored"
+      ],
+      "type": "string"
+    },
+    "JournalSeverityDto": {
+      "enum": [
+        "info",
+        "error"
+      ],
+      "type": "string"
+    },
+    "MismatchDetailsDto": {
+      "properties": {
+        "apiFingerprint": {
+          "$ref": "#/definitions/DaemonFingerprintDto"
+        },
+        "cliFingerprint": {
+          "$ref": "#/definitions/DaemonFingerprintDto"
+        },
+        "endpoint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "apiFingerprint",
+        "cliFingerprint",
+        "endpoint"
+      ],
+      "type": "object"
+    },
+    "OperationsDiagnosticsDto": {
+      "properties": {
+        "active": {
+          "items": {
+            "$ref": "#/definitions/ActiveOperationDto"
+          },
+          "type": "array"
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "active",
+        "generation"
+      ],
+      "type": "object"
+    },
+    "PortBindingActionDto": {
+      "properties": {
+        "copy": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "copy"
+      ],
+      "type": "object"
+    },
+    "PortBindingDto": {
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/PortBindingActionDto"
+        },
+        "containerPort": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "hostIp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hostPort": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "protocol": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "containerPort",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "ProfileDefinitionDiagnosticsDto": {
+      "properties": {
+        "definition": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProjectDefinitionDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profileId": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profileId"
+      ],
+      "type": "object"
+    },
+    "ProjectDefinitionDto": {
+      "properties": {
+        "definitionRevision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issues": {
+          "items": {
+            "$ref": "#/definitions/IssueDto"
+          },
+          "type": "array"
+        },
+        "loadedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profileId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "services": {
+          "items": {
+            "$ref": "#/definitions/ServiceDefinitionDto"
+          },
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/definitions/DefinitionStateDto"
+        }
+      },
+      "required": [
+        "issues",
+        "profileId",
+        "services",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ProjectRuntimeSnapshotDto": {
+      "properties": {
+        "composeProjectName": {
+          "type": "string"
+        },
+        "configFiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "containers": {
+          "items": {
+            "$ref": "#/definitions/ContainerInstanceDto"
+          },
+          "type": "array"
+        },
+        "workingDirectory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "composeProjectName",
+        "configFiles",
+        "containers"
+      ],
+      "type": "object"
+    },
+    "RecoveryResultDto": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "type": "object"
+    },
+    "RegistryBackupDiagnosticsDto": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "modifiedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "$ref": "#/definitions/BackupValidationStateDto"
+        }
+      },
+      "required": [
+        "exists",
+        "state"
+      ],
+      "type": "object"
+    },
+    "RegistryDiagnosticsDto": {
+      "properties": {
+        "backup": {
+          "$ref": "#/definitions/RegistryBackupDiagnosticsDto"
+        },
+        "backupPath": {
+          "type": "string"
+        },
+        "health": {
+          "$ref": "#/definitions/RegistryHealthDto"
+        },
+        "lastRecoveryResult": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RecoveryResultDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lockTimeoutMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "registryPath": {
+          "type": "string"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "backup",
+        "backupPath",
+        "health",
+        "lockTimeoutMs",
+        "registryPath"
+      ],
+      "type": "object"
+    },
+    "RegistryHealthDto": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RegistrySnapshotIdentityDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastFailureAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lastOperationAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "$ref": "#/definitions/RegistryHealthStateDto"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "RegistryHealthStateDto": {
+      "enum": [
+        "healthy",
+        "missing",
+        "corrupt",
+        "unreadable",
+        "locked",
+        "write_failure"
+      ],
+      "type": "string"
+    },
+    "RegistrySnapshotIdentityDto": {
+      "properties": {
+        "canonicalContentSha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "registryRevision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "canonicalContentSha256",
+        "registryRevision"
+      ],
+      "type": "object"
+    },
+    "Rfc3339Schema": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "RuntimeDiagnosticsDto": {
+      "properties": {
+        "apiFingerprint": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DaemonFingerprintDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cliFingerprint": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DaemonFingerprintDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "connectedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolvedEndpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UuidSchema"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "$ref": "#/definitions/RuntimeStateDto"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "RuntimeInventoryDto": {
+      "properties": {
+        "composeObservationGroups": {
+          "items": {
+            "$ref": "#/definitions/ComposeObservationGroupDto"
+          },
+          "type": "array"
+        },
+        "containers": {
+          "items": {
+            "$ref": "#/definitions/ContainerInstanceDto"
+          },
+          "type": "array"
+        },
+        "daemonFingerprint": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DaemonFingerprintDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "freshness": {
+          "$ref": "#/definitions/InventoryFreshnessDto"
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "hasSnapshot": {
+          "type": "boolean"
+        },
+        "lastSuccessfulObservedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rfc3339Schema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projects": {
+          "items": {
+            "$ref": "#/definitions/ProjectRuntimeSnapshotDto"
+          },
+          "type": "array"
+        },
+        "runtimeSessionId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UuidSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "standaloneContainers": {
+          "items": {
+            "$ref": "#/definitions/ContainerInstanceDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "composeObservationGroups",
+        "containers",
+        "freshness",
+        "generation",
+        "hasSnapshot",
+        "projects",
+        "standaloneContainers"
+      ],
+      "type": "object"
+    },
+    "RuntimeStateDto": {
+      "oneOf": [
+        {
+          "properties": {
+            "state": {
+              "enum": [
+                "disconnected"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "state": {
+              "enum": [
+                "connecting"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "context": {
+              "$ref": "#/definitions/SessionContextDto"
+            },
+            "state": {
+              "enum": [
+                "ready"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "context",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "details": {
+              "$ref": "#/definitions/MismatchDetailsDto"
+            },
+            "state": {
+              "enum": [
+                "contextMismatch"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "details",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "$ref": "#/definitions/AppErrorDto"
+            },
+            "state": {
+              "enum": [
+                "failed"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ServiceDefinitionDto": {
+      "properties": {
+        "buildContext": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "declaredPorts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "image": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "declaredPorts",
+        "name"
+      ],
+      "type": "object"
+    },
+    "SessionContextDto": {
+      "properties": {
+        "connectedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "daemonFingerprint": {
+          "$ref": "#/definitions/DaemonFingerprintDto"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "sessionId": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectedAt",
+        "daemonFingerprint",
+        "endpoint",
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionJournalDto": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/JournalEntryDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "UuidSchema": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "definitions": {
+      "$ref": "#/definitions/DefinitionsDiagnosticsDto"
+    },
+    "import": {
+      "$ref": "#/definitions/ImportDiagnosticsDto"
+    },
+    "inventory": {
+      "$ref": "#/definitions/RuntimeInventoryDto"
+    },
+    "journal": {
+      "$ref": "#/definitions/SessionJournalDto"
+    },
+    "operations": {
+      "$ref": "#/definitions/OperationsDiagnosticsDto"
+    },
+    "registry": {
+      "$ref": "#/definitions/RegistryDiagnosticsDto"
+    },
+    "runtime": {
+      "$ref": "#/definitions/RuntimeDiagnosticsDto"
+    }
+  },
+  "required": [
+    "definitions",
+    "import",
+    "inventory",
+    "journal",
+    "operations",
+    "registry",
+    "runtime"
+  ],
+  "title": "DiagnosticsSnapshotDto",
+  "type": "object"
+}

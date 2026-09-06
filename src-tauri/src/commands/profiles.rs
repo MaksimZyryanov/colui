@@ -75,13 +75,20 @@ pub async fn create_profile(
     draft: ProfileDraftDto,
     state: State<'_, AppState>,
 ) -> Result<ProfileSummaryDto, AppErrorDto> {
-    Ok(
-        CreateProfile::new(state.profiles.as_ref(), state.ids.as_ref())
-            .execute(draft.into_domain().map_err(AppErrorDto::from)?)
-            .await
-            .map_err(AppErrorDto::from)?
-            .into(),
+    let profile = CreateProfile::new(
+        state.profiles.as_ref(),
+        state.ids.as_ref(),
+        state.locks.as_ref(),
     )
+    .execute(draft.into_domain().map_err(AppErrorDto::from)?)
+    .await
+    .map_err(AppErrorDto::from)?;
+    state.events.publish(&[
+        ApplicationStateScopeDto::Profiles,
+        ApplicationStateScopeDto::Discovery,
+        ApplicationStateScopeDto::Diagnostics,
+    ]);
+    Ok(profile.into())
 }
 #[tauri::command]
 pub async fn update_profile(
@@ -89,7 +96,7 @@ pub async fn update_profile(
     state: State<'_, AppState>,
 ) -> Result<ProfileSummaryDto, AppErrorDto> {
     let profile_id = id(request.profile_id, "update_profile")?;
-    let updated = UpdateProfile::new(state.profiles.as_ref())
+    let updated = UpdateProfile::new(state.profiles.as_ref(), state.locks.as_ref())
         .execute(
             profile_id.clone(),
             request.expected_revision,
@@ -98,6 +105,12 @@ pub async fn update_profile(
         .await
         .map_err(AppErrorDto::from)?;
     state.definitions.invalidate(profile_id);
+    state.events.publish(&[
+        ApplicationStateScopeDto::Profiles,
+        ApplicationStateScopeDto::Discovery,
+        ApplicationStateScopeDto::Definitions,
+        ApplicationStateScopeDto::Diagnostics,
+    ]);
     Ok(updated.into())
 }
 #[tauri::command]
@@ -106,10 +119,16 @@ pub async fn remove_profile(
     state: State<'_, AppState>,
 ) -> Result<(), AppErrorDto> {
     let profile_id = id(request.profile_id, "remove_profile")?;
-    RemoveProfile::new(state.profiles.as_ref())
+    RemoveProfile::new(state.profiles.as_ref(), state.locks.as_ref())
         .execute(profile_id.clone(), request.expected_revision)
         .await
         .map_err(AppErrorDto::from)?;
     state.definitions.invalidate(profile_id);
+    state.events.publish(&[
+        ApplicationStateScopeDto::Profiles,
+        ApplicationStateScopeDto::Discovery,
+        ApplicationStateScopeDto::Definitions,
+        ApplicationStateScopeDto::Diagnostics,
+    ]);
     Ok(())
 }

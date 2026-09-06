@@ -2,8 +2,9 @@ use bollard::models::ContainerSummary;
 use colui_adapters::runtime::{normalize_container_summary, DockerControl, RuntimeGateway};
 use colui_adapters::InventoryCoordinator;
 use colui_app::{
-    Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, DockerApi, RuntimeConnector,
-    RuntimeFuture,
+    Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, ConfigureAutoRegistration,
+    DiscoverySession, DockerApi, ProfileReader, RegistrySnapshot, RuntimeConnector, RuntimeFuture,
+    StoreFuture,
 };
 use colui_domain::{
     AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerObservation, DaemonFingerprint,
@@ -188,6 +189,107 @@ async fn first_inventory_is_unavailable_and_success_groups_observations() {
 }
 
 #[tokio::test]
+async fn compose_observation_groups_preserve_equal_names_with_distinct_tuples() {
+    let source = Arc::new(QueuedSource::new(vec![Ok(vec![
+        compose_observation(
+            "z-container",
+            "demo",
+            "/workspace/b",
+            &["/workspace/b/compose.yml"],
+        ),
+        compose_observation(
+            "b-container",
+            "demo",
+            "/workspace/a",
+            &["/workspace/a/compose.yml", "/workspace/a/override.yml"],
+        ),
+        compose_observation(
+            "a-container",
+            "demo",
+            "/workspace/a",
+            &["/workspace/a/compose.yml", "/workspace/a/override.yml"],
+        ),
+    ])]));
+    let coordinator = InventoryCoordinator::new(source.clone(), test_clock());
+
+    let snapshot = coordinator.refresh().await.unwrap();
+
+    assert_eq!(source.calls.load(Ordering::Acquire), 1);
+    assert_eq!(source.inspect_calls.load(Ordering::Acquire), 0);
+    assert_eq!(snapshot.compose_observation_groups.len(), 2);
+    assert_eq!(
+        snapshot.compose_observation_groups[0]
+            .working_directory
+            .as_deref(),
+        Some("/workspace/a")
+    );
+    assert_eq!(
+        snapshot.compose_observation_groups[0].container_ids,
+        vec![
+            ContainerId("a-container".into()),
+            ContainerId("b-container".into())
+        ]
+    );
+    assert_eq!(
+        snapshot.compose_observation_groups[1]
+            .working_directory
+            .as_deref(),
+        Some("/workspace/b")
+    );
+    assert_eq!(
+        snapshot.compose_observation_groups[1].container_ids,
+        vec![ContainerId("z-container".into())]
+    );
+}
+
+#[tokio::test]
+async fn compose_observation_groups_normalize_tuple_before_grouping() {
+    let mut first = compose_observation(
+        "b-container",
+        " demo ",
+        " /workspace/project/./nested/.. ",
+        &[" compose.yml ", "./compose.yml", "config/../override.yml"],
+    );
+    let mut second = compose_observation(
+        "a-container",
+        "demo",
+        "/workspace/project",
+        &[
+            "/workspace/project/compose.yml",
+            "/workspace/project/override.yml",
+        ],
+    );
+    first.instance.id = ContainerId("b-container".into());
+    second.instance.id = ContainerId("a-container".into());
+    let source = Arc::new(QueuedSource::new(vec![Ok(vec![first, second])]));
+    let coordinator = InventoryCoordinator::new(source, test_clock());
+
+    let snapshot = coordinator.refresh().await.unwrap();
+
+    assert_eq!(snapshot.compose_observation_groups.len(), 1);
+    let group = &snapshot.compose_observation_groups[0];
+    assert_eq!(group.compose_project_name, "demo");
+    assert_eq!(
+        group.working_directory.as_deref(),
+        Some("/workspace/project")
+    );
+    assert_eq!(
+        group.config_files,
+        vec![
+            "/workspace/project/compose.yml".to_owned(),
+            "/workspace/project/override.yml".to_owned(),
+        ]
+    );
+    assert_eq!(
+        group.container_ids,
+        vec![
+            ContainerId("a-container".into()),
+            ContainerId("b-container".into())
+        ]
+    );
+}
+
+#[tokio::test]
 async fn successful_refresh_notifies_subscriber_once() {
     let gateway = gateway_with_summary(compose_summary("checkout", "web")).await;
     let coordinator = InventoryCoordinator::new(Arc::new(gateway.gateway), test_clock());
@@ -196,6 +298,122 @@ async fn successful_refresh_notifies_subscriber_once() {
     coordinator.refresh().await.unwrap();
     assert_eq!(subscriber.recv().await.unwrap().generation, 1);
     assert!(subscriber.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn successful_publication_drives_separate_auto_scheduler_consumer() {
+    let source = Arc::new(QueuedSource::new(vec![Ok(vec![compose_observation(
+        "demo-web",
+        "demo",
+        "/work/demo",
+        &["compose.yml"],
+    )])]));
+    let coordinator = InventoryCoordinator::new(source.clone(), test_clock());
+    let discovery = Arc::new(DiscoverySession::new());
+    ConfigureAutoRegistration::new(&discovery)
+        .execute(true)
+        .await;
+    let mut schedules = coordinator.start_auto_registration_scheduler(
+        Arc::new(EmptyProfiles),
+        discovery.clone(),
+        source,
+    );
+
+    let published = coordinator.refresh().await.unwrap();
+    let schedule = schedules.recv().await.unwrap();
+
+    assert_eq!(
+        schedule.runtime_session_id,
+        published.runtime_session_id.unwrap()
+    );
+    assert_eq!(schedule.inventory_generation, published.generation);
+    assert_eq!(discovery.claim_schedule(&schedule).await.len(), 1);
+}
+
+struct DelayedProfiles {
+    reads: AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+impl ProfileReader for DelayedProfiles {
+    fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
+        Box::pin(async move {
+            if self.reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.entered.notify_one();
+                self.release.acquire().await.unwrap().forget();
+            }
+            Ok(RegistrySnapshot {
+                registry_revision: 0,
+                profiles: vec![],
+            })
+        })
+    }
+}
+
+async fn delayed_scheduler_transition(reconnect: bool) {
+    let observing = gateway_with_summary(compose_summary("demo", "web")).await;
+    let gateway = Arc::new(observing.gateway);
+    let coordinator = InventoryCoordinator::new(gateway.clone(), test_clock());
+    let discovery = Arc::new(DiscoverySession::new());
+    ConfigureAutoRegistration::new(&discovery)
+        .execute(true)
+        .await;
+    let profiles = Arc::new(DelayedProfiles {
+        reads: AtomicUsize::new(0),
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let mut scheduled = coordinator.start_auto_registration_scheduler(
+        profiles.clone(),
+        discovery.clone(),
+        gateway.clone(),
+    );
+    let old = coordinator.refresh().await.unwrap();
+    profiles.entered.notified().await;
+    if reconnect {
+        gateway.reconnect_runtime(None).await.unwrap();
+    } else {
+        gateway.disconnect_runtime().await.unwrap();
+        discovery.observe_runtime_session(None).await;
+        gateway.connect_runtime(None).await.unwrap();
+    }
+    let current_session = colui_app::RuntimeStateReader::api_read_context(gateway.as_ref())
+        .await
+        .unwrap()
+        .session_id;
+    discovery
+        .observe_runtime_session(Some(current_session))
+        .await;
+    let current = coordinator.refresh().await.unwrap();
+    profiles.release.add_permits(1);
+    // The next publication is a completion fence for the subscriber's older work.
+    let next = tokio::time::timeout(Duration::from_secs(5), scheduled.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(next.runtime_session_id, old.runtime_session_id.unwrap());
+    assert_eq!(next.runtime_session_id, current_session);
+    assert_eq!(next.inventory_generation, current.generation);
+    assert!(scheduled.try_recv().is_err());
+    assert!(discovery
+        .candidates()
+        .await
+        .iter()
+        .all(|c| c.runtime_session_id == current_session));
+    assert_eq!(profiles.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(observing.docker.list_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(observing.docker.inspect_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn delayed_publication_subscriber_discards_disconnected_session() {
+    delayed_scheduler_transition(false).await;
+}
+
+#[tokio::test]
+async fn delayed_publication_subscriber_discards_replaced_session() {
+    delayed_scheduler_transition(true).await;
 }
 
 #[tokio::test]
@@ -333,6 +551,19 @@ fn observation(name: &str, project: Option<&str>) -> ContainerObservation {
     )
 }
 
+fn compose_observation(
+    name: &str,
+    project: &str,
+    working_directory: &str,
+    config_files: &[&str],
+) -> ContainerObservation {
+    let mut value = observation(name, Some(project));
+    let compose = value.compose.as_mut().unwrap();
+    compose.working_directory = Some(working_directory.to_owned());
+    compose.config_files = config_files.iter().map(|path| (*path).to_owned()).collect();
+    value
+}
+
 fn runtime_error(message: &str) -> AppError {
     AppError::new(AppErrorCode::RuntimeUnavailable, "list", None, message)
 }
@@ -341,7 +572,21 @@ struct QueuedSource {
     values:
         std::sync::Mutex<std::collections::VecDeque<Result<Vec<ContainerObservation>, AppError>>>,
     calls: AtomicUsize,
+    inspect_calls: AtomicUsize,
     context: colui_domain::SessionContext,
+}
+
+struct EmptyProfiles;
+
+impl ProfileReader for EmptyProfiles {
+    fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
+        Box::pin(async {
+            Ok(RegistrySnapshot {
+                registry_revision: 0,
+                profiles: vec![],
+            })
+        })
+    }
 }
 
 struct BlockingSource {
@@ -446,6 +691,7 @@ impl QueuedSource {
         Self {
             values: std::sync::Mutex::new(values.into()),
             calls: AtomicUsize::new(0),
+            inspect_calls: AtomicUsize::new(0),
             context: session_context(),
         }
     }
@@ -468,7 +714,8 @@ impl DockerApi for QueuedSource {
     }
 
     fn inspect_container(&self, _: &ContainerId) -> RuntimeFuture<'_, ContainerDetails> {
-        panic!("inventory refresh must not inspect")
+        self.inspect_calls.fetch_add(1, Ordering::AcqRel);
+        Box::pin(async { panic!("inventory refresh must not inspect") })
     }
 }
 
@@ -476,6 +723,16 @@ impl colui_app::RuntimeStateReader for QueuedSource {
     fn session_state(&self) -> RuntimeFuture<'_, colui_domain::RuntimeSessionState> {
         let context = self.context.clone();
         Box::pin(async move { Ok(colui_domain::RuntimeSessionState::Ready(context)) })
+    }
+}
+
+impl colui_app::DiscoverySessionValidity for QueuedSource {
+    fn session_validator(
+        &self,
+        expected: colui_domain::RuntimeSessionId,
+    ) -> colui_app::DiscoveryFuture<'_, colui_app::SessionValidator> {
+        let matches = expected == self.context.session_id;
+        Box::pin(async move { Ok(Box::new(move || matches) as colui_app::SessionValidator) })
     }
 }
 
@@ -582,6 +839,15 @@ impl CountingDocker {
 }
 
 impl DockerControl for CountingDocker {
+    fn logs(
+        &self,
+        _: colui_domain::ContainerId,
+    ) -> colui_app::RuntimeFuture<'_, colui_app::ContainerLogs> {
+        panic!("no logs")
+    }
+    fn action(&self, _: ContainerId, _: colui_app::ContainerAction) -> RuntimeFuture<'_, ()> {
+        panic!("inventory never mutates containers")
+    }
     fn info(&self) -> RuntimeFuture<'_, DaemonFingerprint> {
         Box::pin(async { Ok(DaemonFingerprint::new("same", "1", "linux", "x86_64")) })
     }

@@ -12,6 +12,389 @@ use colui_tauri_lib::dto::{
 use colui_tauri_lib::schema_generation::{generate_all_schemas, write_schemas};
 use std::fs;
 
+fn optional_field_contract<T: serde::de::DeserializeOwned + serde::Serialize>(
+    schema: &str,
+    mut base: serde_json::Value,
+    field: &str,
+    valid: &str,
+) {
+    let schemas = generate_all_schemas();
+    assert!(!schemas[schema]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == field));
+    base[field] = serde_json::Value::Null;
+    let null = serde_json::to_value(serde_json::from_value::<T>(base.clone()).unwrap()).unwrap();
+    assert!(null[field].is_null());
+    base[field] = serde_json::json!(valid);
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<T>(base.clone()).unwrap()).unwrap()[field],
+        valid
+    );
+    for invalid in [
+        serde_json::json!("invalid"),
+        serde_json::json!(1),
+        serde_json::json!(false),
+    ] {
+        base[field] = invalid;
+        assert!(serde_json::from_value::<T>(base.clone()).is_err());
+    }
+    base.as_object_mut().unwrap().remove(field);
+    let missing = serde_json::from_value::<T>(base).unwrap_or_else(|error| {
+        panic!("{schema}.{field} schema permits omission but Serde rejected it: {error}")
+    });
+    assert_eq!(serde_json::to_value(missing).unwrap(), null);
+}
+
+macro_rules! optional_contract_test {
+    ($name:ident, $dto:ident, $base:tt, $field:literal, $valid:literal) => {
+        #[test]
+        fn $name() {
+            optional_field_contract::<colui_tauri_lib::dto::$dto>(
+                stringify!($dto),
+                serde_json::json!($base),
+                $field,
+                $valid,
+            );
+        }
+    };
+}
+
+optional_contract_test!(nullable_conflict_profile_id, DiscoveryConflictEvidenceDto,
+    {"source":"runtime_observation", "configFiles":[]}, "profileId", "00000000-0000-0000-0000-000000000001");
+optional_contract_test!(nullable_health_last_operation_at, RegistryHealthDto,
+    {"state":"healthy", "lastOperationAt":null, "lastFailureAt":null}, "lastOperationAt", "2026-09-05T00:00:00Z");
+optional_contract_test!(nullable_health_last_failure_at, RegistryHealthDto,
+    {"state":"healthy", "lastOperationAt":null, "lastFailureAt":null}, "lastFailureAt", "2026-09-05T00:00:00Z");
+optional_contract_test!(nullable_runtime_session_id, RuntimeDiagnosticsDto,
+    {"state":{"state":"disconnected"}, "sessionId":null, "connectedAt":null}, "sessionId", "00000000-0000-0000-0000-000000000001");
+optional_contract_test!(nullable_runtime_connected_at, RuntimeDiagnosticsDto,
+    {"state":{"state":"disconnected"}, "sessionId":null, "connectedAt":null}, "connectedAt", "2026-09-05T00:00:00Z");
+optional_contract_test!(nullable_backup_modified_at, RegistryBackupDiagnosticsDto,
+    {"exists":false, "state":"missing"}, "modifiedAt", "2026-09-05T00:00:00Z");
+optional_contract_test!(nullable_journal_runtime_session_id, JournalEntryDto,
+    {"sequence":1, "timestamp":"2026-09-05T00:00:00Z", "kind":"connect_started", "severity":"info", "message":"Connection started"}, "runtimeSessionId", "00000000-0000-0000-0000-000000000001");
+
+#[test]
+fn increment_five_errors_preserve_typed_subjects() {
+    for (subject, expected) in [
+        (
+            colui_domain::AppErrorSubject::profile(
+                ProfileId::parse("00000000-0000-0000-0000-000000000001").unwrap(),
+            ),
+            "profile",
+        ),
+        (
+            colui_domain::AppErrorSubject::candidate("a".repeat(64)),
+            "candidate",
+        ),
+        (
+            colui_domain::AppErrorSubject {
+                kind: colui_domain::AppErrorSubjectKind::Container,
+                id: "b".repeat(64),
+            },
+            "container",
+        ),
+        (
+            colui_domain::AppErrorSubject::registry("registry"),
+            "registry",
+        ),
+    ] {
+        let id = subject.id.clone();
+        let value = serde_json::to_value(AppErrorDto::from(AppError::for_subject(
+            AppErrorCode::OperationConflict,
+            "test",
+            subject,
+            "conflict",
+        )))
+        .unwrap();
+        assert_eq!(
+            value["subject"],
+            serde_json::json!({"kind": expected, "id": id})
+        );
+        assert!(value.get("subjectId").is_none());
+    }
+}
+
+#[test]
+fn registry_adapter_errors_receive_registry_wire_subject() {
+    for code in [
+        AppErrorCode::RegistryCorrupt,
+        AppErrorCode::RegistryLocked,
+        AppErrorCode::RegistryWriteFailed,
+        AppErrorCode::RecoveryConflict,
+    ] {
+        let value = serde_json::to_value(AppErrorDto::from(AppError::new(
+            code,
+            "restore_registry_backup",
+            None,
+            "registry failure",
+        )))
+        .unwrap();
+        assert_eq!(
+            value["subject"],
+            serde_json::json!({"kind":"registry", "id":"registry"})
+        );
+    }
+}
+
+#[test]
+fn discovery_dto_keeps_conflicting_runtime_and_registered_evidence() {
+    use colui_domain::*;
+    let session: RuntimeSessionId =
+        serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
+    let profile = ProjectProfile::from_draft(
+        ProfileId::parse("00000000-0000-0000-0000-000000000002").unwrap(),
+        ProfileDraft {
+            display_name: "Demo".try_into().unwrap(),
+            compose_project_name: "demo".try_into().unwrap(),
+            working_directory: "/registered".into(),
+            compose_files: vec!["compose.yml".into()],
+            environment_files: vec![],
+            registration_origin: RegistrationOrigin::Manual,
+        },
+    )
+    .unwrap();
+    let groups = ["/one", "/two"].map(|dir| ComposeObservationGroup {
+        compose_project_name: "demo".into(),
+        working_directory: Some(dir.into()),
+        config_files: vec!["compose.yml".into()],
+        container_ids: vec![ContainerId("container".into())],
+    });
+    let candidates: Vec<colui_tauri_lib::dto::DiscoveryCandidateDto> =
+        classify_candidates(session, 7, &groups, &[profile])
+            .into_iter()
+            .map(Into::into)
+            .collect();
+    let value = serde_json::to_value(candidates).unwrap();
+    assert_eq!(value[0]["classification"], "name_conflict");
+    assert_eq!(value[0]["inventoryGeneration"], 7);
+    let evidence = value[0]["conflicts"].as_array().unwrap();
+    assert!(evidence.iter().any(|v| v["source"] == "runtime_observation"
+        && v["profileId"].is_null()
+        && !v["configFiles"].as_array().unwrap().is_empty()));
+    assert!(evidence.iter().any(|v| v["source"] == "registered_profile"
+        && v["profileId"] == "00000000-0000-0000-0000-000000000002"
+        && v["workingDirectory"] == "/registered"));
+}
+
+#[test]
+fn increment_five_schemas_cover_every_command_contract() {
+    let schemas = generate_all_schemas();
+    for name in [
+        "DiscoveryCandidateDto",
+        "DiscoveryConflictEvidenceDto",
+        "DiscoveryListDto",
+        "RegisterCandidateRequestDto",
+        "IgnoreCandidateRequestDto",
+        "ConfigureAutoRegistrationRequestDto",
+        "AutoRegistrationConfigurationDto",
+        "AutoRegistrationResultDto",
+        "DiagnosticsSnapshotDto",
+        "RegistrySnapshotIdentityDto",
+        "RegistryHealthDto",
+        "ReconnectResultDto",
+        "ContainerActionRequestDto",
+        "ContainerActionResultDto",
+        "ContainerLogsRequestDto",
+        "ContainerLogsDto",
+        "OpenContainerPortRequestDto",
+        "PortBindingActionDto",
+        "ApplicationStateChangedDto",
+        "JournalEntryDto",
+    ] {
+        assert!(schemas.contains_key(name), "missing schema: {name}");
+    }
+}
+
+#[test]
+fn profile_lifecycle_rejects_path_bearing_requests() {
+    let value = serde_json::json!({
+        "profileId": "00000000-0000-0000-0000-000000000001",
+        "workingDirectory": "/private/secret", "composeFiles": ["secret.yml"]
+    });
+    assert!(serde_json::from_value::<colui_tauri_lib::dto::ProfileIdRequestDto>(value).is_err());
+}
+
+#[test]
+fn browser_request_accepts_only_ids_session_and_binding_index() {
+    use colui_tauri_lib::dto::OpenContainerPortRequestDto;
+    let value = serde_json::json!({"containerId":"a".repeat(64), "runtimeSessionId":"00000000-0000-0000-0000-000000000001", "bindingIndex":0});
+    assert!(serde_json::from_value::<OpenContainerPortRequestDto>(value.clone()).is_ok());
+    for (key, input) in [
+        ("url", serde_json::json!("https://evil.example")),
+        ("bindingIndex", serde_json::json!(-1)),
+        ("runtimeSessionId", serde_json::json!("invalid")),
+    ] {
+        let mut invalid = value.clone();
+        invalid[key] = input;
+        assert!(serde_json::from_value::<OpenContainerPortRequestDto>(invalid).is_err());
+    }
+}
+
+#[test]
+fn inventory_ports_include_backend_derived_actions_and_observation_evidence() {
+    let binding = colui_tauri_lib::dto::PortBindingDto::from(colui_domain::PortBinding {
+        host_ip: Some("0.0.0.0".into()),
+        host_port: Some(49152),
+        container_port: 443,
+        protocol: "TCP".into(),
+    });
+    let json = serde_json::to_value(binding).unwrap();
+    assert_eq!(json["action"]["copy"], "0.0.0.0:49152 -> 443/tcp");
+    assert_eq!(json["action"]["url"], "https://127.0.0.1:49152");
+    let inventory = RuntimeInventory {
+        compose_observation_groups: vec![colui_domain::ComposeObservationGroup {
+            compose_project_name: "demo".into(),
+            working_directory: None,
+            config_files: vec![],
+            container_ids: vec![colui_domain::ContainerId("c1".into())],
+        }],
+        ..RuntimeInventory::unavailable()
+    };
+    let json = serde_json::to_value(RuntimeInventoryDto::from(inventory)).unwrap();
+    assert_eq!(
+        json["composeObservationGroups"][0]["containerIds"],
+        serde_json::json!(["c1"])
+    );
+    assert!(json["composeObservationGroups"][0]["workingDirectory"].is_null());
+}
+
+#[test]
+fn candidate_request_rejects_noncanonical_ids() {
+    use colui_tauri_lib::dto::IgnoreCandidateRequestDto;
+    for id in ["secret/path".to_owned(), "A".repeat(64), "a".repeat(63)] {
+        assert!(serde_json::from_value::<IgnoreCandidateRequestDto>(
+            serde_json::json!({"candidateId":id})
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn reconnect_action_logs_and_registry_keep_exact_payloads() {
+    use colui_tauri_lib::dto::*;
+    let reconnect = ReconnectResultDto::from(colui_app::ReconnectResult {
+        runtime_state: colui_domain::RuntimeSessionState::Disconnected,
+        inventory: None,
+    });
+    assert_eq!(
+        serde_json::to_value(reconnect).unwrap(),
+        serde_json::json!({"runtimeState":{"state":"disconnected"},"inventory":null})
+    );
+    let action = ContainerActionResultDto::from(colui_app::ContainerActionResult {
+        container_id: colui_domain::ContainerId("container".into()),
+        action: colui_app::ContainerAction::Restart,
+        observation: colui_app::ContainerActionObservation::IndeterminateAfterSessionChange,
+        inventory: RuntimeInventory {
+            generation: 42,
+            ..RuntimeInventory::unavailable()
+        },
+    });
+    let value = serde_json::to_value(action).unwrap();
+    assert_eq!(value["observation"], "indeterminate_after_session_change");
+    assert_eq!(value["inventory"]["generation"], 42);
+    let logs = ContainerLogsDto::from(colui_app::ContainerLogs {
+        container_id: colui_domain::ContainerId("container".into()),
+        text: "first\n\u{fffd}\0last\n".into(),
+        retained_bytes: 14,
+        truncated: true,
+        observed_at: Timestamp("2026-09-05T00:00:00Z".into()),
+    });
+    let json = serde_json::to_value(logs).unwrap();
+    assert_eq!(json["text"], "first\n\u{fffd}\0last\n");
+    assert_eq!(json["retainedBytes"], 14);
+    let health = RegistryHealthDto::from(colui_app::RegistryHealth {
+        state: colui_app::RegistryHealthState::Corrupt,
+        identity: None,
+        error: None,
+        last_operation_at: None,
+        last_failure_at: None,
+    });
+    let value = serde_json::to_value(health).unwrap();
+    assert!(value.as_object().unwrap().contains_key("identity"));
+    assert!(value["identity"].is_null());
+}
+
+#[test]
+fn operational_journal_preserves_codes_and_subjects_without_secret_sources() {
+    tauri::async_runtime::block_on(async {
+        let session = colui_app::DiscoverySession::new();
+        for (kind, code) in [
+            (
+                colui_app::JournalEventKind::ConnectFailed,
+                AppErrorCode::RuntimeConnectionFailed,
+            ),
+            (
+                colui_app::JournalEventKind::DisconnectFailed,
+                AppErrorCode::OperationConflict,
+            ),
+            (
+                colui_app::JournalEventKind::ReconnectFailed,
+                AppErrorCode::RuntimeUnavailable,
+            ),
+            (
+                colui_app::JournalEventKind::ManualRegistrationFailed,
+                AppErrorCode::CandidateStale,
+            ),
+            (
+                colui_app::JournalEventKind::AutoRegistrationFailed,
+                AppErrorCode::RegistryCorrupt,
+            ),
+            (
+                colui_app::JournalEventKind::BackupFailed,
+                AppErrorCode::RegistryWriteFailed,
+            ),
+            (
+                colui_app::JournalEventKind::RestoreFailed,
+                AppErrorCode::RecoveryConflict,
+            ),
+            (
+                colui_app::JournalEventKind::ProfileLifecycleFailed,
+                AppErrorCode::ComposeFailed,
+            ),
+            (
+                colui_app::JournalEventKind::ContainerActionFailed,
+                AppErrorCode::ContainerOperationFailed,
+            ),
+        ] {
+            let subject = colui_domain::AppErrorSubject {
+                kind: colui_domain::AppErrorSubjectKind::Container,
+                id: "a".repeat(64),
+            };
+            let error = AppError::for_subject(
+                code,
+                "SECRET_OPERATION",
+                subject.clone(),
+                "SECRET_PATH_ENV_LABEL_REGISTRY_LOG",
+            )
+            .with_details("SECRET_UPSTREAM");
+            session
+                .record_operation(kind, None, Some(subject), Some(&error))
+                .await;
+        }
+        let entries: Vec<colui_tauri_lib::dto::JournalEntryDto> = session
+            .journal()
+            .await
+            .entries
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        let value = serde_json::to_value(entries).unwrap();
+        assert!(!value.to_string().contains("SECRET"));
+        assert_eq!(value[0]["errorCode"], "runtime_connection_failed");
+        assert_eq!(value[8]["subject"]["kind"], "container");
+        assert_eq!(value[8]["sequence"], 9);
+        assert!(value
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|v| v["errorCode"].is_string()
+                && v["message"].as_str().unwrap().chars().count() <= 500));
+    });
+}
+
 #[test]
 fn update_request_serializes_only_camel_case_metadata_and_patch() {
     let request = UpdateProfileRequestDto::fixture();
@@ -380,7 +763,7 @@ fn generated_schema_files_are_deterministic() {
         bytes,
         serde_json::to_vec_pretty(&generated["LifecycleResultDto"]).unwrap()
     );
-    assert_eq!(generated.len(), 35);
+    assert_eq!(generated.len(), 79);
     assert_eq!(
         generated["ProjectStatusDto"]["properties"]
             .as_object()

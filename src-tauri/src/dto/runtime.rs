@@ -5,6 +5,22 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct ReconnectResultDto {
+    pub runtime_state: RuntimeStateDto,
+    pub inventory: Option<super::RuntimeInventoryDto>,
+}
+
+impl From<colui_app::ReconnectResult> for ReconnectResultDto {
+    fn from(v: colui_app::ReconnectResult) -> Self {
+        Self {
+            runtime_state: v.runtime_state.into(),
+            inventory: v.inventory.map(Into::into),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct DaemonFingerprintDto {
     pub daemon_id: String,
     pub server_version: String,

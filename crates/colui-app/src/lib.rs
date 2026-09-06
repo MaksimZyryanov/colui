@@ -1,15 +1,23 @@
+mod containers;
 mod definitions;
+mod diagnostics;
+mod discovery;
 mod inventory;
 mod lifecycle;
 mod operations;
 mod profiles;
+mod recovery;
 mod runtime;
 mod status;
 
+pub use containers::*;
 pub use definitions::*;
+pub use diagnostics::*;
+pub use discovery::*;
 pub use inventory::*;
 pub use lifecycle::*;
 pub use operations::*;
 pub use profiles::*;
+pub use recovery::*;
 pub use runtime::*;
 pub use status::*;

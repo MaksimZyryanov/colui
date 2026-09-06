@@ -21,7 +21,7 @@ describe('RuntimeInitializer', () => {
   it('does not retry non-retryable protocol mismatch', async () => {
     mockBackend.setResponseOverride('get_runtime_state', { state: 'bad' });
     mockBackend.setErrorOverride('connect_runtime', new AppErrorException({
-      code: 'runtime_connection_failed', operation: 'connect_runtime', subjectId: null,
+      code: 'runtime_connection_failed', operation: 'connect_runtime', subject: null,
       message: 'connection failed', details: null, retryable: false,
     }));
     render(<App />);
@@ -34,7 +34,7 @@ describe('RuntimeInitializer', () => {
     mockBackend.setErrorOverride('connect_runtime', new AppErrorException({
       code: 'runtime_connection_failed',
       operation: 'connect_runtime',
-      subjectId: null,
+      subject: null,
       message: 'Docker is unavailable',
       details: null,
       retryable: false,
@@ -47,19 +47,20 @@ describe('RuntimeInitializer', () => {
     expect(screen.getByRole('main')).toBeVisible();
   });
 
-  it('caches successful connect after the runtime state query fails', async () => {
+  it('retains successful connect data while exposing repair-read protocol mismatch', async () => {
     mockBackend.setResponseOverride('get_runtime_state', { state: 'bad' });
 
     render(<App />);
 
-    await waitFor(() => expect(queryClient.getQueryState(runtimeKeys.state())?.status).toBe('success'));
+    await waitFor(() => expect(queryClient.getQueryState(runtimeKeys.state())?.status).toBe('error'));
     expect(queryClient.getQueryData(runtimeKeys.state())).toMatchObject({ state: 'ready' });
+    expect(await screen.findByText(/invalid response from get_runtime_state/i)).toBeVisible();
   });
 
   it('renders terminal failed runtime state returned as a successful query', async () => {
     mockBackend.setResponseOverride('connect_runtime', {
       state: 'failed',
-      error: { code: 'runtime_unavailable', operation: 'get_runtime_state', subjectId: null, message: 'Runtime failed', details: null, retryable: false },
+      error: { code: 'runtime_unavailable', operation: 'get_runtime_state', subject: null, message: 'Runtime failed', details: null, retryable: false },
     });
 
     render(<App />);

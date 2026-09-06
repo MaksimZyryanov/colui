@@ -11,7 +11,12 @@ import { DropdownMenu } from '../DropdownMenu';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { AppErrorException } from '../../../ipc/errors';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+
+const suppressExpectedRenderError = () => vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
 function ConfirmationFixture() {
   return <AlertDialog trigger={<Button>Remove profile</Button>} title="Remove profile" description="This cannot be undone." confirmLabel="Remove" destructive>
@@ -49,6 +54,7 @@ describe('accessible primitives', () => {
   });
 
   it('rejects unnamed icon-only buttons at runtime', () => {
+    suppressExpectedRenderError();
     expect(() => render(createElement(Button, { iconOnly: true } as never, 'X'))).toThrow(/accessible name/i);
   });
 
@@ -67,6 +73,7 @@ describe('accessible primitives', () => {
   });
 
   it('shows bounded protocol mismatch recovery in boundary fallback', () => {
+    suppressExpectedRenderError();
     render(<ErrorBoundary><ThrowProtocolMismatch /></ErrorBoundary>);
     expect(screen.getByText(/response format mismatch/i)).toBeVisible();
     expect(screen.getByRole('button', { name: /retry/i })).toBeVisible();
@@ -75,6 +82,7 @@ describe('accessible primitives', () => {
   });
 
   it('resets boundary after retry', async () => {
+    suppressExpectedRenderError();
     const user = userEvent.setup();
     let failed = true;
     function Flaky() { if (failed) throw new Error('boom'); return <p>Recovered</p>; }

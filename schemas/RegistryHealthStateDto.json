@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "enum": [
+    "healthy",
+    "missing",
+    "corrupt",
+    "unreadable",
+    "locked",
+    "write_failure"
+  ],
+  "title": "RegistryHealthStateDto",
+  "type": "string"
+}

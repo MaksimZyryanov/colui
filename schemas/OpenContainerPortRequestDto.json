@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "bindingIndex": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "containerId": {
+      "type": "string"
+    },
+    "runtimeSessionId": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bindingIndex",
+    "containerId",
+    "runtimeSessionId"
+  ],
+  "title": "OpenContainerPortRequestDto",
+  "type": "object"
+}

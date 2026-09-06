@@ -21,16 +21,33 @@ macro_rules! command {
             request: ProfileIdRequestDto,
             state: State<'_, AppState>,
         ) -> Result<LifecycleResultDto, AppErrorDto> {
-            let result = $use_case::new_with_dependencies(
-                state.profiles.as_ref(),
-                state.runtime.as_ref(),
-                state.locks.as_ref(),
-                state.inventory.as_ref(),
-            )
-            .execute(id(request.profile_id, stringify!($name))?)
-            .await
-            .map_err(AppErrorDto::from)?;
-            Ok(result.into())
+            let profile_id = id(request.profile_id, stringify!($name))?;
+            use colui_app::JournalEventKind as K;
+            state
+                .journaled(
+                    [
+                        K::ProfileLifecycleStarted,
+                        K::ProfileLifecycleSucceeded,
+                        K::ProfileLifecycleFailed,
+                    ],
+                    Some(colui_domain::AppErrorSubject::profile(profile_id.clone())),
+                    &[
+                        ApplicationStateScopeDto::Discovery,
+                        ApplicationStateScopeDto::Diagnostics,
+                    ],
+                    async {
+                        let result = $use_case::new_with_dependencies(
+                            state.profiles.as_ref(),
+                            state.runtime.as_ref(),
+                            state.locks.as_ref(),
+                            state.inventory.as_ref(),
+                        )
+                        .execute(profile_id)
+                        .await?;
+                        Ok(result.into())
+                    },
+                )
+                .await
         }
     };
 }

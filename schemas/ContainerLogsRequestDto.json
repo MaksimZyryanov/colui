@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "containerId": {
+      "type": "string"
+    },
+    "runtimeSessionId": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "containerId",
+    "runtimeSessionId"
+  ],
+  "title": "ContainerLogsRequestDto",
+  "type": "object"
+}

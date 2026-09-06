@@ -110,10 +110,75 @@ pub trait RuntimeConnector: Send + Sync {
         preference: Option<DockerEndpoint>,
     ) -> RuntimeFuture<'_, RuntimeSessionState>;
     fn disconnect_runtime(&self) -> RuntimeFuture<'_, ()>;
+    fn reconnect_runtime(
+        &self,
+        preference: Option<DockerEndpoint>,
+    ) -> RuntimeFuture<'_, RuntimeSessionState>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReconnectResult {
+    pub runtime_state: RuntimeSessionState,
+    pub inventory: Option<colui_domain::RuntimeInventory>,
+}
+
+pub struct ReconnectRuntime<'a, C: ?Sized, I: ?Sized> {
+    connector: &'a C,
+    inventory: &'a I,
+}
+
+impl<'a, C, I> ReconnectRuntime<'a, C, I>
+where
+    C: RuntimeConnector + ?Sized,
+    I: crate::InventoryRefresher + ?Sized,
+{
+    pub fn new(connector: &'a C, inventory: &'a I) -> Self {
+        Self {
+            connector,
+            inventory,
+        }
+    }
+
+    pub async fn execute(
+        &self,
+        preference: Option<DockerEndpoint>,
+    ) -> Result<ReconnectResult, AppError> {
+        let runtime_state = self.connector.reconnect_runtime(preference).await?;
+        match &runtime_state {
+            RuntimeSessionState::Ready(_) | RuntimeSessionState::ContextMismatch(_) => {
+                let inventory = match self.inventory.refresh().await {
+                    Ok(inventory) => inventory,
+                    Err(_) => self.inventory.current_inventory().await?,
+                };
+                Ok(ReconnectResult {
+                    runtime_state,
+                    inventory: Some(inventory),
+                })
+            }
+            RuntimeSessionState::Failed(error) => Err(error.clone()),
+            _ => Ok(ReconnectResult {
+                runtime_state,
+                inventory: None,
+            }),
+        }
+    }
 }
 
 pub trait RuntimeStateReader: Send + Sync {
     fn session_state(&self) -> RuntimeFuture<'_, RuntimeSessionState>;
+    fn api_read_context(&self) -> RuntimeFuture<'_, colui_domain::SessionContext> {
+        Box::pin(async move {
+            match self.session_state().await? {
+                RuntimeSessionState::Ready(context) => Ok(context),
+                _ => Err(AppError::new(
+                    colui_domain::AppErrorCode::RuntimeUnavailable,
+                    "runtime_read",
+                    None,
+                    "runtime unavailable",
+                )),
+            }
+        })
+    }
 }
 
 pub trait RuntimeInventorySource: DockerApi + RuntimeStateReader {}

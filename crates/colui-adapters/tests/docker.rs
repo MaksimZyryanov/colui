@@ -6,11 +6,13 @@ use colui_adapters::runtime::{
 };
 use colui_adapters::{DefinitionCache, InventoryCoordinator, OperationLockManager};
 use colui_app::{
-    Clock, DefinitionRefresher, DockerApi, LifecycleOperation, LifecycleRuntime, ProfileReader,
+    Clock, ContainerAction, ContainerLogsRequest, ContainerLogsRuntime, ContainerRuntime,
+    DefinitionRefresher, DockerApi, LifecycleOperation, LifecycleRuntime, ProfileReader,
     RegistrySnapshot, RuntimeConnector,
 };
 use colui_domain::{
-    ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin, RuntimeSessionState,
+    ContainerId, ContainerState, ProfileDraft, ProfileId, ProjectProfile, RegistrationOrigin,
+    RuntimeSessionId, RuntimeSessionState,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -99,17 +101,21 @@ async fn fixture_labels_feed_inventory_and_profile_change_updates_definition_rev
         project.working_directory.as_deref(),
         fixture.directory.path().to_str()
     );
+    assert_eq!(project.config_files, vec![fixture.compose_path_string()]);
     assert!(project
-        .config_files
+        .containers
         .iter()
-        .any(|path| path.ends_with("compose.yml")));
+        .all(|container| container.service_name.as_deref() == Some("app")));
 
     let cache = DefinitionCache::new(
         Arc::new(ComposeProcessRunner::default()),
         gateway.clone(),
         Arc::new(WallClock),
-        Arc::new(OperationLockManager::new()),
+        Arc::new(OperationLockManager::new(
+            std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+        )),
         Arc::new(ComposeExecutionGate::new()),
+        Arc::new(SingleProfile(fixture.profile.clone())),
     );
     let before = cache
         .refresh_definition(fixture.profile.clone())
@@ -133,6 +139,106 @@ async fn fixture_labels_feed_inventory_and_profile_change_updates_definition_rev
 
     fixture.tear_down(&gateway).await.unwrap();
     cleanup.disarm();
+}
+
+#[tokio::test]
+async fn standalone_container_passes_start_stop_restart_path() {
+    if !docker_available().await {
+        eprintln!("SKIP: local Docker daemon unavailable");
+        return;
+    }
+
+    let fixture = TempComposeFixture::new(false);
+    let id = fixture.create_standalone("sleep 300", &[]).await;
+    let _cleanup = StandaloneCleanupGuard::new(id.clone());
+    let gateway = RuntimeGateway::new(Box::new(ComposeProcessRunner::default()));
+    let session = fixture.connect_session(&gateway).await;
+
+    gateway
+        .run_container(id.clone(), ContainerAction::Start, session)
+        .await
+        .unwrap();
+    fixture
+        .assert_container_state(&gateway, &id, ContainerState::Running)
+        .await;
+    gateway
+        .run_container(id.clone(), ContainerAction::Stop, session)
+        .await
+        .unwrap();
+    fixture
+        .assert_container_state(&gateway, &id, ContainerState::Stopped)
+        .await;
+    gateway
+        .run_container(id.clone(), ContainerAction::Restart, session)
+        .await
+        .unwrap();
+    fixture
+        .assert_container_state(&gateway, &id, ContainerState::Running)
+        .await;
+}
+
+#[tokio::test]
+async fn standalone_logs_retain_newest_bounded_bytes_and_report_truncation() {
+    if !docker_available().await {
+        eprintln!("SKIP: local Docker daemon unavailable");
+        return;
+    }
+
+    let fixture = TempComposeFixture::new(false);
+    let id = fixture
+        .run_standalone(
+            "head -c 300000 /dev/zero | tr '\\0' x; printf newest-marker",
+            &[],
+        )
+        .await;
+    let _cleanup = StandaloneCleanupGuard::new(id.clone());
+    fixture.wait_for_container_exit(&id).await;
+    let gateway = RuntimeGateway::new(Box::new(ComposeProcessRunner::default()));
+    let session = fixture.connect_session(&gateway).await;
+    let logs = gateway
+        .read_logs(ContainerLogsRequest {
+            container_id: id.clone(),
+            runtime_session_id: session,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(logs.container_id, id);
+    assert_eq!(
+        logs.retained_bytes as usize,
+        colui_app::LogByteRing::CAPACITY
+    );
+    assert!(logs.truncated);
+    assert!(logs.text.ends_with("newest-marker"));
+}
+
+#[tokio::test]
+async fn standalone_inventory_exposes_published_tcp_binding() {
+    if !docker_available().await {
+        eprintln!("SKIP: local Docker daemon unavailable");
+        return;
+    }
+
+    let fixture = TempComposeFixture::new(false);
+    let id = fixture
+        .run_standalone("sleep 300", &["-p", "127.0.0.1::8080"])
+        .await;
+    let _cleanup = StandaloneCleanupGuard::new(id.clone());
+    let gateway = RuntimeGateway::new(Box::new(ComposeProcessRunner::default()));
+    fixture.connect_session(&gateway).await;
+    let containers = gateway.list_containers().await.unwrap();
+    let container = containers
+        .iter()
+        .find(|container| container.instance.id == id)
+        .expect("standalone container appears in inventory");
+
+    assert!(container.compose.is_none());
+    assert!(container.instance.published_ports.iter().any(|binding| {
+        binding.host_ip.as_deref() == Some("127.0.0.1")
+            && binding.host_port.is_some_and(|port| port > 0)
+            && binding.container_port == 8080
+            && binding.protocol == "tcp"
+    }));
 }
 
 struct WallClock;
@@ -181,6 +287,19 @@ impl ProfileReader for TempComposeFixture {
     }
 }
 
+struct SingleProfile(ProjectProfile);
+impl ProfileReader for SingleProfile {
+    fn load(&self) -> colui_app::StoreFuture<'_, RegistrySnapshot> {
+        let profile = self.0.clone();
+        Box::pin(async move {
+            Ok(RegistrySnapshot {
+                registry_revision: 1,
+                profiles: vec![profile],
+            })
+        })
+    }
+}
+
 impl TempComposeFixture {
     fn new(with_worker: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
@@ -209,6 +328,83 @@ impl TempComposeFixture {
             profile,
             compose_path,
             project_name,
+        }
+    }
+
+    fn compose_path_string(&self) -> String {
+        self.compose_path.to_string_lossy().into_owned()
+    }
+
+    async fn connect_session(&self, gateway: &RuntimeGateway) -> RuntimeSessionId {
+        match gateway.connect_runtime(None).await.unwrap() {
+            RuntimeSessionState::Ready(context) => context.session_id,
+            state => panic!("expected ready Docker runtime, got {state:?}"),
+        }
+    }
+
+    async fn create_standalone(&self, command: &str, options: &[&str]) -> ContainerId {
+        self.launch_standalone("create", command, options).await
+    }
+
+    async fn run_standalone(&self, command: &str, options: &[&str]) -> ContainerId {
+        self.launch_standalone("run", command, options).await
+    }
+
+    async fn launch_standalone(&self, verb: &str, command: &str, options: &[&str]) -> ContainerId {
+        let name = format!("colui-it-{}", &Uuid::new_v4().simple().to_string()[..12]);
+        let mut args = vec![verb, "--name", &name];
+        if verb == "run" {
+            args.push("-d");
+        }
+        args.extend_from_slice(options);
+        args.extend(["alpine:3.20", "sh", "-c", command]);
+        let output = docker_command(&args).await;
+        assert!(
+            output.status.success(),
+            "docker {verb} failed: {}",
+            bounded_diagnostic(&output.stderr)
+        );
+        ContainerId(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    async fn assert_container_state(
+        &self,
+        gateway: &RuntimeGateway,
+        id: &ContainerId,
+        expected: ContainerState,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let state = gateway
+                .list_containers()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|container| container.instance.id == *id)
+                .map(|container| container.instance.state);
+            if state.as_ref() == Some(&expected) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "container state was {state:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn wait_for_container_exit(&self, id: &ContainerId) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let output =
+                docker_command(&["inspect", "--format", "{{.State.Running}}", &id.0]).await;
+            assert!(
+                output.status.success(),
+                "docker inspect failed: {}",
+                bounded_diagnostic(&output.stderr)
+            );
+            if String::from_utf8_lossy(&output.stdout).trim() == "false" {
+                return;
+            }
+            assert!(Instant::now() < deadline, "container did not exit");
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -341,6 +537,50 @@ impl TempComposeFixture {
         assert!(self.directory.path().is_dir());
         assert!(self.compose_path.is_file());
         assert_eq!(&self.profile, expected);
+    }
+}
+
+async fn docker_command(args: &[&str]) -> std::process::Output {
+    let endpoint =
+        std::env::var("DOCKER_HOST").unwrap_or_else(|_| "unix:///var/run/docker.sock".into());
+    let environment =
+        colui_adapters::runtime::build_cli_environment(&endpoint, std::env::vars().collect());
+    tokio::process::Command::new("docker")
+        .args(args)
+        .env_clear()
+        .envs(environment)
+        .output()
+        .await
+        .unwrap()
+}
+
+struct StandaloneCleanupGuard {
+    id: ContainerId,
+}
+
+impl StandaloneCleanupGuard {
+    fn new(id: ContainerId) -> Self {
+        Self { id }
+    }
+}
+
+impl Drop for StandaloneCleanupGuard {
+    fn drop(&mut self) {
+        let endpoint =
+            std::env::var("DOCKER_HOST").unwrap_or_else(|_| "unix:///var/run/docker.sock".into());
+        let environment =
+            colui_adapters::runtime::build_cli_environment(&endpoint, std::env::vars().collect());
+        let output = std::process::Command::new("docker")
+            .args(["rm", "-f", &self.id.0])
+            .env_clear()
+            .envs(environment)
+            .output();
+        if !matches!(output, Ok(output) if output.status.success()) {
+            eprintln!(
+                "CLEANUP FAILED: could not remove standalone container {}",
+                self.id.0
+            );
+        }
     }
 }
 

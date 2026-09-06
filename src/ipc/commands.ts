@@ -4,7 +4,7 @@ import * as s from './schemas';
 import type * as t from './types';
 import { decodeResponse } from './validation';
 import { AppErrorException } from './errors';
-const call = async <T>(command: string, schema: z.ZodType<T>, args?: unknown, requestSchema?: z.ZodType<unknown>): Promise<T> => { if (requestSchema) { const parsed = requestSchema.safeParse(args); if (!parsed.success) throw new AppErrorException({ code: 'profile_invalid', operation: command, subjectId: null, message: `Invalid arguments for ${command}`, details: parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ').slice(0, 500), retryable: false }); } return decodeResponse(schema, await dispatch(command, args), command); };
+const call = async <T>(command: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>, args?: unknown, requestSchema?: z.ZodType<unknown>): Promise<T> => { if (requestSchema) { const parsed = requestSchema.safeParse(args); if (!parsed.success) throw new AppErrorException({ code: 'profile_invalid', operation: command, subject: null, message: `Invalid arguments for ${command}`, details: parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ').slice(0, 500), retryable: false }); } return decodeResponse(schema, await dispatch(command, args), command); };
 export const listProfiles = () => call('list_profiles', s.profileSummarySchema.array(), undefined, z.undefined());
 export const getProfile = (profileId: string) => call('get_profile', s.profileDetailsSchema, { profileId }, s.profileIdRequestSchema);
 export const inspectProfileDraft = (draft: t.ProfileDraft) => call('inspect_profile_draft', s.profileValidationSchema, draft, s.profileDraftSchema);
@@ -23,3 +23,18 @@ export const applyProject = (profileId: string) => lifecycle('apply_project', pr
 export const stopProject = (profileId: string) => lifecycle('stop_project', profileId);
 export const tearDownProject = (profileId: string) => lifecycle('tear_down_project', profileId);
 export const restartProject = (profileId: string) => lifecycle('restart_project', profileId);
+
+export const listDiscoveryCandidates = () => call('list_discovery_candidates', s.discoveryListSchema, undefined, z.undefined());
+export const getAutoRegistrationConfiguration = () => call('get_auto_registration_configuration', s.autoRegistrationConfigurationSchema, undefined, z.undefined());
+export const configureAutoRegistration = (request: t.ConfigureAutoRegistrationRequest) => call('configure_auto_registration', s.autoRegistrationConfigurationSchema, { request }, z.object({ request: s.configureAutoRegistrationRequestSchema }));
+export const ignoreCandidate = (request: t.IgnoreCandidateRequest) => call('ignore_candidate', z.boolean(), { request }, z.object({ request: s.ignoreCandidateRequestSchema }));
+export const registerCandidate = (request: t.RegisterCandidateRequest) => call('register_candidate', s.profileSummarySchema, { request }, z.object({ request: s.registerCandidateRequestSchema }));
+export const autoRegisterCandidates = (request: t.AutoRegistrationRequest) => call('auto_register_candidates', s.autoRegistrationResultSchema, { request }, z.object({ request: s.autoRegistrationRequestSchema }));
+export const getDiagnostics = () => call('get_diagnostics', s.diagnosticsSnapshotSchema, undefined, z.undefined());
+export const disconnectRuntime = () => call('disconnect_runtime', s.runtimeStateSchema, undefined, z.undefined());
+export const reconnectRuntime = () => call('reconnect_runtime', s.reconnectResultSchema, undefined, z.undefined());
+export const createRegistryBackup = () => call('create_registry_backup', s.registrySnapshotIdentitySchema, undefined, z.undefined());
+export const restoreRegistryBackup = () => call('restore_registry_backup', s.profileSummarySchema.array(), undefined, z.undefined());
+export const runContainerAction = (request: t.ContainerActionRequest) => call('run_container_action', s.containerActionResultSchema, { request }, z.object({ request: s.containerActionRequestSchema }));
+export const getContainerLogs = (request: t.ContainerLogsRequest) => call('get_container_logs', s.containerLogsSchema, { request }, z.object({ request: s.containerLogsRequestSchema }));
+export const openContainerPort = (request: t.OpenContainerPortRequest) => call('open_container_port', s.unitSchema, { request }, z.object({ request: s.openContainerPortRequestSchema }));

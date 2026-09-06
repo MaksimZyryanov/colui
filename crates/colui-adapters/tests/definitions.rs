@@ -3,9 +3,10 @@ use colui_adapters::runtime::ComposeExecutionGate;
 use colui_adapters::OperationLockManager;
 use colui_app::{
     project_status_from_inventory_and_definition_projection, Clock, ComposeInvocation,
-    ComposeProcessResult, ComposeRunner, DefinitionBusy, DefinitionLoadGuard, DefinitionReader,
-    DefinitionRefresher, LifecycleOperationGuard, OperationFuture, OperationKind,
-    OperationLockManager as OperationLockManagerPort, RuntimeFuture, RuntimeStateReader,
+    ComposeProcessResult, ComposeRunner, DefinitionBusy, DefinitionDiagnosticsReader,
+    DefinitionLoadGuard, DefinitionReader, DefinitionRefresher, LifecycleOperationGuard,
+    OperationFuture, OperationKind, OperationLockManager as OperationLockManagerPort,
+    ProfileReader, RegistrySnapshot, RuntimeFuture, RuntimeStateReader, StoreFuture,
 };
 use colui_domain::{
     AppErrorCode, DaemonFingerprint, DefinitionState, DisplayName, DockerEndpoint, ProfileDraft,
@@ -37,6 +38,19 @@ impl Clock for TestClock {
 struct Runner {
     output: String,
     calls: AtomicUsize,
+}
+
+struct Profiles(ProjectProfile);
+impl ProfileReader for Profiles {
+    fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
+        let profile = self.0.clone();
+        Box::pin(async move {
+            Ok(RegistrySnapshot {
+                registry_revision: profile.revision.value(),
+                profiles: vec![profile],
+            })
+        })
+    }
 }
 
 struct SequenceRunner {
@@ -98,7 +112,9 @@ impl ComposeRunner for Runner {
 #[tokio::test]
 async fn changed_profile_revision_does_not_return_old_services_when_busy() {
     let runner = Runner::new(r#"{"services":{"old":{"image":"old"}}}"#);
-    let locks = Arc::new(OperationLockManager::new());
+    let locks = Arc::new(OperationLockManager::new(
+        std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+    ));
     let clock = Arc::new(TestClock {
         mono: Arc::new(0.into()),
     });
@@ -108,6 +124,7 @@ async fn changed_profile_revision_does_not_return_old_services_when_busy() {
         clock,
         locks.clone(),
         Arc::new(ComposeExecutionGate::new()),
+        Arc::new(Profiles(profile(2))),
     );
     let old = profile(1);
     cache.refresh_definition(old.clone()).await.unwrap();
@@ -117,8 +134,8 @@ async fn changed_profile_revision_does_not_return_old_services_when_busy() {
         .unwrap();
     let newer = profile(2);
     let definition = cache.definition(newer).await.unwrap();
-    assert_eq!(definition.definition.state, DefinitionState::Unchecked);
-    assert!(definition.definition.services.is_empty());
+    assert_eq!(definition.definition.state, DefinitionState::Stale);
+    assert_eq!(definition.definition.services[0].name, "old");
     assert_eq!(
         definition.error.unwrap().code,
         AppErrorCode::OperationConflict
@@ -194,7 +211,9 @@ async fn failed_refresh_retains_services_as_stale_and_success_clears_error() {
     assert_eq!(failed.definition.services[0].name, "web");
     assert_eq!(failed.error.unwrap().code, AppErrorCode::DefinitionFailed);
 
-    let locks = Arc::new(OperationLockManager::new());
+    let locks = Arc::new(OperationLockManager::new(
+        std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+    ));
     let busy_runner = SequenceRunner::new(vec![
         success(r#"{"services":{"web":{"image":"nginx"}}}"#),
         failure(),
@@ -207,6 +226,7 @@ async fn failed_refresh_retains_services_as_stale_and_success_clears_error() {
         }),
         locks.clone(),
         Arc::new(ComposeExecutionGate::new()),
+        Arc::new(Profiles(profile(1))),
     );
     busy_cache.refresh_definition(profile(1)).await.unwrap();
     busy_cache.refresh_definition(profile(1)).await.unwrap();
@@ -263,8 +283,11 @@ fn cache(runner: Arc<dyn ComposeRunner>, clock: Arc<TestClock>) -> DefinitionCac
         runner,
         Arc::new(Runtime),
         clock,
-        Arc::new(OperationLockManager::new()),
+        Arc::new(OperationLockManager::new(
+            std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+        )),
         Arc::new(ComposeExecutionGate::new()),
+        Arc::new(Profiles(profile(1))),
     )
 }
 
@@ -469,12 +492,14 @@ async fn invalidation_discards_late_load_and_next_access_reloads() {
 async fn profile_revision_change_during_load_discards_old_result() {
     let runner = RevisionRaceRunner::new();
     let clock = RevisionRaceClock::new();
+    let current_profile = Arc::new(Mutex::new(profile(1)));
     let cache = Arc::new(DefinitionCache::new(
         runner.clone(),
         Arc::new(Runtime),
         clock.clone(),
         Arc::new(PermissiveLocks),
         Arc::new(ComposeExecutionGate::new()),
+        Arc::new(MutableProfiles(current_profile.clone())),
     ));
     let old_load = tokio::spawn({
         let cache = cache.clone();
@@ -485,6 +510,7 @@ async fn profile_revision_change_during_load_discards_old_result() {
     runner.release_old.notify_one();
     clock.old_completed.notified().await;
 
+    *current_profile.lock().unwrap() = profile(2);
     let current = cache.definition(profile(2)).await.unwrap();
     assert_eq!(current.definition.services[0].name, "new");
     assert!(current.error.is_none());
@@ -538,7 +564,9 @@ impl ComposeRunner for RecordingRunner {
 #[tokio::test]
 async fn lifecycle_busy_returns_unchecked_without_running_compose() {
     let runner = Runner::new(r#"{"services":{}}"#);
-    let locks = Arc::new(OperationLockManager::new());
+    let locks = Arc::new(OperationLockManager::new(
+        std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
+    ));
     let guard = locks
         .acquire_lifecycle(profile(1).id.clone(), OperationKind::Apply)
         .await
@@ -551,6 +579,7 @@ async fn lifecycle_busy_returns_unchecked_without_running_compose() {
         }),
         locks,
         Arc::new(ComposeExecutionGate::new()),
+        Arc::new(Profiles(profile(1))),
     );
     let definition = cache.definition(profile(1)).await.unwrap();
     assert_eq!(definition.definition.state, DefinitionState::Unchecked);
@@ -560,4 +589,142 @@ async fn lifecycle_busy_returns_unchecked_without_running_compose() {
     );
     assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
     drop(guard);
+}
+
+struct MutableProfiles(Arc<Mutex<ProjectProfile>>);
+impl ProfileReader for MutableProfiles {
+    fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
+        let profile = self.0.lock().unwrap().clone();
+        Box::pin(async move {
+            Ok(RegistrySnapshot {
+                registry_revision: profile.revision.value(),
+                profiles: vec![profile],
+            })
+        })
+    }
+
+    fn load_canonical(
+        &self,
+    ) -> StoreFuture<
+        '_,
+        (
+            RegistrySnapshot,
+            Option<colui_app::RegistrySnapshotIdentity>,
+        ),
+    > {
+        let profile = self.0.lock().unwrap().clone();
+        Box::pin(async move {
+            let marker = if profile.working_directory == std::path::Path::new("/tmp/restored") {
+                '2'
+            } else {
+                '1'
+            };
+            Ok((
+                RegistrySnapshot {
+                    registry_revision: profile.revision.value(),
+                    profiles: vec![profile],
+                },
+                Some(colui_app::RegistrySnapshotIdentity {
+                    registry_revision: 1,
+                    canonical_content_sha256: marker.to_string().repeat(64),
+                }),
+            ))
+        })
+    }
+}
+
+struct RestoreBeforeDefinitionLease {
+    current: Arc<Mutex<ProjectProfile>>,
+    restored: ProjectProfile,
+}
+impl colui_app::OperationLockReader for RestoreBeforeDefinitionLease {
+    fn is_busy(&self, _: &ProfileId) -> bool {
+        false
+    }
+}
+impl OperationLockManagerPort for RestoreBeforeDefinitionLease {
+    fn acquire_lifecycle(
+        &self,
+        _: ProfileId,
+        _: OperationKind,
+    ) -> OperationFuture<'_, LifecycleOperationGuard> {
+        unreachable!()
+    }
+
+    fn acquire_definition(&self, _: ProfileId) -> Result<DefinitionLoadGuard, DefinitionBusy> {
+        *self.current.lock().unwrap() = self.restored.clone();
+        Ok(DefinitionLoadGuard::new(|| {}))
+    }
+}
+
+#[tokio::test]
+async fn restore_between_stale_read_and_definition_lease_uses_current_profile_only() {
+    let stale = profile(1);
+    let mut restored = profile(2);
+    restored.working_directory = PathBuf::from("/tmp/restored");
+    let current = Arc::new(Mutex::new(stale.clone()));
+    let invocations = Arc::new(Mutex::new(Vec::new()));
+    let cache = DefinitionCache::new(
+        Arc::new(RecordingRunner(invocations.clone())),
+        Arc::new(Runtime),
+        Arc::new(TestClock {
+            mono: Arc::new(0.into()),
+        }),
+        Arc::new(RestoreBeforeDefinitionLease {
+            current: current.clone(),
+            restored: restored.clone(),
+        }),
+        Arc::new(ComposeExecutionGate::new()),
+        Arc::new(MutableProfiles(current)),
+    );
+
+    let projection = cache.definition(stale).await.unwrap();
+
+    assert_eq!(
+        invocations.lock().unwrap()[0].working_directory,
+        restored.working_directory
+    );
+    assert_eq!(projection.definition.profile_id, restored.id);
+    assert_eq!(
+        cache.definition_diagnostics().await.unwrap().profiles.len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn changed_sha_with_reused_revision_invalidates_cached_definition() {
+    let old = profile(1);
+    let current = Arc::new(Mutex::new(old.clone()));
+    let runner = SequenceRunner::new(vec![
+        success(r#"{"services":{"old":{"image":"old"}}}"#),
+        success(r#"{"services":{"new":{"image":"new"}}}"#),
+    ]);
+    let cache = DefinitionCache::new(
+        runner.clone(),
+        Arc::new(Runtime),
+        Arc::new(TestClock {
+            mono: Arc::new(0.into()),
+        }),
+        Arc::new(PermissiveLocks),
+        Arc::new(ComposeExecutionGate::new()),
+        Arc::new(MutableProfiles(current.clone())),
+    );
+    assert_eq!(
+        cache
+            .definition(old.clone())
+            .await
+            .unwrap()
+            .definition
+            .services[0]
+            .name,
+        "old"
+    );
+    let mut restored = old.clone();
+    restored.working_directory = PathBuf::from("/tmp/restored");
+    *current.lock().unwrap() = restored;
+
+    let after_restore = cache.definition(old).await.unwrap();
+
+    assert_eq!(after_restore.definition.services[0].name, "new");
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
 }

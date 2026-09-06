@@ -1,0 +1,9 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "enum": [
+    "runtime_observation",
+    "registered_profile"
+  ],
+  "title": "DiscoveryConflictSourceDto",
+  "type": "string"
+}

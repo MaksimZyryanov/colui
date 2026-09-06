@@ -3,46 +3,85 @@ use colui_app::GetProjectStatus;
 use colui_domain::{AppError, AppErrorCode, ProfileId, RuntimeSessionState};
 use tauri::State;
 
-pub(crate) fn map_runtime_state(
-    state: RuntimeSessionState,
-    operation: &str,
-) -> Result<RuntimeStateDto, AppErrorDto> {
+fn map_runtime_state(state: RuntimeSessionState) -> Result<RuntimeStateDto, AppError> {
     match state {
-        RuntimeSessionState::ContextMismatch(details) => Err(AppErrorDto::from(
-            AppError::new(
-                AppErrorCode::RuntimeContextMismatch,
-                operation,
-                None,
-                "Runtime context mismatch",
-            )
-            .with_details(format!("Runtime endpoint: {}", details.endpoint.as_str())),
-        )),
-        RuntimeSessionState::Failed(error) => Err(error.into()),
+        RuntimeSessionState::Failed(error) => Err(error),
         state => Ok(state.into()),
     }
 }
 
 #[tauri::command]
 pub async fn get_runtime_state(state: State<'_, AppState>) -> Result<RuntimeStateDto, AppErrorDto> {
-    map_runtime_state(
-        state
-            .runtime
-            .session_state()
-            .await
-            .map_err(AppErrorDto::from)?,
-        "get_runtime_state",
-    )
+    Ok(state
+        .runtime
+        .session_state()
+        .await
+        .map_err(AppErrorDto::from)?
+        .into())
 }
 #[tauri::command]
 pub async fn connect_runtime(state: State<'_, AppState>) -> Result<RuntimeStateDto, AppErrorDto> {
-    map_runtime_state(
-        state
-            .runtime
-            .connect_runtime(None)
-            .await
-            .map_err(AppErrorDto::from)?,
-        "connect_runtime",
-    )
+    use colui_app::JournalEventKind as K;
+    use ApplicationStateScopeDto as S;
+    state
+        .journaled(
+            [K::ConnectStarted, K::ConnectSucceeded, K::ConnectFailed],
+            None,
+            &[S::Runtime, S::Discovery, S::Diagnostics],
+            async {
+                let runtime = state.runtime.connect_runtime(None).await?;
+                map_runtime_state(runtime)
+            },
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn disconnect_runtime(
+    state: State<'_, AppState>,
+) -> Result<RuntimeStateDto, AppErrorDto> {
+    use colui_app::JournalEventKind as K;
+    use ApplicationStateScopeDto as S;
+    state
+        .journaled(
+            [
+                K::DisconnectStarted,
+                K::DisconnectSucceeded,
+                K::DisconnectFailed,
+            ],
+            None,
+            &[S::Runtime, S::Discovery, S::Diagnostics],
+            async {
+                state.runtime.disconnect_runtime().await?;
+                Ok(RuntimeStateDto::Disconnected)
+            },
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn reconnect_runtime(
+    state: State<'_, AppState>,
+) -> Result<ReconnectResultDto, AppErrorDto> {
+    use colui_app::JournalEventKind as K;
+    use ApplicationStateScopeDto as S;
+    state
+        .journaled(
+            [
+                K::ReconnectStarted,
+                K::ReconnectSucceeded,
+                K::ReconnectFailed,
+            ],
+            None,
+            &[S::Runtime, S::Discovery, S::Diagnostics],
+            async {
+                colui_app::ReconnectRuntime::new(state.runtime.as_ref(), state.inventory.as_ref())
+                    .execute(None)
+                    .await
+                    .map(Into::into)
+            },
+        )
+        .await
 }
 #[tauri::command]
 pub async fn get_project_status(
@@ -73,34 +112,26 @@ mod tests {
 
     #[test]
     fn maps_failed_runtime_state_to_typed_error() {
-        let result = map_runtime_state(
-            RuntimeSessionState::Failed(AppError::new(
-                AppErrorCode::RuntimeUnavailable,
-                "connect_runtime",
-                None,
-                "runtime unavailable",
-            )),
+        let result = map_runtime_state(RuntimeSessionState::Failed(AppError::new(
+            AppErrorCode::RuntimeUnavailable,
             "connect_runtime",
-        );
-        assert_eq!(
-            result.unwrap_err().code,
-            super::AppErrorCodeDto::RuntimeUnavailable
-        );
+            None,
+            "runtime unavailable",
+        )));
+        assert_eq!(result.unwrap_err().code, AppErrorCode::RuntimeUnavailable);
     }
 
     #[test]
-    fn maps_context_mismatch_to_typed_error() {
+    fn maps_context_mismatch_to_structured_state() {
         let mismatch = colui_domain::MismatchDetails::new(
             "mock://runtime".try_into().unwrap(),
             colui_domain::DaemonFingerprint::new("api", "1", "test", "test"),
             colui_domain::DaemonFingerprint::new("cli", "2", "test", "test"),
         );
-        let result = map_runtime_state(
-            RuntimeSessionState::ContextMismatch(mismatch),
-            "get_runtime_state",
-        );
-        let error = result.unwrap_err();
-        assert_eq!(error.code, super::AppErrorCodeDto::RuntimeContextMismatch);
-        assert_eq!(error.operation, "get_runtime_state");
+        let result = map_runtime_state(RuntimeSessionState::ContextMismatch(mismatch));
+        let value = serde_json::to_value(result.unwrap()).unwrap();
+        assert_eq!(value["state"], "contextMismatch");
+        assert_eq!(value["details"]["apiFingerprint"]["daemonId"], "api");
+        assert_eq!(value["details"]["cliFingerprint"]["daemonId"], "cli");
     }
 }

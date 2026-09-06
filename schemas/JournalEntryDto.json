@@ -1,0 +1,160 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AppErrorCodeDto": {
+      "enum": [
+        "runtime_unavailable",
+        "runtime_connection_failed",
+        "runtime_context_mismatch",
+        "candidate_stale",
+        "discovery_conflict",
+        "profile_not_found",
+        "profile_already_registered",
+        "profile_revision_conflict",
+        "profile_invalid",
+        "definition_failed",
+        "compose_failed",
+        "container_operation_failed",
+        "operation_conflict",
+        "operation_timeout",
+        "registry_corrupt",
+        "registry_locked",
+        "registry_write_failed",
+        "recovery_conflict",
+        "permission_denied",
+        "protocol_mismatch"
+      ],
+      "type": "string"
+    },
+    "AppErrorSubjectDto": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/AppErrorSubjectKindDto"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AppErrorSubjectKindDto": {
+      "enum": [
+        "profile",
+        "candidate",
+        "container",
+        "registry"
+      ],
+      "type": "string"
+    },
+    "JournalEventKindDto": {
+      "enum": [
+        "connect_started",
+        "connect_succeeded",
+        "connect_failed",
+        "disconnect_started",
+        "disconnect_succeeded",
+        "disconnect_failed",
+        "reconnect_started",
+        "reconnect_succeeded",
+        "reconnect_failed",
+        "manual_registration_started",
+        "manual_registration_succeeded",
+        "manual_registration_failed",
+        "auto_registration_started",
+        "auto_registration_succeeded",
+        "auto_registration_failed",
+        "backup_started",
+        "backup_succeeded",
+        "backup_failed",
+        "restore_started",
+        "restore_succeeded",
+        "restore_failed",
+        "profile_lifecycle_started",
+        "profile_lifecycle_succeeded",
+        "profile_lifecycle_failed",
+        "container_action_started",
+        "container_action_succeeded",
+        "container_action_failed",
+        "candidate_ignored"
+      ],
+      "type": "string"
+    },
+    "JournalSeverityDto": {
+      "enum": [
+        "info",
+        "error"
+      ],
+      "type": "string"
+    },
+    "UuidSchema": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "errorCode": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AppErrorCodeDto"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "$ref": "#/definitions/JournalEventKindDto"
+    },
+    "message": {
+      "maxLength": 500,
+      "type": "string"
+    },
+    "runtimeSessionId": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/UuidSchema"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "sequence": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "severity": {
+      "$ref": "#/definitions/JournalSeverityDto"
+    },
+    "subject": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AppErrorSubjectDto"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "timestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "message",
+    "sequence",
+    "severity",
+    "timestamp"
+  ],
+  "title": "JournalEntryDto",
+  "type": "object"
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "containerId": {
+      "type": "string"
+    },
+    "observedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "retainedBytes": {
+      "format": "uint32",
+      "maximum": 262144.0,
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "text": {
+      "type": "string"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "containerId",
+    "observedAt",
+    "retainedBytes",
+    "text",
+    "truncated"
+  ],
+  "title": "ContainerLogsDto",
+  "type": "object"
+}

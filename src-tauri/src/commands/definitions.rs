@@ -1,6 +1,6 @@
 use crate::{dto::*, AppState};
 use colui_app::{
-    project_status_from_inventory_and_definition_projection, DefinitionReader, DefinitionRefresher,
+    project_status_from_registry_inventory_and_definition, DefinitionReader, DefinitionRefresher,
     GetProfile, InventoryReader, ProfileReader,
 };
 use colui_domain::{AppError, AppErrorCode, ProfileId};
@@ -43,10 +43,21 @@ where
     D: DefinitionReader + ?Sized,
     I: InventoryReader + ?Sized,
 {
-    let profile = GetProfile::new(profiles)
-        .execute(id(request.profile_id, "get_project_details")?)
-        .await
-        .map_err(AppErrorDto::from)?;
+    let profile_id = id(request.profile_id, "get_project_details")?;
+    let registry = profiles.load().await.map_err(AppErrorDto::from)?;
+    let profile = registry
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .cloned()
+        .ok_or_else(|| {
+            AppErrorDto::from(AppError::new(
+                AppErrorCode::ProfileNotFound,
+                "get_project_details",
+                Some(profile_id),
+                "profile not found",
+            ))
+        })?;
     let definition = definitions
         .definition(profile.clone())
         .await
@@ -55,8 +66,12 @@ where
         .current_inventory()
         .await
         .map_err(AppErrorDto::from)?;
-    let status =
-        project_status_from_inventory_and_definition_projection(&profile, inventory, &definition);
+    let status = project_status_from_registry_inventory_and_definition(
+        &profile,
+        &registry,
+        inventory,
+        Some(definition.definition.clone()),
+    );
     Ok(ProjectDetailsResponseDto {
         profile: profile.into(),
         definition: definition.into(),
