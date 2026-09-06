@@ -38,8 +38,8 @@ describe('DiagnosticsView', () => {
       ...base,
       runtime: { state: { state: 'disconnected' }, resolvedEndpoint: null, apiFingerprint: null, cliFingerprint: null, sessionId: null, connectedAt: null },
       import: { sourcePath: '/legacy/projects.json', importedCount: 2, sourcePreserved: true, error: { code: 'registry_corrupt', operation: 'import_registry', subject: { kind: 'registry', id: 'legacy' }, message: 'Import failed', retryable: false } },
-      definitions: { generation: 4, profiles: [{ profileId: '00000000-0000-0000-0000-000000000001', definition: { profileId: '00000000-0000-0000-0000-000000000001', definitionRevision: 'abc', loadedAt: '2026-09-05T10:00:00.000Z', state: 'stale', services: [], issues: [] }, error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: '00000000-0000-0000-0000-000000000001' }, message: 'Definition failed', retryable: true } }] },
-      journal: { entries: [{ sequence: 7, timestamp: '2026-09-05T11:00:00.000Z', runtimeSessionId: null, kind: 'restore_failed', severity: 'error', subject: { kind: 'registry', id: 'canonical' }, errorCode: 'recovery_conflict', message: 'Registry restore failed' }] },
+      definitions: { generation: 4, profiles: [{ profileId: '00000000-0000-0000-0000-000000000001', definition: { profileId: '00000000-0000-0000-0000-000000000001', definitionRevision: 'abc', loadedAt: '2026-09-05T10:00:00.000Z', state: 'stale', services: [], issues: [{ field: 'composeFiles', message: 'Compose file missing' }] }, error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: '00000000-0000-0000-0000-000000000001' }, message: 'Definition failed', retryable: true } }] },
+      journal: { entries: [{ sequence: 7, timestamp: '2026-09-05T11:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', kind: 'restore_failed', severity: 'error', subject: { kind: 'registry', id: 'canonical' }, errorCode: 'recovery_conflict', message: 'Registry restore failed' }] },
     });
 
     render(<QueryClientProvider client={client}><DiagnosticsView /></QueryClientProvider>);
@@ -48,12 +48,35 @@ describe('DiagnosticsView', () => {
     expect(screen.getByText('/legacy/projects.json')).toBeVisible();
     expect(screen.getByText('registry_corrupt')).toBeVisible();
     expect(screen.getByRole('heading', { name: 'Definitions' })).toBeVisible();
-    expect(screen.getByText('00000000-0000-0000-0000-000000000001').closest('li')).toHaveTextContent('Stale');
+    const profile = screen.getByRole('listitem', { name: 'Definition profile 00000000-0000-0000-0000-000000000001' });
+    expect(profile).toHaveTextContent('Stale');
+    expect(profile).toHaveTextContent('composeFiles');
+    expect(profile).toHaveTextContent('Compose file missing');
     expect(screen.getByText('definition_failed')).toBeVisible();
     expect(screen.getByRole('heading', { name: 'Journal' })).toBeVisible();
-    expect(screen.getByText('2026-09-05T11:00:00.000Z')).toBeVisible();
-    expect(screen.getByText(/registry: canonical/i)).toBeVisible();
-    expect(screen.getByText('recovery_conflict')).toBeVisible();
+    const journalEntry = screen.getByRole('listitem', { name: 'Journal entry 7' });
+    expect(journalEntry).toHaveTextContent('2026-09-05T11:00:00.000Z');
+    expect(journalEntry).toHaveTextContent(/registry: canonical/i);
+    expect(journalEntry).toHaveTextContent('recovery_conflict');
+    expect(journalEntry).toHaveTextContent('Error');
+    expect(journalEntry).toHaveTextContent('00000000-0000-0000-0000-000000000099');
+  });
+
+  it('labels empty definition issues and nullable journal metadata clearly', async () => {
+    const base = await mockBackend.invoke('get_diagnostics') as Record<string, unknown>;
+    client.setQueryData(diagnosticsKeys.snapshot(), {
+      ...base,
+      definitions: { generation: 1, profiles: [{ profileId: '00000000-0000-0000-0000-000000000001', definition: { profileId: '00000000-0000-0000-0000-000000000001', definitionRevision: 'abc', loadedAt: '2026-09-05T10:00:00.000Z', state: 'valid', services: [], issues: [] }, error: null }] },
+      journal: { entries: [{ sequence: 8, timestamp: '2026-09-05T12:00:00.000Z', runtimeSessionId: null, kind: 'candidate_ignored', severity: 'info', subject: null, errorCode: null, message: 'Candidate ignored' }] },
+    });
+
+    render(<QueryClientProvider client={client}><DiagnosticsView /></QueryClientProvider>);
+
+    expect(await screen.findByRole('listitem', { name: 'Definition profile 00000000-0000-0000-0000-000000000001' })).toHaveTextContent('No definition issues');
+    const journalEntry = screen.getByRole('listitem', { name: 'Journal entry 8' });
+    expect(journalEntry).toHaveTextContent('Info');
+    expect(journalEntry).toHaveTextContent('No runtime session');
+    expect(journalEntry).toHaveTextContent('No subject');
   });
 
   it('explains context mismatch with endpoint and both fingerprints', async () => {
