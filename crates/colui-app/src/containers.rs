@@ -332,13 +332,13 @@ where
             || current.freshness != InventoryFreshness::Fresh
             || current.runtime_session_id != Some(expected_session)
             || !current
-                .standalone_containers
+                .containers
                 .iter()
                 .any(|value| value.id == container_id)
         {
             return Err(container_operation_error(
                 &container_id,
-                "fresh standalone container required",
+                "fresh container observation required",
             ));
         }
         self.check_session(&container_id, expected_session).await?;

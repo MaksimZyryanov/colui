@@ -303,7 +303,7 @@ impl Fixture {
         inventory.generation = 7;
         inventory.freshness = InventoryFreshness::Fresh;
         inventory.runtime_session_id = Some(session(1));
-        inventory.standalone_containers.push(ContainerInstance {
+        let container = ContainerInstance {
             id: ContainerId("abc".into()),
             name: "standalone".into(),
             image: "alpine".into(),
@@ -311,7 +311,9 @@ impl Fixture {
             status_text: "exited".into(),
             service_name: None,
             published_ports: vec![],
-        });
+        };
+        inventory.containers.push(container.clone());
+        inventory.standalone_containers.push(container);
         Self {
             state: Mutex::new(session(1)),
             inventory: Mutex::new(inventory),
@@ -471,10 +473,9 @@ async fn expected_session_mismatch_rejects_before_lease() {
 }
 
 #[tokio::test]
-async fn fresh_standalone_membership_and_matching_inventory_session_required_under_lease() {
+async fn fresh_container_membership_and_matching_inventory_session_required_under_lease() {
     for case in [
         "missing",
-        "compose",
         "stale",
         "unavailable",
         "old_session",
@@ -484,9 +485,8 @@ async fn fresh_standalone_membership_and_matching_inventory_session_required_und
         {
             let mut i = f.inventory.lock().unwrap();
             match case {
-                "missing" => i.standalone_containers.clear(),
-                "compose" => {
-                    i.containers = i.standalone_containers.clone();
+                "missing" => {
+                    i.containers.clear();
                     i.standalone_containers.clear();
                 }
                 "stale" => i.freshness = InventoryFreshness::Stale,
@@ -500,6 +500,18 @@ async fn fresh_standalone_membership_and_matching_inventory_session_required_und
         assert_eq!(f.acquisitions.load(Ordering::SeqCst), 1, "{case}");
         assert_eq!(f.actions.load(Ordering::SeqCst), 0, "{case}");
     }
+}
+
+#[tokio::test]
+async fn fresh_compose_container_can_be_controlled() {
+    let f = Fixture::new();
+    f.inventory.lock().unwrap().standalone_containers.clear();
+
+    let result = f.execute(session(1)).await.unwrap();
+
+    assert_eq!(result.container_id.0, "abc");
+    assert_eq!(f.actions.load(Ordering::SeqCst), 1);
+    assert_eq!(f.refreshes.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
