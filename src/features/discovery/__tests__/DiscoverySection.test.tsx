@@ -16,13 +16,13 @@ describe('DiscoverySection', () => {
   beforeEach(() => { client.clear(); mockBackend.reset(); });
   afterEach(cleanup);
 
-  it('labels every candidate class and exposes manual actions only when eligible', async () => {
+  it('labels actionable candidate classes and omits already registered observations', async () => {
     mockBackend.setResponseOverride('list_discovery_candidates', { candidates: [candidate('1', 'new_unambiguous'), candidate('2', 'name_conflict'), candidate('3', 'incomplete_metadata'), candidate('4', 'already_registered')], autoRegistrationEnabled: false });
     render(<QueryClientProvider client={client}><DiscoverySection runtimeSessionId={session} inventoryGeneration={4} registryHealth={null} /></QueryClientProvider>);
     expect(await screen.findByText('New project')).toBeVisible();
     expect(screen.getByText('Name conflict')).toBeVisible();
     expect(screen.getByText('Incomplete metadata')).toBeVisible();
-    expect(screen.getByText('Already registered')).toBeVisible();
+    expect(screen.queryByText('Already registered')).not.toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /^Register .*app$/ })).toHaveLength(1);
   });
 

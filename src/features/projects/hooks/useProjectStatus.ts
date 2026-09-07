@@ -13,10 +13,10 @@ export function projectStatusFromInventory(profile: ProfileSummary, inventory: R
   return { profileId: profile.id, runtime: { presence, activity: presence === 'present' ? running === containers.length && running > 0 ? 'all-running' : running > 0 ? 'mixed' : 'none-running' : null, containerCount: containers.length, runningContainerCount: running, observedAt: presence === 'present' ? inventory.observedAt : null }, definition: { state: 'unchecked', revision: null, serviceCount: null }, operation: null, issues: inventory.error ? [{ message: inventory.error.message }] : [] };
 }
 
-export function useProjectStatus(profile: ProfileSummary, sharedInventory?: QueryObserverResult<RuntimeInventory>, enabled = true) {
+export function useProjectStatus(profile: ProfileSummary, sharedInventory?: QueryObserverResult<RuntimeInventory>, enabled = true, definitionEnabled = true) {
   const ownedInventory = useInventory({ owner: enabled && !sharedInventory });
   const inventory = sharedInventory ?? ownedInventory;
-  const details = useQuery({ queryKey: projectKeys.definition(profile.id), queryFn: () => getProjectDetails(profile.id) });
+  const details = useQuery({ queryKey: projectKeys.definition(profile.id), queryFn: () => getProjectDetails(profile.id), enabled: definitionEnabled });
   const data = inventory.data ? projectStatusFromInventory(profile, inventory.data) : undefined;
   if (data && details.data) {
     data.definition = { state: details.data.definition.state, revision: details.data.definition.definitionRevision ?? null, serviceCount: details.data.definition.services.length };

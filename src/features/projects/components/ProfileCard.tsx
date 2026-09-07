@@ -17,8 +17,9 @@ const unavailableStatus = (profileId: string): ProjectStatus => ({ profileId, ru
 export function ProfileCard({ profile, initialStatus, runtimeReady, inventory }: { profile: ProfileSummary; initialStatus?: ProjectStatus; runtimeReady?: boolean; inventory?: QueryObserverResult<RuntimeInventory> }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
-  const status = useProjectStatus(profile, inventory, !initialStatus);
   const runtime = useRuntimeState();
+  const isRuntimeReady = runtimeReady ?? runtime.data?.state === 'ready';
+  const status = useProjectStatus(profile, inventory, !initialStatus, Boolean(initialStatus) || isRuntimeReady);
   const details = useProfile(editing ? profile.id : undefined);
   const projectedStatus = initialStatus ?? status.data ?? (status.isError ? unavailableStatus(profile.id) : undefined);
   const label = projectedStatus ? projectStatusLabel(projectedStatus) : 'Loading status';
@@ -28,7 +29,7 @@ export function ProfileCard({ profile, initialStatus, runtimeReady, inventory }:
     status={<span aria-label="Project status"><ResourceStatus label={label} tone={label === 'Running' ? 'running' : label === 'Stopped' ? 'stopped' : label === 'Invalid definition' || label === 'Partially running' ? 'warning' : 'unknown'} /></span>}
     actions={<>
       <Button iconOnly title="Edit project" onClick={() => setEditing(true)} aria-label={`Edit ${profile.displayName}`}>✎</Button>
-      {projectedStatus ? <><Button iconOnly title="Status details" aria-label={`${open ? 'Hide' : 'Show'} status details`} onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={`status-${profile.id}`}>ⓘ</Button><ActionMenu profileId={profile.id} revision={profile.revision} status={projectedStatus} runtimeReady={runtimeReady ?? runtime.data?.state === 'ready'} /></> : null}
+      {projectedStatus ? <><Button iconOnly title="Status details" aria-label={`${open ? 'Hide' : 'Show'} status details`} onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={`status-${profile.id}`}>ⓘ</Button><ActionMenu profileId={profile.id} revision={profile.revision} status={projectedStatus} runtimeReady={isRuntimeReady} /></> : null}
     </>}
     footer={<>
       {status.isLoading && !initialStatus ? <span role="status" aria-label="Loading project status" className="skeleton">Loading status...</span> : status.isError && !status.data && !initialStatus ? <span>Status unavailable</span> : null}

@@ -15,9 +15,9 @@ The original task leaves several details unspecified:
 - Discovery candidates provide a count and metadata, not child container objects.
   Their expansion shows the existing path, count, and conflict evidence. It does
   not infer container ownership from a possibly conflicting project name.
-- `already_registered` and ignored candidates retain their existing classification
-  and action eligibility. They are not silently deduplicated by name: different
-  candidates can have the same name and different identities or paths.
+- `already_registered` observations are omitted from the resource list because the
+  registered profile is their UI owner. Other candidates are not deduplicated by
+  name: different candidates can have the same name and different identities or paths.
 - Loading, failed queries, stale observations, no registered profiles, and no
   search matches need distinct feedback. A failed source must not announce a
   successfully loaded empty resource list.
@@ -45,6 +45,10 @@ Project status still uses `projectStatusLabel`, represented by a labelled dot.
 Ports expand separately and reuse `PortBindings` for exact backend Copy/Open values.
 Profile confirmations and container log dialogs keep their existing content and
 focus behavior. Add Project is always in the page header.
+
+Definition details load only after the runtime reaches `ready`. Inventory status and
+registered rows remain visible while the runtime connects; this prevents a transient
+`runtime_unavailable` definition result from appearing as a persistent row error.
 
 Status chips, log side panels, auto-registration persistence, and Diagnostics
 redesign remain outside this change.
