@@ -1,0 +1,88 @@
+/* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app */
+/* Hallmark · pre-emit critique: P4 H4 E3 S4 R5 V3 · browser visual QA pending */
+html,body{margin:0;overflow-x:clip}
+.colui-design,.ui-dialog,.ui-menu{font-family:var(--font-body);font-size:var(--text-sm);line-height:1.5;color:var(--color-text-primary);color-scheme:dark}
+.colui-design{background:var(--color-app-background);min-height:640px}
+.colui-design *, .ui-dialog *{box-sizing:border-box}
+.colui-design h1,.colui-design h2,.colui-design h3,.ui-dialog h2{font-family:var(--font-display);font-style:normal;overflow-wrap:anywhere;min-width:0;color:var(--color-text-primary)}
+.colui-design h1{font-size:var(--text-title);letter-spacing:-.035em;font-weight:650;margin:0}
+.colui-design h2{font-size:var(--text-lg);font-weight:600;margin:var(--space-xl) 0 var(--space-md)}
+.colui-design h3{font-size:var(--text-sm);font-weight:600;margin:0}
+.colui-design p{color:var(--color-text-secondary)}
+.colui-design .app-shell{display:grid;grid-template-columns:184px minmax(0,1fr);min-height:640px}
+.colui-design .sidebar{display:block;background:var(--color-surface-panel);color:var(--color-text-primary);padding:var(--space-xl) var(--space-md);border-right:1px solid var(--color-border-divider);height:auto;position:relative}
+.colui-design .brand{font-size:var(--text-xl);font-weight:700;letter-spacing:-.06em;margin:0 var(--space-sm) var(--space-xxl);color:var(--color-text-primary)}
+.colui-design .brand span{color:var(--color-accent)}
+.colui-design .side-nav{display:flex;flex-direction:column;gap:var(--space-xs)}
+.colui-design .side-nav a,.colui-design .mobile-nav a{color:var(--color-text-secondary);text-decoration:none;white-space:nowrap;padding:var(--space-sm) var(--space-md);border-radius:var(--radius-control);font-weight:500}
+.colui-design .side-nav a[aria-current=page],.colui-design .mobile-nav a[aria-current=page]{background:var(--color-elevated-card);color:var(--color-link-selected);box-shadow:inset 2px 0 var(--color-link-selected)}
+.colui-design .mobile-nav{display:none}
+.colui-design .app-content{min-width:0}
+.colui-design .page{padding:var(--space-xxl);max-width:1200px;margin:auto}
+.colui-design .page-heading{display:flex;justify-content:space-between;align-items:center;gap:var(--space-lg);margin-bottom:var(--space-xl)}
+.colui-design .page-heading p{margin:var(--space-xs) 0 0;font-size:var(--text-sm)}
+.colui-design .eyebrow{display:none}
+.colui-design .resource-toolbar{display:flex;flex-wrap:wrap;gap:var(--space-sm);margin-bottom:var(--space-lg)}
+.colui-design .resource-search{display:flex;flex-direction:column;gap:var(--space-sm);font-size:var(--text-xs);font-weight:500;color:var(--color-text-secondary);margin-bottom:var(--space-md)}
+.colui-design .resource-list{list-style:none;padding:0;margin:0;background:var(--color-surface-panel);color:var(--color-text-primary);border:1px solid var(--color-border-divider);border-radius:var(--radius-panel)}
+.colui-design .resource-list>li:not([hidden])~li:not([hidden]){border-top:1px solid var(--color-border-divider)}
+.colui-design .resource-row{display:flex;align-items:center;gap:var(--space-sm);padding:var(--space-md);min-height:68px;min-width:0}
+.colui-design .resource-row h3{flex:1;overflow-wrap:anywhere;min-width:0}
+.colui-design .resource-kind{font-size:var(--text-xs);font-weight:400;color:var(--color-text-secondary);background:var(--color-elevated-card);padding:var(--space-xxs) var(--space-sm);border-radius:var(--radius-small)}
+.colui-design .resource-discovered .resource-kind{border:1px dashed var(--color-neutral-idle)}
+.colui-design .resource-status{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--color-neutral-idle);flex:none}
+.colui-design .resource-status-running{background:var(--color-success)}
+.colui-design .resource-status-warning{background:var(--color-warning)}
+.colui-design .resource-status-unknown{background:transparent;border:1px solid var(--color-neutral-idle)}
+.colui-design .resource-actions,.colui-design .project-actions,.colui-design .card-actions{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-xs)}
+.colui-design .resource-actions{margin-left:auto;opacity:1}
+.colui-design .resource-indent{width:28px;flex:none}
+.colui-design .resource-children{padding:0 var(--space-md) var(--space-md) var(--space-xxl);background:var(--color-app-background);color:var(--color-text-primary);border-top:1px solid var(--color-border-divider)}
+.colui-design .resource-children .resource-row{min-height:52px;padding:var(--space-sm) 0}
+.colui-design .resource-path{font-family:var(--font-mono);font-size:var(--text-xs);overflow-wrap:anywhere;padding-top:var(--space-sm);color:var(--color-text-secondary)}
+.colui-design .resource-details,.colui-design .resource-empty{padding:var(--space-lg)}
+.colui-design .resource-notice{color:var(--color-warning);font-size:var(--text-xs)}
+.colui-design .resource-ports{padding:var(--space-sm) var(--space-lg);color:var(--color-text-secondary)}
+.colui-design .ui-button,.ui-dialog .ui-button,.ds-button{font:500 var(--text-sm)/1.25 var(--font-body);min-height:var(--control-height);border:1px solid var(--color-border-divider);border-radius:var(--radius-control);padding:var(--space-sm) var(--space-md);background:var(--color-elevated-card);color:var(--color-text-primary);cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;gap:var(--space-sm);text-decoration:none}
+.colui-design .page-heading>.ui-button,.ui-dialog button[type=submit],.ds-button-primary{background:var(--color-primary-base);color:var(--color-text-on-primary);border-color:var(--color-primary-base)}
+.colui-design .ui-button-icon{width:var(--control-height);padding:0;font-size:var(--text-lg)}
+.colui-design .resource-chevron{min-height:28px;width:28px;border:0;padding:0;background:transparent;font-size:var(--text-xl);color:var(--color-text-secondary)}
+.colui-design .resource-actions .ui-button{background:transparent;border-color:transparent;color:var(--color-text-secondary)}
+.colui-design .ui-button-destructive,.ui-dialog .ui-button-destructive,.ds-button[data-state=error]{border-color:var(--color-error-critical);color:var(--color-error-critical);background:var(--color-surface-panel);text-decoration:none}
+@media(hover:hover){.colui-design .resource-row:hover{background:var(--color-elevated-card)}.colui-design .ui-button:hover,.ui-dialog .ui-button:hover,.ds-button:hover{background:var(--color-border-divider);color:var(--color-text-primary)}.colui-design .page-heading>.ui-button:hover,.ui-dialog button[type=submit]:hover,.ds-button-primary:hover{background:var(--color-primary-hover);color:var(--color-text-on-primary)}}
+.ds-button-primary.is-hover{background:var(--color-primary-hover);color:var(--color-text-on-primary)}
+.colui-design .ui-button:active,.ui-dialog .ui-button:active,.ds-button:active,.ds-button.is-active{background:var(--color-primary-pressed);color:var(--color-text-on-primary)}
+.colui-design .ui-button:disabled,.ui-dialog .ui-button:disabled,.ds-button:disabled,.ds-input:disabled{background:var(--color-surface-panel);color:var(--color-text-disabled);border-color:var(--color-border-divider);cursor:not-allowed;opacity:1}
+.colui-design :focus-visible,.ui-dialog :focus-visible,.ui-menu :focus-visible,.ds-button.is-focus,.ds-input.is-focus{outline:2px solid var(--color-focus-ring);outline-offset:3px}
+.colui-design .ui-input,.ui-dialog .ui-input,.ds-input{width:100%;min-width:0;min-height:var(--control-height);font:400 var(--text-sm)/1.5 var(--font-body);border:1px solid var(--color-neutral-idle);border-radius:var(--radius-control);background:var(--color-app-background);color:var(--color-text-primary);padding:var(--space-sm) var(--space-md)}
+.colui-design input::placeholder,.ui-dialog input::placeholder,.ds-input::placeholder{color:var(--color-text-secondary);opacity:1}
+.colui-design [aria-invalid=true],.ui-dialog [aria-invalid=true],.ds-input[aria-invalid=true]{border-color:var(--color-error-critical)}
+.ds-button[data-state=success],.ds-input[data-state=success]{border-color:var(--color-success);color:var(--color-success)}
+.ds-button[data-state=loading]{cursor:progress}
+.colui-design .ui-card{padding:var(--space-lg);border:1px solid var(--color-border-divider);border-radius:var(--radius-panel);background:var(--color-surface-panel);color:var(--color-text-primary)}
+.colui-design .diagnostic-title{display:flex;justify-content:space-between;gap:var(--space-md);flex-wrap:wrap}
+.colui-design .diagnostic-title>span{color:var(--color-text-secondary)}
+.colui-design .diagnostic-grid{display:grid;grid-template-columns:140px minmax(0,1fr);gap:var(--space-md);font-size:var(--text-sm)}
+.colui-design dt{color:var(--color-text-secondary);font-weight:400}.colui-design dd{margin:0;overflow-wrap:anywhere;color:var(--color-text-primary)}
+.colui-design code,.ui-dialog pre{font-family:var(--font-mono);font-size:var(--text-xs);overflow-wrap:anywhere}
+.colui-design .card-actions{margin-top:var(--space-lg)}
+.colui-design .ui-alert{margin:var(--space-md) 0;padding:var(--space-md);border:1px solid var(--color-info-highlight);border-radius:var(--radius-control);color:var(--color-info-highlight);background:var(--color-surface-panel)}
+.colui-design .ui-alert-destructive{border-color:var(--color-error-critical);color:var(--color-error-critical)}
+.ui-overlay{position:fixed;inset:0;z-index:50;background:var(--color-scrim)}
+.ui-dialog{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:51;width:480px;max-width:calc(100vw - 32px);max-height:85vh;overflow:auto;padding:var(--space-xl);border:1px solid var(--color-border-divider);border-radius:var(--radius-panel);background:var(--color-elevated-card);color:var(--color-text-primary)}
+.ui-dialog h2{margin:0 0 var(--space-sm);font-size:var(--text-xl)}.ui-dialog p{color:var(--color-text-secondary)}
+.ui-dialog form{display:grid;gap:var(--space-lg)}.ui-dialog label{display:grid;gap:var(--space-sm);font-size:var(--text-sm);color:var(--color-text-primary)}
+.ui-dialog textarea{resize:vertical;min-height:96px}.ui-dialog-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:var(--space-sm);margin-top:var(--space-lg)}
+.ui-menu{padding:var(--space-xs);background:var(--color-elevated-card);color:var(--color-text-primary);border:1px solid var(--color-border-divider);border-radius:var(--radius-control);z-index:60}
+.ui-menu-item{padding:var(--space-sm) var(--space-md);cursor:pointer}.ui-menu-item[data-highlighted]{background:var(--color-border-divider);color:var(--color-text-primary)}
+.container-logs{padding:var(--space-md);background:var(--color-app-background);color:var(--color-info-highlight);white-space:pre-wrap;max-height:360px;overflow:auto}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.ds-catalog{padding:var(--space-xxl);max-width:1080px;margin:auto}.ds-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:var(--space-lg)}
+.ds-sample{padding:var(--space-lg);border:1px solid var(--color-border-divider);border-radius:var(--radius-panel);background:var(--color-surface-panel);color:var(--color-text-primary)}
+.ds-sample>p{margin:0 0 var(--space-md)}.ds-swatch{height:64px;border-radius:var(--radius-small);margin-bottom:var(--space-sm)}
+.ds-status{font-size:var(--text-sm);color:var(--color-text-primary)}.ds-status:before{content:'●';color:var(--status-color);padding-right:var(--space-sm)}
+@media(max-width:767px){.colui-design .app-shell{display:block}.colui-design .sidebar{padding:var(--space-lg);border-right:0;border-bottom:1px solid var(--color-border-divider);display:flex;gap:var(--space-xl);align-items:center;flex-wrap:wrap}.colui-design .brand{margin:0}.colui-design .side-nav{flex-direction:row}.colui-design .page,.ds-catalog{padding:var(--space-lg)}.colui-design .page-heading{align-items:flex-start;flex-wrap:wrap}.colui-design .resource-row{flex-wrap:wrap}.colui-design .resource-actions{flex-basis:100%;justify-content:flex-end}.colui-design .resource-kind{margin-left:auto}.colui-design .resource-children{padding-left:var(--space-lg)}.colui-design .diagnostic-grid{grid-template-columns:1fr;gap:var(--space-sm)}.colui-design .diagnostic-grid dd{margin-bottom:var(--space-sm)}}
+@media(pointer:coarse){.colui-design .ui-button,.ui-dialog .ui-button,.ds-button,.colui-design .resource-chevron{min-width:44px;min-height:44px}.colui-design input,.ui-dialog input,.ds-input{font-size:16px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+/* Keep the supplied focus color legible when a primary button is also hovered. */
+.colui-design .page-heading>.ui-button:focus-visible,.ui-dialog button[type=submit]:focus-visible,.ds-button-primary:focus-visible,.ds-button-primary.is-focus{background:var(--color-primary-pressed);color:var(--color-text-on-primary)}

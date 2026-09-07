@@ -82,7 +82,7 @@ await expect(resourceList.getByRole('heading')).toHaveText(['Cache', 'Legacy', '
 const registered = resourcesPage.getByRole('region', { name: 'Web platform', exact: true });
 const rowActions = registered.locator(':scope > .resource-row > .resource-actions');
 await resourcesPage.getByRole('heading', { name: 'Projects', exact: true }).hover();
-await expect(rowActions).toHaveCSS('opacity', '0');
+await expect(rowActions).toHaveCSS('opacity', '1');
 await registered.hover();
 await expect(rowActions).toHaveCSS('opacity', '1');
 await resourcesPage.getByRole('heading', { name: 'Projects', exact: true }).hover();

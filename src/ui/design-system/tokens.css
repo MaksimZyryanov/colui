@@ -1,0 +1,47 @@
+/* Hallmark · custom palette: user reference · CoLUI dark Workbench */
+:root{
+  --color-app-background: oklch(16.344248% 0.03132162 294.972008); /* #0F0B1A */
+  --color-surface-panel: oklch(19.813346% 0.03593607 295.725254); /* #171224 */
+  --color-elevated-card: oklch(23.819717% 0.04733540 293.520095); /* #201A33 */
+  --color-border-divider: oklch(31.458657% 0.06012770 293.458661); /* #332B4D */
+  --color-primary-base: oklch(49.973745% 0.16786475 304.951737); /* #7A42AE */
+  --color-primary-hover: oklch(56.560073% 0.17047664 305.766189); /* #8F55C4 */
+  --color-primary-pressed: oklch(41.659500% 0.13758596 305.967174); /* #5F3286 */
+  --color-accent: oklch(71.393213% 0.12646769 296.829617); /* #AB91E8 */
+  --color-link-selected: oklch(82.129044% 0.08574458 271.274873); /* #B0C2FD */
+  --color-info-highlight: oklch(88.209505% 0.05990450 250.035216); /* #BBDCFF */
+  --color-focus-ring: oklch(81.796937% 0.10295674 295.993437); /* #C9B6FF */
+  --color-chart-series-2: oklch(73.417533% 0.13662841 265.248002); /* #7FA6FF */
+  --color-text-primary: oklch(96.302887% 0.01234158 301.286680); /* #F4F1FA */
+  --color-text-secondary: oklch(77.046007% 0.04058775 300.110475); /* #B8AFCB */
+  --color-text-disabled: oklch(52.289744% 0.04494415 301.177723); /* #6E6480 */
+  --color-text-on-primary: oklch(99.999999% 0.00000004 89.875563); /* #FFFFFF */
+  --color-success: oklch(77.725626% 0.13129039 167.149735); /* #4FD1A5 */
+  --color-warning: oklch(82.180890% 0.12647470 74.444273); /* #F5B860 */
+  --color-error-critical: oklch(68.191499% 0.17984865 12.432752); /* #F2607A */
+  --color-neutral-idle: oklch(62.530292% 0.04983394 296.039019); /* #8A82A3 */
+  --color-scrim: oklch(0% 0 0 / 0.7); /* overlay */
+  --font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --space-xxs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-xxl: 40px;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-title: 30px;
+  --radius-small: 4px;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --control-height: 36px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+}
