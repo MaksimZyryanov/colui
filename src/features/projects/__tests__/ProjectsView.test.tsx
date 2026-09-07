@@ -92,6 +92,31 @@ describe('ProjectsView', () => {
     expect(screen.queryByText('Unable to load project definition')).not.toBeInTheDocument();
   });
 
+  it('controls a project and its child containers when Compose definition cannot load', async () => {
+    const user = userEvent.setup();
+    const profileId = '00000000-0000-0000-0000-000000000001';
+    const session = '00000000-0000-0000-0000-000000000099';
+    const profile = { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp/demo', registrationOrigin: 'discovered' as const };
+    const container = { id: 'demo-web', name: 'demo-web-1', image: 'nginx', state: 'running' as const, statusText: 'Up', serviceName: 'web', publishedPorts: [] };
+    const inventory = { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh' as const, lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [container], projects: [{ composeProjectName: 'demo', workingDirectory: '/tmp/demo', configFiles: ['/tmp/demo/compose.yml'], containers: [container] }], composeObservationGroups: [], standaloneContainers: [], error: null };
+    mockBackend.setResponseOverride('list_profiles', [profile]);
+    mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: session, endpoint: 'mock://runtime', daemonFingerprint: inventory.daemonFingerprint, connectedAt: inventory.observedAt } });
+    mockBackend.setResponseOverride('get_inventory', inventory);
+    mockBackend.setResponseOverride('get_project_details', { profile: { profile, composeFiles: ['/tmp/demo/compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: null, loadedAt: null, state: 'unchecked', services: [], issues: [], error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: profileId }, message: 'Required variables are unavailable', details: null, retryable: false } }, runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: inventory.observedAt } });
+    mockBackend.setResponseOverride('run_container_action', { containerId: container.id, action: 'stop', observation: 'confirmed_in_session', inventory });
+
+    renderProjects();
+    expect(await screen.findByRole('button', { name: 'Stop Demo' })).toBeEnabled();
+    expect(screen.queryByText('Unable to load project definition')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Stop Demo' }));
+    await waitFor(() => expect(mockBackend.getInvocations().find(call => call.command === 'run_container_action')?.args).toEqual({ request: { containerId: 'demo-web', runtimeSessionId: session, action: 'stop' } }));
+
+    await user.click(screen.getByRole('button', { name: 'Expand Demo' }));
+    expect(screen.getByRole('button', { name: 'Restart demo-web-1' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Restart demo-web-1' }));
+    await waitFor(() => expect(mockBackend.getInvocations().filter(call => call.command === 'run_container_action')).toHaveLength(2));
+  });
+
   it('renders explicit empty state and opens Add Project form', async () => {
     const user = userEvent.setup();
     renderProjects();
@@ -196,6 +221,7 @@ describe('ProjectsView', () => {
   });
 
   it('keeps card and retained definition visible beside separate definition error', async () => {
+    const user = userEvent.setup();
     const profileId = '00000000-0000-0000-0000-000000000001';
     mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: '00000000-0000-0000-0000-000000000099', endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: '2026-09-02T00:00:00.000Z' } });
     mockBackend.setResponseOverride('list_profiles', [{ id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
@@ -203,7 +229,8 @@ describe('ProjectsView', () => {
     renderProjects();
 
     expect(await screen.findByText('Demo')).toBeVisible();
-    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load project definition');
+    await user.click(await screen.findByRole('button', { name: /show status details/i }));
+    expect(await screen.findByRole('alert', { name: 'Status issues' })).toHaveTextContent('compose config failed');
     expect(screen.getByRole('button', { name: /edit demo/i })).toBeVisible();
     expect(client.getQueryData(['projects', 'definition', profileId])).toMatchObject({ definition: { services: [{ name: 'web' }], error: expect.objectContaining({ code: 'definition_failed' }) } });
 

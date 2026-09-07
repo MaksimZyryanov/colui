@@ -21,6 +21,7 @@ export function useProjectStatus(profile: ProfileSummary, sharedInventory?: Quer
   if (data && details.data) {
     data.definition = { state: details.data.definition.state, revision: details.data.definition.definitionRevision ?? null, serviceCount: details.data.definition.services.length };
     data.issues = [...data.issues, ...details.data.definition.issues];
+    if (details.data.definition.error) data.issues.push({ message: details.data.definition.error.message });
   }
   return { ...inventory, data, isLoading: inventory.isLoading || details.isLoading, isError: inventory.isError || details.isError, inventoryError: inventory.error, definitionError: details.data?.definition.error ?? details.error };
 }

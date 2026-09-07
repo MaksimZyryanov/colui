@@ -50,6 +50,15 @@ Definition details load only after the runtime reaches `ready`. Inventory status
 registered rows remain visible while the runtime connects; this prevents a transient
 `runtime_unavailable` definition result from appearing as a persistent row error.
 
+Automatically discovered profiles can lack the environment used by the original
+Compose invocation because Docker labels expose working/config paths but not those
+values. If definition loading fails for such a profile, its current containers remain
+controllable through the existing container-ID/runtime-session command. The group row
+provides Start/Stop/Restart across the current snapshot, and child rows provide the
+same actions per container. Compose Apply and Tear down remain disabled until the
+profile has a usable definition. The definition error is available in status details
+instead of being repeated below every row.
+
 Status chips, log side panels, auto-registration persistence, and Diagnostics
 redesign remain outside this change.
 
