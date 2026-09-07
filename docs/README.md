@@ -12,5 +12,6 @@ CoLUI 2.0 grew from an architectural audit of the original application, followed
 
 - [Architecture](architecture.md): layers, ownership, and main data flows.
 - [Detailed designs](design/): approved design records retained for deeper context.
+- [Unified resource list](design/unified-resource-list.md): task review and Projects UI behavior.
 
 Historical documents explain intent at time of design. Source code and tests remain authority for current behavior.

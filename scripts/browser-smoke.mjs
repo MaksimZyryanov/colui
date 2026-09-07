@@ -1,6 +1,10 @@
-import { firefox } from '@playwright/test';
+import { expect, firefox } from '@playwright/test';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const browser = await firefox.launch({ headless: true });
+try {
 const failureContext = await browser.newContext();
 const failurePage = await failureContext.newPage();
 await failurePage.goto(`${process.argv[2]}/`, { waitUntil: 'networkidle' });
@@ -53,4 +57,61 @@ if (!invocations.some(invocation => invocation.command === 'reconnect_runtime'))
 const remove = [...invocations].reverse().find(invocation => invocation.command === 'remove_profile');
 if (!remove || JSON.stringify(remove.args) !== JSON.stringify({ profileId, expectedRevision: 2 })) throw new Error('invalid remove_profile payload');
 await lifecycleContext.close();
+const resourcesContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const resourcesPage = await resourcesContext.newPage();
+await resourcesPage.goto(`${process.argv[2]}/`, { waitUntil: 'networkidle' });
+await resourcesPage.evaluate(async () => {
+  const { mockBackend } = await import('/src/ipc/mock-backend.ts');
+  const session = '00000000-0000-0000-0000-000000000099';
+  const timestamp = '2026-09-02T00:00:00.000Z';
+  const fingerprint = { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' };
+  const profile = { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Web platform', composeProjectName: 'web-platform', workingDirectory: '/workspace/web-platform', registrationOrigin: 'manual' };
+  const child = { id: 'web', name: 'web-platform-api-1', image: 'node:22', state: 'running', statusText: 'Up', serviceName: 'api', publishedPorts: [] };
+  const standalone = { ...child, id: 'redis', name: 'Cache', image: 'redis:7', serviceName: null, publishedPorts: [{ hostIp: '127.0.0.1', hostPort: 6379, containerPort: 6379, protocol: 'tcp', action: { copy: '127.0.0.1:6379 -> 6379/tcp', url: null } }] };
+  mockBackend.setResponseOverride('list_profiles', [profile]);
+  mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: session, endpoint: 'mock://runtime', daemonFingerprint: fingerprint, connectedAt: timestamp } });
+  mockBackend.setResponseOverride('get_project_details', { profile: { profile, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId: profile.id, definitionRevision: '1', loadedAt: timestamp, state: 'valid', services: [], issues: [], error: null }, runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: timestamp } });
+  mockBackend.setResponseOverride('get_inventory', { generation: 100, hasSnapshot: true, observedAt: timestamp, runtimeSessionId: session, daemonFingerprint: fingerprint, freshness: 'fresh', lastSuccessfulObservedAt: timestamp, containers: [child, standalone], projects: [{ composeProjectName: profile.composeProjectName, workingDirectory: profile.workingDirectory, configFiles: ['compose.yml'], containers: [child] }], composeObservationGroups: [], standaloneContainers: [standalone], error: null });
+  const candidate = { candidateId: 'a'.repeat(64), runtimeSessionId: session, inventoryGeneration: 100, composeProjectName: 'Metrics', workingDirectory: '/workspace/metrics', configFiles: ['compose.yml'], containerCount: 2, classification: 'new_unambiguous', conflicts: [], ignored: false };
+  mockBackend.setResponseOverride('list_discovery_candidates', { candidates: [candidate, { ...candidate, candidateId: 'b'.repeat(64), composeProjectName: 'Legacy', classification: 'incomplete_metadata', workingDirectory: null, configFiles: [] }], autoRegistrationEnabled: false });
+});
+await resourcesPage.getByRole('link', { name: 'Diagnostics' }).click();
+await resourcesPage.getByRole('link', { name: 'Projects' }).click();
+const resourceList = resourcesPage.getByRole('list', { name: 'Resources' });
+await expect(resourceList.getByRole('heading')).toHaveText(['Cache', 'Legacy', 'Metrics', 'Web platform']);
+const registered = resourcesPage.getByRole('region', { name: 'Web platform', exact: true });
+const rowActions = registered.locator(':scope > .resource-row > .resource-actions');
+await resourcesPage.getByRole('heading', { name: 'Projects', exact: true }).hover();
+await expect(rowActions).toHaveCSS('opacity', '0');
+await registered.hover();
+await expect(rowActions).toHaveCSS('opacity', '1');
+await resourcesPage.getByRole('heading', { name: 'Projects', exact: true }).hover();
+await registered.getByRole('button', { name: 'Expand Web platform' }).focus();
+await expect(rowActions).toHaveCSS('opacity', '1');
+await resourcesPage.keyboard.press('Enter');
+await expect(registered.getByText('web-platform-api-1', { exact: true })).toBeVisible();
+const logs = registered.getByRole('button', { name: 'View logs for web-platform-api-1' });
+await logs.click();
+await expect(resourcesPage.getByRole('dialog', { name: 'Logs: web-platform-api-1' })).toBeVisible();
+await resourcesPage.keyboard.press('Escape');
+await expect(logs).toBeFocused();
+const search = resourcesPage.getByRole('searchbox', { name: 'Search resources' });
+await search.fill('cache');
+await expect(resourceList.getByRole('heading')).toHaveText(['Cache']);
+await search.fill('missing');
+await expect(resourcesPage.getByText('No matching resources')).toBeVisible();
+await search.fill('');
+await expect(registered.getByText('web-platform-api-1', { exact: true })).toBeVisible();
+await expect(resourcesPage.getByRole('button', { name: 'Register Metrics' })).toBeVisible();
+await expect(resourcesPage.getByRole('button', { name: 'Register Legacy' })).toHaveCount(0);
+const screenshots = await mkdtemp(join(tmpdir(), 'colui-resources-'));
+await resourcesPage.screenshot({ path: join(screenshots, 'desktop.png'), fullPage: true });
+await resourcesPage.setViewportSize({ width: 390, height: 844 });
+await expect(rowActions).toHaveCSS('opacity', '1');
+await expect.poll(() => resourcesPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+await resourcesPage.screenshot({ path: join(screenshots, 'mobile.png'), fullPage: true });
+console.log(`Resource list screenshots: ${screenshots}`);
+await resourcesContext.close();
+} finally {
 await browser.close();
+}

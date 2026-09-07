@@ -24,12 +24,60 @@ describe('ProjectsView', () => {
   });
   afterEach(cleanup);
 
+  it('sorts all resource kinds together and filters project and child container names', async () => {
+    const session = '00000000-0000-0000-0000-000000000099';
+    const child = { id: 'child', name: 'zulu-web', image: 'nginx', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] };
+    const standalone = { ...child, id: 'standalone', name: 'Alpha', serviceName: null };
+    mockBackend.setResponseOverride('list_profiles', [{ id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Zulu', composeProjectName: 'zulu', workingDirectory: '/tmp/zulu', registrationOrigin: 'manual' }]);
+    mockBackend.setResponseOverride('get_inventory', { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [child, standalone], projects: [{ composeProjectName: 'zulu', workingDirectory: '/tmp/zulu', configFiles: ['compose.yml'], containers: [child] }], composeObservationGroups: [], standaloneContainers: [standalone], error: null });
+    mockBackend.setResponseOverride('list_discovery_candidates', { candidates: [{ candidateId: 'a'.repeat(64), runtimeSessionId: session, inventoryGeneration: 4, composeProjectName: 'Middle', workingDirectory: '/tmp/middle', configFiles: ['compose.yml'], containerCount: 1, classification: 'new_unambiguous', conflicts: [], ignored: false }], autoRegistrationEnabled: false });
+    const user = userEvent.setup();
+    renderProjects();
+    await screen.findByRole('button', { name: 'Register Middle' });
+    const list = screen.getByRole('list', { name: 'Resources' });
+    expect(within(list).getAllByRole('heading').map(heading => heading.textContent)).toEqual(['Alpha', 'Middle', 'Zulu']);
+    expect(screen.queryByRole('heading', { name: 'Registered projects' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Discovered projects' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Other containers' })).not.toBeInTheDocument();
+    const search = screen.getByRole('searchbox', { name: 'Search resources' });
+    for (const [query, name] of [[' ALP ', 'Alpha'], ['midd', 'Middle'], ['zulu-web', 'Zulu']]) {
+      await user.clear(search);
+      await user.type(search, query);
+      expect(within(list).getAllByRole('heading').map(heading => heading.textContent)).toEqual([name]);
+    }
+    const expand = screen.getByRole('button', { name: 'Expand Zulu' });
+    expand.focus();
+    await user.keyboard('{Enter}');
+    expect(screen.getByText('zulu-web')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'View logs for zulu-web' }));
+    expect(await screen.findByRole('dialog', { name: 'Logs: zulu-web' })).toBeVisible();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('button', { name: 'View logs for zulu-web' })).toHaveFocus();
+    await user.clear(search);
+    await user.type(search, 'nothing-matches');
+    expect(screen.getByText('No matching resources')).toBeVisible();
+    expect(screen.queryByText('No projects yet')).not.toBeInTheDocument();
+    await user.clear(search);
+    expect(screen.getByText('zulu-web')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Collapse Zulu' }));
+    expect(screen.queryByText('zulu-web')).not.toBeInTheDocument();
+  });
+
   it('renders explicit empty state and opens Add Project form', async () => {
     const user = userEvent.setup();
     renderProjects();
     expect(await screen.findByText('No projects yet')).toBeVisible();
     await user.click(screen.getByRole('button', { name: /add project/i }));
     expect(screen.getByRole('dialog', { name: /add project/i })).toBeVisible();
+  });
+
+  it('does not claim an empty resource list when discovery failed', async () => {
+    mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: '00000000-0000-0000-0000-000000000099', endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: '2026-09-02T00:00:00.000Z' } });
+    mockBackend.setErrorOverride('list_discovery_candidates', new Error('discovery offline'));
+    renderProjects();
+    expect(await screen.findByText('Unable to load discovery candidates')).toBeVisible();
+    expect(screen.queryByText('No projects yet')).not.toBeInTheDocument();
+    expect(screen.getByText('Resources could not be fully loaded.')).toBeVisible();
   });
 
   it('provides working desktop and mobile Projects/Diagnostics navigation with one main landmark', async () => {

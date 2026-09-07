@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import type { ProfileSummary } from '../../../ipc/types';
-import { Card } from '../../../ui/components/Card';
 import { Button } from '../../../ui/components/Button';
 import { useProjectStatus } from '../hooks/useProjectStatus';
-import { StatusBadge } from './StatusBadge';
+import { projectStatusLabel } from './StatusBadge';
+import { ResourceRow, ResourceStatus } from './ResourceRow';
+import { ContainerLogsDialog } from '../../containers/ContainerLogsDialog';
 import { StatusDetails } from './StatusDetails';
 import { useProfile } from '../hooks/useProfile';
 import { ProfileFormDialog } from './ProfileFormDialog';
@@ -20,5 +21,22 @@ export function ProfileCard({ profile, initialStatus, runtimeReady, inventory }:
   const runtime = useRuntimeState();
   const details = useProfile(editing ? profile.id : undefined);
   const projectedStatus = initialStatus ?? status.data ?? (status.isError ? unavailableStatus(profile.id) : undefined);
-  return <Card><h2>{profile.displayName}</h2><p>{profile.workingDirectory}</p><Button onClick={() => setEditing(true)} aria-label={`Edit ${profile.displayName}`}>Edit</Button>{status.isLoading && !initialStatus ? <span role="status" aria-label="Loading project status" className="skeleton">Loading status...</span> : status.isError && !status.data && !initialStatus ? <span>Status unavailable</span> : null}{status.definitionError ? <span role="alert">Unable to load project definition</span> : null}{projectedStatus ? <><StatusBadge status={projectedStatus} /><Button onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={`status-${profile.id}`}> {open ? 'Hide' : 'Show'} status details</Button>{open ? <div id={`status-${profile.id}`}><StatusDetails status={projectedStatus} /></div> : null}<ActionMenu profileId={profile.id} revision={profile.revision} status={projectedStatus} runtimeReady={runtimeReady ?? runtime.data?.state === 'ready'} /></> : null}{editing ? details.isLoading ? <span role="status" aria-label="Loading project details" className="skeleton">Loading project details...</span> : details.data ? <ProfileFormDialog profile={profile} details={details.data} onClose={() => setEditing(false)} /> : details.isError ? <span role="alert">Unable to load project details</span> : null : null}</Card>;
+  const label = projectedStatus ? projectStatusLabel(projectedStatus) : 'Loading status';
+  const containers = inventory?.data?.projects.find(project => project.composeProjectName === profile.composeProjectName)?.containers ?? [];
+  const sessionId = inventory?.data?.runtimeSessionId;
+  return <ResourceRow name={profile.displayName} kind="registered"
+    status={<span aria-label="Project status"><ResourceStatus label={label} tone={label === 'Running' ? 'running' : label === 'Stopped' ? 'stopped' : label === 'Invalid definition' || label === 'Partially running' ? 'warning' : 'unknown'} /></span>}
+    actions={<>
+      <Button iconOnly title="Edit project" onClick={() => setEditing(true)} aria-label={`Edit ${profile.displayName}`}>✎</Button>
+      {projectedStatus ? <><Button iconOnly title="Status details" aria-label={`${open ? 'Hide' : 'Show'} status details`} onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={`status-${profile.id}`}>ⓘ</Button><ActionMenu profileId={profile.id} revision={profile.revision} status={projectedStatus} runtimeReady={runtimeReady ?? runtime.data?.state === 'ready'} /></> : null}
+    </>}
+    footer={<>
+      {status.isLoading && !initialStatus ? <span role="status" aria-label="Loading project status" className="skeleton">Loading status...</span> : status.isError && !status.data && !initialStatus ? <span>Status unavailable</span> : null}
+      {status.definitionError ? <span role="alert">Unable to load project definition</span> : null}
+      {open && projectedStatus ? <div id={`status-${profile.id}`} className="resource-details"><StatusDetails status={projectedStatus} /></div> : null}
+      {editing ? details.isLoading ? <span role="status" aria-label="Loading project details" className="skeleton">Loading project details...</span> : details.data ? <ProfileFormDialog profile={profile} details={details.data} onClose={() => setEditing(false)} /> : details.isError ? <span role="alert">Unable to load project details</span> : null : null}
+    </>}>
+    <p className="resource-path">{profile.workingDirectory}</p>
+    {containers.length ? containers.map(container => <ResourceRow key={`${sessionId}:${container.id}`} name={container.name} kind="container" status={<ResourceStatus label={container.state} tone={container.state} />} actions={sessionId ? <ContainerLogsDialog containerId={container.id} containerName={container.name} runtimeSessionId={sessionId} compact /> : null} />) : <p>{inventory?.data?.hasSnapshot ? 'No containers observed for this project.' : 'Container observations unavailable.'}</p>}
+  </ResourceRow>;
 }

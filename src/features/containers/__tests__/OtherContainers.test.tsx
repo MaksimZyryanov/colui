@@ -6,10 +6,14 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mockBackend } from '../../../ipc/mock-backend';
 import type { RuntimeInventory } from '../../../ipc/types';
-import { OtherContainers } from '../OtherContainers';
+import { ContainerCard } from '../ContainerCard';
+import { ResourceList } from '../../projects/components/ResourceList';
 import { AppErrorException } from '../../../ipc/errors';
 
 const session = '00000000-0000-0000-0000-000000000099';
+function OtherContainers({ inventory }: { inventory: RuntimeInventory }) {
+  return <ResourceList resources={inventory.standaloneContainers.map(container => ({ id: container.id, name: container.name, content: <ContainerCard container={container} runtimeSessionId={inventory.runtimeSessionId!} /> }))} />;
+}
 const container = (id: string, name: string) => ({ id, name, image: 'nginx:latest', state: 'running' as const, statusText: 'Up', serviceName: null, publishedPorts: [{ hostIp: '0.0.0.0', hostPort: 8080, containerPort: 80, protocol: 'tcp', action: { copy: '0.0.0.0:8080 -> 80/tcp', url: 'http://127.0.0.1:8080' } }, { hostIp: '::', hostPort: null, containerPort: 53, protocol: 'udp', action: { copy: '[::]:? -> 53/udp', url: null } }] });
 const inventory = { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [container('one', 'web-one'), container('two', 'web-two')], error: null } satisfies RuntimeInventory;
 
@@ -46,6 +50,7 @@ describe('OtherContainers', () => {
   it('copies exact backend text and opens only eligible bindings', async () => {
     const user = userEvent.setup();
     render(<QueryClientProvider client={client}><OtherContainers inventory={inventory} /></QueryClientProvider>);
+    for (const ports of screen.getAllByText('Ports · 2')) await user.click(ports);
     await user.click(screen.getAllByRole('button', { name: /copy 0\.0\.0\.0:8080/i })[0]);
     expect(await navigator.clipboard.readText()).toBe('0.0.0.0:8080 -> 80/tcp');
     expect(screen.getAllByRole('button', { name: /open .*browser/i })).toHaveLength(2);
@@ -57,6 +62,7 @@ describe('OtherContainers', () => {
   it('announces clipboard and port open success and failure', async () => {
     const user = userEvent.setup();
     render(<QueryClientProvider client={client}><OtherContainers inventory={{ ...inventory, standaloneContainers: [container('one', 'web-one')] }} /></QueryClientProvider>);
+    await user.click(screen.getByText('Ports · 2'));
     await user.click(screen.getByRole('button', { name: /copy 0\.0\.0\.0:8080/i }));
     expect(await screen.findByRole('status', { name: 'Copy port succeeded' })).toBeVisible();
     mockBackend.setErrorOverride('open_container_port', new AppErrorException({ code: 'container_operation_failed', operation: 'open_container_port', subject: { kind: 'container', id: 'one' }, message: 'Port unavailable', details: 'Binding changed', retryable: false }));

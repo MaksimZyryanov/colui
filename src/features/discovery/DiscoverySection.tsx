@@ -1,14 +1,15 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { RegistryHealth, RegisterCandidateRequest } from '../../ipc/types';
 import { Alert } from '../../ui/components/Alert';
 import { Button } from '../../ui/components/Button';
 import { useDiscovery, useDiscoveryMutations } from './hooks';
 import { CandidateCard } from './CandidateCard';
 import { OperationFeedback } from '../../ui/components/OperationFeedback';
+import { ResourceList, type ResourceEntry } from '../projects/components/ResourceList';
 
 type CandidateFeedback = { action: string; error: unknown; success: boolean };
 
-export function DiscoverySection({ runtimeSessionId, inventoryGeneration, registryHealth }: { runtimeSessionId: string | null; inventoryGeneration: number; registryHealth: RegistryHealth | null }) {
+export function DiscoverySection({ runtimeSessionId, inventoryGeneration, registryHealth, children }: { runtimeSessionId: string | null; inventoryGeneration: number; registryHealth: RegistryHealth | null; children?: (resources: ResourceEntry[], state: { isLoading: boolean; isError: boolean }) => ReactNode }) {
   const discovery = useDiscovery(runtimeSessionId, inventoryGeneration, registryHealth);
   const mutations = useDiscoveryMutations();
   const candidates = discovery.data?.candidates ?? [];
@@ -20,9 +21,15 @@ export function DiscoverySection({ runtimeSessionId, inventoryGeneration, regist
   const recordFeedback = (key: string, feedback: CandidateFeedback) => setCandidateFeedback(current => new Map(current).set(key, feedback));
   const register = (request: RegisterCandidateRequest) => { if (registering.has(request.candidateId) || ignoring.has(request.candidateId)) return; const action = `Registration ${request.composeProjectName} (${request.candidateId})`; setRegistering(current => new Set(current).add(request.candidateId)); void mutations.register.mutateAsync(request).then(() => recordFeedback(`register:${request.candidateId}`, { action, error: null, success: true }), error => recordFeedback(`register:${request.candidateId}`, { action, error, success: false })).finally(() => setRegistering(current => { const next = new Set(current); next.delete(request.candidateId); return next; })); };
   const ignore = (candidateId: string, composeProjectName: string) => { if (registering.has(candidateId) || ignoring.has(candidateId)) return; const action = `Ignore ${composeProjectName} (${candidateId})`; setIgnoring(current => new Set(current).add(candidateId)); void mutations.ignore.mutateAsync({ candidateId }).then(() => recordFeedback(`ignore:${candidateId}`, { action, error: null, success: true }), error => recordFeedback(`ignore:${candidateId}`, { action, error, success: false })).finally(() => setIgnoring(current => { const next = new Set(current); next.delete(candidateId); return next; })); };
-  return <section aria-labelledby="discovery-heading" className="feature-section">
-    <header><div><p className="eyebrow">Runtime discovery</p><h2 id="discovery-heading">Discovered projects</h2></div><div className="auto-registration"><Button role="switch" aria-checked={enabled} aria-label="Automatic registration" disabled={!runtimeSessionId || togglePending} onClick={() => mutations.configure.mutate({ enabled: !enabled })}>{enabled ? 'Automatic: On' : 'Automatic: Off'}</Button>{runtimeSessionId ? <Button disabled={togglePending} onClick={() => mutations.autoRegister.mutate({ runtimeSessionId, inventoryGeneration })}>Register eligible now</Button> : null}</div></header>
+  const resources = candidates.map(candidate => ({
+    id: `candidate:${candidate.runtimeSessionId}:${candidate.candidateId}`,
+    name: candidate.composeProjectName,
+    content: <CandidateCard candidate={candidate} pending={!runtimeSessionId || discovery.isPlaceholderData || registering.has(candidate.candidateId) || ignoring.has(candidate.candidateId)} onRegister={() => register({ candidateId: candidate.candidateId, runtimeSessionId: candidate.runtimeSessionId, inventoryGeneration: candidate.inventoryGeneration, composeProjectName: candidate.composeProjectName, workingDirectory: candidate.workingDirectory, configFiles: candidate.configFiles })} onIgnore={() => ignore(candidate.candidateId, candidate.composeProjectName)} />,
+  }));
+  return <>
+    <div className="resource-toolbar"><Button role="switch" aria-checked={enabled} aria-label="Automatic registration" disabled={!runtimeSessionId || togglePending} onClick={() => mutations.configure.mutate({ enabled: !enabled })}>{enabled ? 'Automatic: On' : 'Automatic: Off'}</Button>{runtimeSessionId ? <Button disabled={togglePending} onClick={() => mutations.autoRegister.mutate({ runtimeSessionId, inventoryGeneration })}>Register eligible now</Button> : null}</div>
     {[...candidateFeedback.entries()].map(([key, feedback]) => <OperationFeedback key={key} {...feedback} />)}<OperationFeedback action="Automatic registration configuration" error={mutations.configure.error} success={mutations.configure.isSuccess} /><OperationFeedback action="Automatic registration" error={mutations.autoRegister.error} success={mutations.autoRegister.isSuccess} />
-    {!runtimeSessionId ? <p>Connect Docker to discover Compose projects.</p> : discovery.isLoading ? <div role="status" aria-label="Loading discovery">Loading discovery...</div> : discovery.isError ? <Alert variant="destructive">Unable to load discovery candidates</Alert> : candidates.length ? <div className="projects-grid">{candidates.map(candidate => <CandidateCard key={candidate.candidateId} candidate={candidate} pending={discovery.isPlaceholderData || registering.has(candidate.candidateId) || ignoring.has(candidate.candidateId)} onRegister={() => register({ candidateId: candidate.candidateId, runtimeSessionId: candidate.runtimeSessionId, inventoryGeneration: candidate.inventoryGeneration, composeProjectName: candidate.composeProjectName, workingDirectory: candidate.workingDirectory, configFiles: candidate.configFiles })} onIgnore={() => ignore(candidate.candidateId, candidate.composeProjectName)} />)}</div> : <p>No unregistered Compose projects found.</p>}
-  </section>;
+    {!runtimeSessionId ? <p>Connect Docker to discover Compose projects.</p> : discovery.isLoading ? <div role="status" aria-label="Loading discovery">Loading discovery...</div> : discovery.isError ? <Alert variant="destructive">Unable to load discovery candidates</Alert> : null}
+    {children ? children(resources, discovery) : <ResourceList resources={resources} empty={<p>{discovery.isError ? 'Discovery unavailable.' : discovery.isLoading ? 'Loading discovery…' : 'No unregistered Compose projects found.'}</p>} />}
+  </>;
 }
