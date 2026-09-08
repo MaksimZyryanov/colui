@@ -14,6 +14,7 @@ import { useRuntimeState } from '../../../features/runtime/hooks/useRuntimeSessi
 import type { ProjectStatus } from '../../../ipc/types';
 import type { QueryObserverResult } from '@tanstack/react-query';
 import type { RuntimeInventory } from '../../../ipc/types';
+import { Icon } from '../../../ui/components/Icon';
 const unavailableStatus = (profileId: string): ProjectStatus => ({ profileId, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null }, definition: { state: 'unchecked', revision: null, serviceCount: null }, operation: null, issues: [] });
 export function ProfileCard({ profile, initialStatus, runtimeReady, inventory }: { profile: ProfileSummary; initialStatus?: ProjectStatus; runtimeReady?: boolean; inventory?: QueryObserverResult<RuntimeInventory> }) {
   const [open, setOpen] = useState(false);
@@ -30,8 +31,8 @@ export function ProfileCard({ profile, initialStatus, runtimeReady, inventory }:
   return <ResourceRow name={profile.displayName} kind="registered"
     status={<span aria-label="Project status"><ResourceStatus label={label} tone={label === 'Running' ? 'running' : label === 'Stopped' ? 'stopped' : label === 'Invalid definition' || label === 'Partially running' ? 'warning' : 'unknown'} /></span>}
     actions={<>
-      <Button iconOnly title="Edit project" onClick={() => setEditing(true)} aria-label={`Edit ${profile.displayName}`}>✎</Button>
-      {projectedStatus ? <><Button iconOnly title="Status details" aria-label={`${open ? 'Hide' : 'Show'} status details`} onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={`status-${profile.id}`}>ⓘ</Button>{definitionError && sessionId && containers.length ? <ContainerActions containers={containers} runtimeSessionId={sessionId} resourceName={profile.displayName} /> : null}<ActionMenu profileId={profile.id} revision={profile.revision} status={projectedStatus} runtimeReady={isRuntimeReady} showLifecycleActions={!definitionError} /></> : null}
+      <Button iconOnly title="Edit project" onClick={() => setEditing(true)} aria-label={`Edit ${profile.displayName}`}><Icon name="settings-2" /></Button>
+      {projectedStatus ? <><Button iconOnly title="Status details" aria-label={`${open ? 'Hide' : 'Show'} status details`} onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={`status-${profile.id}`}><Icon name="activity" /></Button>{definitionError && sessionId && containers.length ? <ContainerActions containers={containers} runtimeSessionId={sessionId} resourceName={profile.displayName} /> : null}<ActionMenu profileId={profile.id} revision={profile.revision} status={projectedStatus} runtimeReady={isRuntimeReady} showLifecycleActions={!definitionError} /></> : null}
     </>}
     footer={<>
       {status.isLoading && !initialStatus ? <span role="status" aria-label="Loading project status" className="skeleton">Loading status...</span> : status.isError && !status.data && !initialStatus ? <span>Status unavailable</span> : null}

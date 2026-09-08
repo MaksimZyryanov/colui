@@ -1,6 +1,7 @@
 import type { RuntimeInventory } from '../../ipc/types';
 import { Button } from '../../ui/components/Button';
 import { useContainerAction } from './hooks';
+import { Icon } from '../../ui/components/Icon';
 
 type Container = RuntimeInventory['containers'][number];
 
@@ -12,9 +13,9 @@ export function ContainerActions({ containers, runtimeSessionId, resourceName }:
   };
   const pending = action.isPending;
   return <>
-    <Button iconOnly aria-label={`Start ${resourceName}`} title="Start" disabled={pending || containers.every(container => container.state === 'running')} onClick={() => void run('start')}>▷</Button>
-    <Button iconOnly aria-label={`Stop ${resourceName}`} title="Stop" disabled={pending || containers.every(container => container.state !== 'running')} onClick={() => void run('stop')}>□</Button>
-    <Button iconOnly aria-label={`Restart ${resourceName}`} title="Restart" disabled={pending || containers.length === 0} onClick={() => void run('restart')}>↻</Button>
+    <Button iconOnly aria-label={`Start ${resourceName}`} title="Start" disabled={pending || containers.every(container => container.state === 'running')} onClick={() => void run('start')}><Icon name="play" /></Button>
+    <Button iconOnly aria-label={`Stop ${resourceName}`} title="Stop" disabled={pending || containers.every(container => container.state !== 'running')} onClick={() => void run('stop')}><Icon name="square" /></Button>
+    <Button iconOnly aria-label={`Restart ${resourceName}`} title="Restart" disabled={pending || containers.length === 0} onClick={() => void run('restart')}><Icon name="rotate-cw" /></Button>
     {action.isError ? <span role="alert">{action.error instanceof Error ? action.error.message : 'Container action failed'}</span> : null}
   </>;
 }
