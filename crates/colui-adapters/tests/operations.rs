@@ -393,7 +393,35 @@ fn recovery_file_lease_excludes_another_manager() {
         AppErrorCode::RecoveryConflict
     );
     drop(operation);
-    assert!(second.acquire_recovery().is_ok());
+    let reacquired = second.acquire_recovery();
+    assert!(reacquired.is_ok(), "reacquire failed: {reacquired:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn releasing_guard_unlocks_file_inherited_by_forked_child() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("registry.recovery.lock");
+    let first = ConcreteOperationLockManager::new(path.clone());
+    let second = ConcreteOperationLockManager::new(path);
+    let operation = first.acquire_mutation().unwrap();
+
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0, "fork failed");
+    if child == 0 {
+        unsafe {
+            libc::pause();
+            libc::_exit(0);
+        }
+    }
+
+    drop(operation);
+    let reacquired = second.acquire_recovery();
+    unsafe {
+        libc::kill(child, libc::SIGTERM);
+        libc::waitpid(child, std::ptr::null_mut(), 0);
+    }
+    assert!(reacquired.is_ok(), "reacquire failed: {reacquired:?}");
 }
 
 #[test]

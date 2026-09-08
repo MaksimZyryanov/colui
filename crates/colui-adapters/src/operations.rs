@@ -139,7 +139,7 @@ impl OperationLockManager {
         let state = Arc::clone(&self.state);
         let container_id = container_id.to_owned();
         Ok(ContainerOperationGuard::new(move || {
-            let _file = recovery_file;
+            unlock_file(recovery_file);
             let mut barrier = lock_barrier(&state);
             barrier.containers.remove(&container_id);
             barrier.shared -= 1;
@@ -151,7 +151,7 @@ impl OperationLockManager {
         let recovery_file = acquire_shared(&self.state)?;
         let state = Arc::clone(&self.state);
         Ok(RegistryMutationGuard::new(move || {
-            let _file = recovery_file;
+            unlock_file(recovery_file);
             release_shared(&state);
         }))
     }
@@ -176,7 +176,7 @@ impl OperationLockManager {
         };
         let state = Arc::clone(&self.state);
         Ok(RegistryRecoveryGuard::new(move || {
-            let _file = recovery_file;
+            unlock_file(recovery_file);
             lock_barrier(&state).recovering = false;
         }))
     }
@@ -243,7 +243,7 @@ impl OperationLockManagerPort for OperationLockManager {
             .fetch_add(1, Ordering::Relaxed);
         let state = Arc::clone(&self.state);
         Ok(DefinitionLoadGuard::new(move || {
-            let _file = recovery_file;
+            unlock_file(recovery_file);
             release_definition(&state, &profile_id, token);
             release_shared(&state);
         }))
@@ -330,6 +330,7 @@ fn operation_name(kind: OperationKind) -> &'static str {
 impl Drop for LifecycleReservation {
     fn drop(&mut self) {
         if !self.promoted {
+            unlock_file(self.recovery_file.take());
             release_pending(&self.state, &self.profile_id, self.token);
             release_shared(&self.state);
         }
@@ -379,7 +380,7 @@ async fn wait_for_definition(
         let token = reservation.token;
         let recovery_file = reservation.recovery_file.take();
         return Ok(LifecycleOperationGuard::new(move || {
-            let _file = recovery_file;
+            unlock_file(recovery_file);
             release_lifecycle(&state, &profile_id, token);
             release_shared(&state);
         }));
@@ -504,6 +505,12 @@ fn acquire_shared(state: &Arc<LockState>) -> Result<Option<File>, AppError> {
 fn release_shared(state: &LockState) {
     let mut barrier = lock_barrier(state);
     barrier.shared = barrier.shared.saturating_sub(1);
+}
+
+fn unlock_file(file: Option<File>) {
+    if let Some(file) = file {
+        let _ = FileExt::unlock(&file);
+    }
 }
 
 fn acquire_file(path: &PathBuf, exclusive: bool) -> Result<Option<File>, AppError> {
