@@ -24,3 +24,7 @@ Use `pnpm typecheck` for TypeScript checks and `bash scripts/check-boundaries.sh
 ## Documentation
 
 Start with [`docs/README.md`](docs/README.md) for project history, current architecture, and detailed design records.
+
+## License
+
+CoLUI is available under the [MIT License](LICENSE). Third-party notices are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

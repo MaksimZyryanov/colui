@@ -2,3 +2,6 @@
 resolver = "2"
 members = ["crates/colui-domain", "crates/colui-app", "crates/colui-adapters", "src-tauri"]
 default-members = ["crates/colui-domain", "crates/colui-app", "crates/colui-adapters"]
+
+[workspace.package]
+license = "MIT"

@@ -3,6 +3,7 @@ name = "colui-tauri"
 version = "0.1.0"
 edition = "2021"
 default-run = "colui-tauri"
+license.workspace = true
 
 [lib]
 name = "colui_tauri_lib"

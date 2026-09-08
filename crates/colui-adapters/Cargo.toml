@@ -2,6 +2,7 @@
 name = "colui-adapters"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 bollard = "0.18"
