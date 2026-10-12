@@ -1,23 +1,23 @@
 /* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app */
 /* Hallmark · pre-emit critique: P4 H4 E3 S4 R5 V3 · browser visual QA pending */
-html,body{margin:0;overflow-x:clip}
+html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;background:var(--color-app-background);color-scheme:dark}
 .colui-design,.ui-dialog,.ui-menu{font-family:var(--font-body);font-size:var(--text-sm);line-height:1.5;color:var(--color-text-primary);color-scheme:dark}
-.colui-design{background:var(--color-app-background);min-height:640px}
+.colui-design{background:var(--color-app-background);height:100vh;height:100dvh;min-height:0}
 .colui-design *, .ui-dialog *{box-sizing:border-box}
 .colui-design h1,.colui-design h2,.colui-design h3,.ui-dialog h2{font-family:var(--font-display);font-style:normal;overflow-wrap:anywhere;min-width:0;color:var(--color-text-primary)}
 .colui-design h1{font-size:var(--text-title);letter-spacing:-.035em;font-weight:650;margin:0}
 .colui-design h2{font-size:var(--text-lg);font-weight:600;margin:var(--space-xl) 0 var(--space-md)}
 .colui-design h3{font-size:var(--text-sm);font-weight:600;margin:0}
 .colui-design p{color:var(--color-text-secondary)}
-.colui-design .app-shell{display:grid;grid-template-columns:184px minmax(0,1fr);min-height:640px}
-.colui-design .sidebar{display:block;background:var(--color-surface-panel);color:var(--color-text-primary);padding:var(--space-xl) var(--space-md);border-right:1px solid var(--color-border-divider);height:auto;position:relative}
+.colui-design .app-shell{display:grid;grid-template-columns:184px minmax(0,1fr);grid-template-rows:minmax(0,1fr);height:100%;min-height:0;overflow:hidden}
+.colui-design .sidebar{display:block;background:var(--color-surface-panel);color:var(--color-text-primary);padding:var(--space-xl) var(--space-md);border-right:1px solid var(--color-border-divider);height:100%;position:relative;overflow-y:auto;overscroll-behavior:none}
 .colui-design .brand{font-size:var(--text-xl);font-weight:700;letter-spacing:-.06em;margin:0 var(--space-sm) var(--space-xxl);color:var(--color-text-primary)}
 .colui-design .brand span{color:var(--color-accent)}
 .colui-design .side-nav{display:flex;flex-direction:column;gap:var(--space-xs)}
 .colui-design .side-nav a,.colui-design .mobile-nav a{color:var(--color-text-secondary);text-decoration:none;white-space:nowrap;padding:var(--space-sm) var(--space-md);border-radius:var(--radius-control);font-weight:500}
 .colui-design .side-nav a[aria-current=page],.colui-design .mobile-nav a[aria-current=page]{background:var(--color-elevated-card);color:var(--color-link-selected);box-shadow:inset 2px 0 var(--color-link-selected)}
 .colui-design .mobile-nav{display:none}
-.colui-design .app-content{min-width:0}
+.colui-design .app-content{min-width:0;min-height:0;overflow:auto;overscroll-behavior:none}
 .colui-design .page{padding:var(--space-xxl);max-width:1200px;margin:auto}
 .colui-design .page-heading{display:flex;justify-content:space-between;align-items:center;gap:var(--space-lg);margin-bottom:var(--space-xl)}
 .colui-design .page-heading p{margin:var(--space-xs) 0 0;font-size:var(--text-sm)}
@@ -82,7 +82,7 @@ html,body{margin:0;overflow-x:clip}
 .ds-sample{padding:var(--space-lg);border:1px solid var(--color-border-divider);border-radius:var(--radius-panel);background:var(--color-surface-panel);color:var(--color-text-primary)}
 .ds-sample>p{margin:0 0 var(--space-md)}.ds-swatch{height:64px;border-radius:var(--radius-small);margin-bottom:var(--space-sm)}
 .ds-status{font-size:var(--text-sm);color:var(--color-text-primary)}.ds-status:before{content:'●';color:var(--status-color);padding-right:var(--space-sm)}
-@media(max-width:767px){.colui-design .app-shell{display:block}.colui-design .sidebar{padding:var(--space-lg);border-right:0;border-bottom:1px solid var(--color-border-divider);display:flex;gap:var(--space-xl);align-items:center;flex-wrap:wrap}.colui-design .brand{margin:0}.colui-design .side-nav{flex-direction:row}.colui-design .page,.ds-catalog{padding:var(--space-lg)}.colui-design .page-heading{align-items:flex-start;flex-wrap:wrap}.colui-design .resource-row{flex-wrap:wrap}.colui-design .resource-actions{flex-basis:100%;justify-content:flex-end}.colui-design .resource-kind{margin-left:auto}.colui-design .resource-children{padding-left:var(--space-lg)}.colui-design .diagnostic-grid{grid-template-columns:1fr;gap:var(--space-sm)}.colui-design .diagnostic-grid dd{margin-bottom:var(--space-sm)}}
+@media(max-width:767px){.colui-design .app-shell{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}.colui-design .sidebar{padding:var(--space-lg);border-right:0;border-bottom:1px solid var(--color-border-divider);display:flex;gap:var(--space-xl);align-items:center;flex-wrap:wrap;height:auto;position:relative;overflow-y:visible}.colui-design .brand{margin:0}.colui-design .side-nav{flex-direction:row}.colui-design .page,.ds-catalog{padding:var(--space-lg)}.colui-design .page-heading{align-items:flex-start;flex-wrap:wrap}.colui-design .resource-row{flex-wrap:wrap}.colui-design .resource-actions{flex-basis:100%;justify-content:flex-end}.colui-design .resource-kind{margin-left:auto}.colui-design .resource-children{padding-left:var(--space-lg)}.colui-design .diagnostic-grid{grid-template-columns:1fr;gap:var(--space-sm)}.colui-design .diagnostic-grid dd{margin-bottom:var(--space-sm)}}
 @media(pointer:coarse){.colui-design .ui-button,.ui-dialog .ui-button,.ds-button,.colui-design .resource-chevron{min-width:44px;min-height:44px}.colui-design input,.ui-dialog input,.ds-input{font-size:16px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 /* Keep the supplied focus color legible when a primary button is also hovered. */

@@ -1,4 +1,4 @@
-:root { font-family: system-ui, sans-serif; color: #17202a; background: #f5f7fa; }
+:root { font-family: system-ui, sans-serif; color: var(--color-text-primary, #f4f1fa); background: var(--color-app-background, #0f0b1a); color-scheme: dark; }
 * { box-sizing: border-box; }
 :focus-visible { outline: 3px solid #155eef; outline-offset: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

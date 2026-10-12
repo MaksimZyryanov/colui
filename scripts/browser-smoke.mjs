@@ -79,6 +79,36 @@ await resourcesPage.getByRole('link', { name: 'Diagnostics' }).click();
 await resourcesPage.getByRole('link', { name: 'Projects' }).click();
 const resourceList = resourcesPage.getByRole('list', { name: 'Resources' });
 await expect(resourceList.getByRole('heading')).toHaveText(['Cache', 'Legacy', 'Metrics', 'Web platform']);
+// The document canvas must match the dark app during native overscroll.
+const appBackground = await resourcesPage.locator('#root').evaluate(element => getComputedStyle(element).backgroundColor);
+await expect(resourcesPage.locator('html')).toHaveCSS('background-color', appBackground);
+await expect(resourcesPage.locator('body')).toHaveCSS('background-color', appBackground);
+await expect(resourcesPage.locator('html')).toHaveCSS('color-scheme', 'dark');
+
+// Only the content pane scrolls; reaching either edge cannot move navigation.
+await resourcesPage.getByRole('link', { name: 'Diagnostics' }).click();
+await resourcesPage.getByRole('heading', { name: 'Diagnostics', exact: true }).waitFor();
+await resourcesPage.evaluate(() => window.scrollTo(0, 0));
+const projectsLink = resourcesPage.getByRole('navigation', { name: 'Primary', exact: true }).getByRole('link', { name: 'Projects' });
+const navigationTop = (await projectsLink.boundingBox()).y;
+const contentPane = resourcesPage.locator('.app-content');
+await contentPane.evaluate(element => element.scrollTo(0, element.scrollHeight));
+await expect.poll(() => contentPane.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+await expect.poll(() => resourcesPage.evaluate(() => window.scrollY)).toBe(0);
+await expect.poll(async () => (await projectsLink.boundingBox()).y).toBe(navigationTop);
+await expect(projectsLink).toBeInViewport();
+await contentPane.hover();
+await resourcesPage.mouse.wheel(0, 10000);
+await expect.poll(() => resourcesPage.evaluate(() => window.scrollY)).toBe(0);
+await expect.poll(async () => (await projectsLink.boundingBox()).y).toBe(navigationTop);
+await contentPane.evaluate(element => element.scrollTo(0, 0));
+await resourcesPage.mouse.wheel(0, -10000);
+await expect.poll(() => contentPane.evaluate(element => element.scrollTop)).toBe(0);
+await expect.poll(() => resourcesPage.evaluate(() => window.scrollY)).toBe(0);
+await expect.poll(async () => (await projectsLink.boundingBox()).y).toBe(navigationTop);
+await projectsLink.click();
+await contentPane.evaluate(element => element.scrollTo(0, 0));
+
 const registered = resourcesPage.getByRole('region', { name: 'Web platform', exact: true });
 const rowActions = registered.locator(':scope > .resource-row > .resource-actions');
 await resourcesPage.getByRole('heading', { name: 'Projects', exact: true }).hover();
