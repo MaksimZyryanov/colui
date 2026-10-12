@@ -1001,14 +1001,19 @@ fn test_profile() -> ProjectProfile {
     .unwrap()
 }
 
-struct SingleProfile(ProjectProfile);
-impl ProfileReader for SingleProfile {
+struct DefinitionProfiles {
+    profiles: Vec<ProjectProfile>,
+    loaded: Arc<tokio::sync::Notify>,
+}
+
+impl ProfileReader for DefinitionProfiles {
     fn load(&self) -> colui_app::StoreFuture<'_, RegistrySnapshot> {
-        let profile = self.0.clone();
+        let profiles = self.profiles.clone();
         Box::pin(async move {
+            self.loaded.notify_one();
             Ok(RegistrySnapshot {
                 registry_revision: 1,
-                profiles: vec![profile],
+                profiles,
             })
         })
     }
@@ -1171,6 +1176,10 @@ impl ComposeRunner for DefinitionCountingRunner {
 
 #[tokio::test]
 async fn shared_compose_gate_serializes_lifecycle_and_definition_across_profiles() {
+    let lifecycle_profile = test_profile();
+    let mut definition_profile = test_profile();
+    definition_profile.id = ProfileId::new(uuid::Uuid::from_u128(4));
+    let profiles_loaded = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(ComposeExecutionGate::new());
     let lifecycle_runner = LifecycleBlockingRunner::default();
     let gateway = Arc::new(RuntimeGateway::new_for_tests_with_gate(
@@ -1188,31 +1197,34 @@ async fn shared_compose_gate_serializes_lifecycle_and_definition_across_profiles
             std::env::temp_dir().join(format!("colui-{}.lock", uuid::Uuid::new_v4())),
         )),
         gate,
-        Arc::new(SingleProfile(test_profile())),
+        Arc::new(DefinitionProfiles {
+            profiles: vec![lifecycle_profile.clone(), definition_profile.clone()],
+            loaded: profiles_loaded.clone(),
+        }),
     ));
 
     let lifecycle = tokio::spawn({
         let gateway = gateway.clone();
         async move {
             gateway
-                .run_profile(test_profile(), LifecycleOperation::Stop)
+                .run_profile(lifecycle_profile, LifecycleOperation::Stop)
                 .await
         }
     });
     tokio::time::timeout(Duration::from_secs(1), lifecycle_runner.started.notified())
         .await
         .unwrap();
-    let definition = tokio::spawn(async move {
-        let mut profile = test_profile();
-        profile.id = ProfileId::new(uuid::Uuid::from_u128(4));
-        definitions.refresh_definition(profile).await
-    });
-    tokio::task::yield_now().await;
+    let definition =
+        tokio::spawn(async move { definitions.refresh_definition(definition_profile).await });
+    tokio::time::timeout(Duration::from_secs(1), profiles_loaded.notified())
+        .await
+        .unwrap();
+    assert!(!definition.is_finished());
     assert_eq!(definition_calls.load(Ordering::Acquire), 0);
 
     lifecycle_runner.release.notify_one();
     assert!(lifecycle.await.unwrap().is_ok());
-    assert!(definition.await.unwrap().is_ok());
+    definition.await.unwrap().unwrap();
     assert_eq!(definition_calls.load(Ordering::Acquire), 1);
 }
 

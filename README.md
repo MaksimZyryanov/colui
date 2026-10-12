@@ -21,6 +21,8 @@ cargo run -p colui-tauri --bin colui-tauri
 
 Use `pnpm typecheck` for TypeScript checks and `bash scripts/check-boundaries.sh` for architecture boundary checks.
 
+`pnpm test` runs application tests; saved design previews in `.agents/references/` are excluded. Run `cargo test -p colui-adapters --features test-support --test runtime` for the runtime and Compose tests not included in `cargo test --workspace`.
+
 ## Documentation
 
 Start with [`docs/README.md`](docs/README.md) for project history, current architecture, and detailed design records.
