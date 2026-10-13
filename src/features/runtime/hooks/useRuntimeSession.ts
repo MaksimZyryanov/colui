@@ -12,10 +12,13 @@ function clearChangedSession(client: QueryClient, state: RuntimeState) {
   if (runtimeSessionId(previous) !== runtimeSessionId(state)) {
     client.removeQueries({ queryKey: discoveryKeys.all() });
     client.removeQueries({ queryKey: logKeys.all() });
+    client.setQueryData<RuntimeInventory>(inventoryKeys.snapshot(), old => old?.hasSnapshot ? { ...old, freshness: 'stale' } : old);
+    void client.invalidateQueries({ queryKey: inventoryKeys.snapshot() });
   }
 }
 
-function publishRuntimeState(client: QueryClient, state: RuntimeState) {
+async function publishRuntimeState(client: QueryClient, state: RuntimeState) {
+  await client.cancelQueries({ queryKey: runtimeKeys.state() });
   clearChangedSession(client, state);
   client.setQueryData(runtimeKeys.state(), state);
   invalidateApplicationState(client, ['discovery', 'diagnostics']);
@@ -23,7 +26,7 @@ function publishRuntimeState(client: QueryClient, state: RuntimeState) {
 
 export function useRuntimeState() {
   const client = useQueryClient();
-  return useQuery({ queryKey: runtimeKeys.state(), queryFn: async () => { const state = await getRuntimeState(); clearChangedSession(client, state); return state; } });
+  return useQuery({ queryKey: runtimeKeys.state(), queryFn: async ({ signal }) => { const state = await getRuntimeState(); if (!signal.aborted) clearChangedSession(client, state); return state; } });
 }
 
 export function useConnectRuntime() {
@@ -41,10 +44,10 @@ export function useDisconnectRuntime() {
 
 export function useReconnectRuntime() {
   const client = useQueryClient();
-  return useMutation({ mutationFn: reconnectRuntime, onSuccess: result => {
+  return useMutation({ mutationFn: reconnectRuntime, onSuccess: async result => {
     client.removeQueries({ queryKey: discoveryKeys.all() });
     client.removeQueries({ queryKey: logKeys.all() });
-    publishRuntimeState(client, result.runtimeState);
+    await publishRuntimeState(client, result.runtimeState);
     if (result.inventory) client.setQueryData(inventoryKeys.snapshot(), (old: RuntimeInventory | undefined) => inventoryStructuralSharing(old, result.inventory!));
   } });
 }

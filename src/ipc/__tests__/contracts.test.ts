@@ -8,6 +8,20 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const fixtureRoot = resolve('schemas/fixtures');
+const projectDetailsFixture = () => ({
+  profile: {
+    profile: JSON.parse(readFileSync(resolve(fixtureRoot, 'profile_summary_valid.json'), 'utf8')),
+    composeFiles: ['compose.yml'], environmentFiles: [],
+  },
+  definition: {
+    profileId: '00000000-0000-0000-0000-000000000001', state: 'valid',
+    definitionRevision: 'definition', loadedAt: '2026-10-13T00:00:00Z',
+    services: [], issues: [{ field: 'services.web', message: 'Definition issue' }], error: null,
+  },
+  runtime: { presence: 'absent', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null },
+  runtimeIssues: [{ field: 'ambiguous_runtime_association', message: 'runtime association is ambiguous' }],
+  profileAssociationUnique: false,
+});
 const dtoManifest = [
   ['AppErrorCodeDto', errorCodeSchema], ['AppErrorDto', appErrorSchema], ['IssueDto', s.issueSchema],
   ['RegistrationOriginDto', s.registrationOriginSchema], ['ProfileSummaryDto', profileSummarySchema], ['ProfileDraftDto', profileDraftSchema],
@@ -38,6 +52,7 @@ const fixtureManifest: Array<[string, { safeParse: (value: unknown) => { success
   ['profile_details_invalid_missing_required.json', profileDetailsSchema, false], ['profile_summary_invalid_enum.json', profileSummarySchema, false],
   ['profile_summary_invalid_missing_id.json', profileSummarySchema, false], ['profile_summary_invalid_uuid.json', profileSummarySchema, false], ['profile_summary_valid.json', profileSummarySchema, true],
   ['profile_validation_valid.json', profileValidationSchema, true], ['project_status_invalid_runtime_combination.json', projectStatusSchema, false], ['project_status_runtime_unavailable.json', projectStatusSchema, true],
+  ['project_details_ambiguous_runtime.json', s.projectDetailsResponseSchema, true], ['project_details_invalid_missing_runtime_issues.json', s.projectDetailsResponseSchema, false],
   ['request_invalid_extra_field.json', profileIdRequestSchema.strict(), false], ['runtime_context_mismatch.json', runtimeStateSchema, true], ['runtime_unavailable.json', runtimeStateSchema, true],
   ['session_context_invalid_timestamp.json', sessionContextSchema, false],
 ];
@@ -140,6 +155,31 @@ describe('IPC contracts', () => {
     });
     expect(projection.services[0].name).toBe('web');
     expect(projection.error?.code).toBe('definition_failed');
+  });
+
+  it('preserves runtime association issues separately from definition issues in project details', () => {
+    const raw = projectDetailsFixture();
+    expect(decodeResponse(s.projectDetailsResponseSchema, raw, 'get_project_details')).toMatchObject({
+      runtimeIssues: raw.runtimeIssues,
+      definition: { issues: raw.definition.issues },
+      profileAssociationUnique: false,
+    });
+  });
+
+  it('rejects project details without runtime issues or with malformed runtime issues', () => {
+    const { runtimeIssues: _runtimeIssues, ...missing } = projectDetailsFixture();
+    for (const raw of [missing, { ...missing, runtimeIssues: [{ field: 'ambiguous_runtime_association' }] }]) {
+      expect(() => decodeResponse(s.projectDetailsResponseSchema, raw, 'get_project_details'))
+        .toThrowError(expect.objectContaining({ code: 'protocol_mismatch', operation: 'get_project_details', retryable: false }));
+    }
+  });
+
+  it('requires a boolean registry association guard in project details', () => {
+    const { profileAssociationUnique: _profileAssociationUnique, ...missing } = projectDetailsFixture();
+    for (const raw of [missing, { ...missing, profileAssociationUnique: 'false' }]) {
+      expect(() => decodeResponse(s.projectDetailsResponseSchema, raw, 'get_project_details'))
+        .toThrowError(expect.objectContaining({ code: 'protocol_mismatch', operation: 'get_project_details', retryable: false }));
+    }
   });
 
   it('validates both inventory observation fixtures and generation marker invariants', () => {

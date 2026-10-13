@@ -166,7 +166,8 @@ describe('application state coherence', () => {
     });
     expect(client.getQueriesData({ queryKey: discoveryKeys.all() })).toHaveLength(0);
     expect(client.getQueriesData({ queryKey: logKeys.all() })).toHaveLength(0);
-    expect(client.getQueryData(inventoryKeys.snapshot())).toBe(retained);
+    expect(client.getQueryData(inventoryKeys.snapshot())).toEqual({ ...(retained as RuntimeInventory), freshness: 'stale' });
+    expect(client.getQueryData<RuntimeInventory>(inventoryKeys.snapshot())!.containers).toBe((retained as RuntimeInventory).containers);
     expect(client.getQueryData(runtimeKeys.state())).toMatchObject(operation === 'disconnect' ? { state: 'disconnected' } : ready(nextSession));
   });
 
@@ -177,6 +178,31 @@ describe('application state coherence', () => {
     await act(async () => { await result.current.mutateAsync(); });
     expect(client.getQueriesData({ queryKey: discoveryKeys.all() })).toHaveLength(0);
     expect(client.getQueriesData({ queryKey: logKeys.all() })).toHaveLength(0);
+  });
+
+  it('marks retained inventory stale and requests an observation when the runtime session disconnects', async () => {
+    seed();
+    client.setQueryData(inventoryKeys.snapshot(), inventory(4));
+    const observedContainers = client.getQueryData<RuntimeInventory>(inventoryKeys.snapshot())!.containers;
+    mockBackend.setResponseOverride('disconnect_runtime', { state: 'disconnected' });
+    const { result } = renderHook(useDisconnectRuntime, { wrapper });
+    await act(async () => { await result.current.mutateAsync(); });
+    expect(client.getQueryData(inventoryKeys.snapshot())).toMatchObject({ generation: 4, freshness: 'stale', runtimeSessionId: session });
+    expect(client.getQueryData<RuntimeInventory>(inventoryKeys.snapshot())!.containers).toBe(observedContainers);
+    expect(client.getQueryState(inventoryKeys.snapshot())?.isInvalidated).toBe(true);
+  });
+
+  it('does not let an earlier runtime read resurrect a disconnected session', async () => {
+    seed();
+    let resolveRead!: (value: unknown) => void;
+    mockBackend.setResponseOverride('get_runtime_state', new Promise(resolve => { resolveRead = resolve; }));
+    mockBackend.setResponseOverride('disconnect_runtime', { state: 'disconnected' });
+    const { result } = renderHook(() => ({ runtime: useRuntimeState(), disconnect: useDisconnectRuntime() }), { wrapper });
+    let pendingRead: ReturnType<typeof result.current.runtime.refetch>;
+    await act(async () => { pendingRead = result.current.runtime.refetch(); });
+    await act(async () => { await result.current.disconnect.mutateAsync(); });
+    await act(async () => { resolveRead(ready()); await pendingRead; });
+    expect(client.getQueryData(runtimeKeys.state())).toEqual({ state: 'disconnected' });
   });
 
   it('discovery observes keyed projection without starting another diagnostics or inventory observer', async () => {

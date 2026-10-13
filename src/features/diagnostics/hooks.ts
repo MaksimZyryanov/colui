@@ -5,6 +5,7 @@ import type { ContainerLogsRequest, DiagnosticsSnapshot } from '../../ipc/types'
 import { diagnosticsKeys, logKeys } from './query-keys';
 import { discoveryKeys } from '../discovery/query-keys';
 import { invalidateApplicationState } from '../runtime/useApplicationStateEvents';
+import { projectKeys } from '../projects/query-keys';
 
 const isVisible = () => typeof document === 'undefined' || document.visibilityState === 'visible';
 
@@ -27,6 +28,12 @@ export function useDiagnostics({ owner = true }: { owner?: boolean } = {}) {
         const registryChanged = JSON.stringify(discoveryKeys.list(null, 0, previous.registry.health)) !== JSON.stringify(discoveryKeys.list(null, 0, next.registry.health));
         const journalChanged = (previous.journal.entries.at(-1)?.sequence ?? 0) !== (next.journal.entries.at(-1)?.sequence ?? 0);
         if (registryChanged || journalChanged) invalidateApplicationState(client, ['profiles', 'discovery', 'definitions']);
+        if (previous.definitions.generation !== next.definitions.generation) {
+          const before = new Map(previous.definitions.profiles.map(profile => [profile.profileId, profile]));
+          for (const profile of next.definitions.profiles) {
+            if (JSON.stringify(before.get(profile.profileId)) !== JSON.stringify(profile)) void client.invalidateQueries({ queryKey: projectKeys.definition(profile.profileId) });
+          }
+        }
         if (JSON.stringify(previous.runtime.state) !== JSON.stringify(next.runtime.state)) invalidateApplicationState(client, ['runtime', 'discovery']);
       }
       return next;

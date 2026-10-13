@@ -22,10 +22,10 @@ describe('projects foundations', () => {
     expect(validateProfileDraft({ displayName: '', composeProjectName: 'Bad Name', workingDirectory: '', composeFiles: ['a.yml', 'a.yml'], environmentFiles: [] })).toEqual(expect.objectContaining({ displayName: expect.any(String), composeProjectName: expect.any(String), workingDirectory: expect.any(String), composeFiles: expect.any(String) }));
   });
 
-  it('only publishes inventory for successful lifecycle results', () => {
+  it('publishes embedded inventory even when the lifecycle result reports failure', () => {
     const inventory = { generation: 0, hasSnapshot: false, observedAt: null, runtimeSessionId: null, daemonFingerprint: null, freshness: 'unavailable' as const, lastSuccessfulObservedAt: null, containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: null };
     expect(shouldPublishLifecycleInventory({ profileId: 'id-1', success: true, inventoryGeneration: 0, inventory })).toBe(true);
-    expect(shouldPublishLifecycleInventory({ profileId: 'id-1', success: false, inventoryGeneration: 0, inventory })).toBe(false);
+    expect(shouldPublishLifecycleInventory({ profileId: 'id-1', success: false, inventoryGeneration: 0, inventory })).toBe(true);
   });
 
   it('maps backend issue fields to form error associations', () => {
@@ -35,7 +35,7 @@ describe('projects foundations', () => {
   it('maps published inventory without matching project to absent runtime', () => {
     const profile = { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' as const };
     const inventory = { generation: 1, hasSnapshot: true, observedAt: '2026-09-03T00:00:00.000Z', runtimeSessionId: null, daemonFingerprint: null, freshness: 'fresh' as const, lastSuccessfulObservedAt: null, containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: null };
-    expect(projectStatusFromInventory(profile, inventory).runtime).toMatchObject({ presence: 'absent', activity: null });
+    expect(projectStatusFromInventory(profile, inventory, ['compose.yml']).runtime).toMatchObject({ presence: 'absent', activity: null });
   });
 
 });

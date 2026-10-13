@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -28,8 +28,11 @@ describe('ProjectsView', () => {
     const session = '00000000-0000-0000-0000-000000000099';
     const child = { id: 'child', name: 'zulu-web', image: 'nginx', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] };
     const standalone = { ...child, id: 'standalone', name: 'Alpha', serviceName: null };
-    mockBackend.setResponseOverride('list_profiles', [{ id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Zulu', composeProjectName: 'zulu', workingDirectory: '/tmp/zulu', registrationOrigin: 'manual' }]);
-    mockBackend.setResponseOverride('get_inventory', { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [child, standalone], projects: [{ composeProjectName: 'zulu', workingDirectory: '/tmp/zulu', configFiles: ['compose.yml'], containers: [child] }], composeObservationGroups: [], standaloneContainers: [standalone], error: null });
+    const profile = { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Zulu', composeProjectName: 'zulu', workingDirectory: '/tmp/zulu', registrationOrigin: 'manual' as const };
+    mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: session, endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: '2026-09-02T00:00:00.000Z' } });
+    mockBackend.setResponseOverride('list_profiles', [profile]);
+    mockBackend.setResponseOverride('get_project_details', { runtimeIssues: [], profileAssociationUnique: true, profile: { profile, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId: profile.id, definitionRevision: 'valid', loadedAt: '2026-09-02T00:00:00.000Z', state: 'valid', services: [], issues: [], error: null }, runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: '2026-09-02T00:00:00.000Z' } });
+    mockBackend.setResponseOverride('get_inventory', { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [child, standalone], projects: [{ composeProjectName: 'zulu', workingDirectory: '/tmp/zulu', configFiles: ['/tmp/zulu/compose.yml'], containers: [child] }], composeObservationGroups: [{ composeProjectName: 'zulu', workingDirectory: '/tmp/zulu', configFiles: ['/tmp/zulu/compose.yml'], containerIds: [child.id] }], standaloneContainers: [standalone], error: null });
     mockBackend.setResponseOverride('list_discovery_candidates', { candidates: [{ candidateId: 'a'.repeat(64), runtimeSessionId: session, inventoryGeneration: 4, composeProjectName: 'Middle', workingDirectory: '/tmp/middle', configFiles: ['compose.yml'], containerCount: 1, classification: 'new_unambiguous', conflicts: [], ignored: false }], autoRegistrationEnabled: false });
     const user = userEvent.setup();
     renderProjects();
@@ -63,9 +66,10 @@ describe('ProjectsView', () => {
     expect(screen.queryByText('zulu-web')).not.toBeInTheDocument();
   });
 
-  it('renders an already registered discovery observation only as its profile row', async () => {
+  it.each(['/tmp/demo', '/tmp/demo/.'])('renders an already registered discovery observation only as its profile row (%s)', async workingDirectory => {
     const session = '00000000-0000-0000-0000-000000000099';
-    const profile = { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp/demo', registrationOrigin: 'discovered' as const };
+    const profile = { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory, registrationOrigin: 'manual' as const };
+    mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: session, endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: '2026-09-02T00:00:00.000Z' } });
     mockBackend.setResponseOverride('list_profiles', [profile]);
     mockBackend.setResponseOverride('get_inventory', { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: null });
     mockBackend.setResponseOverride('list_discovery_candidates', { candidates: [{ candidateId: 'a'.repeat(64), runtimeSessionId: session, inventoryGeneration: 4, composeProjectName: 'demo', workingDirectory: '/tmp/demo', configFiles: ['/tmp/demo/compose.yml'], containerCount: 1, classification: 'already_registered', conflicts: [], ignored: false }], autoRegistrationEnabled: false });
@@ -73,8 +77,74 @@ describe('ProjectsView', () => {
     renderProjects();
 
     expect(await screen.findByRole('heading', { name: 'Demo' })).toBeVisible();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Expand Demo' }));
     expect(screen.getAllByRole('heading', { name: /demo/i })).toHaveLength(1);
     expect(screen.queryByText('Already registered')).not.toBeInTheDocument();
+  });
+
+  it.each(['manual', 'automatic'])('hands an expanded discovered row to its registered profile before background queries finish (%s)', async mode => {
+    const session = '00000000-0000-0000-0000-000000000099';
+    const profile = { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'demo', composeProjectName: 'demo', workingDirectory: '/tmp/demo', registrationOrigin: 'discovered' as const };
+    const candidate = { candidateId: 'a'.repeat(64), runtimeSessionId: session, inventoryGeneration: 4, composeProjectName: 'demo', workingDirectory: '/tmp/demo', configFiles: ['/tmp/demo/compose.yml'], containerCount: 1, classification: 'new_unambiguous' as const, conflicts: [], ignored: false };
+    const container = { id: 'web', name: 'demo-web-1', image: 'nginx', state: 'running' as const, statusText: 'Up', serviceName: 'web', publishedPorts: [] };
+    mockBackend.setResponseOverride('list_profiles', []);
+    mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: session, endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: '2026-09-02T00:00:00.000Z' } });
+    mockBackend.setResponseOverride('get_inventory', { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [container], projects: [{ composeProjectName: 'demo', workingDirectory: '/tmp/demo', configFiles: candidate.configFiles, containers: [container] }], composeObservationGroups: [{ composeProjectName: 'demo', workingDirectory: '/tmp/demo', configFiles: candidate.configFiles, containerIds: [container.id] }], standaloneContainers: [], error: null });
+    mockBackend.setResponseOverride('list_discovery_candidates', { candidates: [candidate], autoRegistrationEnabled: false });
+    mockBackend.setResponseOverride('register_candidate', profile);
+    mockBackend.setResponseOverride('auto_register_candidates', { profiles: [profile], errors: [] });
+    mockBackend.setResponseOverride('get_project_details', new Promise(() => {}));
+    const user = userEvent.setup();
+    renderProjects();
+    await user.click(await screen.findByRole('button', { name: 'Expand demo' }));
+    expect(screen.getByText('demo-web-1')).toBeVisible();
+    // Neither refetch is allowed to finish: the mutation response owns the handoff.
+    mockBackend.setResponseOverride('list_profiles', new Promise(() => {}));
+    mockBackend.setResponseOverride('list_discovery_candidates', new Promise(() => {}));
+    await user.click(screen.getByRole('button', { name: mode === 'manual' ? 'Register demo' : 'Register eligible now' }));
+
+    await waitFor(() => expect(screen.getByText('registered')).toBeVisible());
+    expect(screen.getAllByRole('heading', { name: 'demo' })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Collapse demo' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('demo-web-1')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Register demo' })).not.toBeInTheDocument();
+    expect(screen.getByRole('status', { name: mode === 'manual' ? /Registration demo .* succeeded/ : 'Automatic registration succeeded' }).closest('.sr-only')).not.toBeNull();
+    // A late pre-registration discovery snapshot must not duplicate the profile.
+    await act(async () => { client.setQueriesData({ queryKey: ['discovery', 'list'] }, { candidates: [candidate], autoRegistrationEnabled: false }); });
+    expect(screen.getAllByRole('heading', { name: 'demo' })).toHaveLength(1);
+    // Removing the profile must make the observation eligible for display again.
+    await act(async () => { client.setQueryData(projectKeys.list(), []); });
+    expect(await screen.findByRole('button', { name: 'Register demo' })).toBeVisible();
+  });
+
+  it('does not discover or enable registration from a retained disconnected inventory session', async () => {
+    mockBackend.setResponseOverride('get_inventory', { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'stale', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: null });
+    renderProjects();
+    await screen.findByText('Container observations are stale. Showing the last snapshot.');
+    expect(screen.getByRole('switch', { name: 'Automatic registration' })).toBeDisabled();
+    expect(mockBackend.getInvocations().filter(call => call.command === 'list_discovery_candidates')).toHaveLength(0);
+  });
+
+  it.each(['profiles-first', 'discovery-first'])('retains one expanded row when the automatic scheduler publishes caches in either order (%s)', async order => {
+    const session = '00000000-0000-0000-0000-000000000099';
+    const candidate = { candidateId: 'a'.repeat(64), runtimeSessionId: session, inventoryGeneration: 4, composeProjectName: 'scheduled-app', workingDirectory: '/tmp/scheduled', configFiles: ['/tmp/scheduled/compose.yml'], containerCount: 1, classification: 'new_unambiguous' as const, conflicts: [], ignored: false };
+    const profile = { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'scheduled-app', composeProjectName: 'scheduled-app', workingDirectory: '/tmp/scheduled', registrationOrigin: 'discovered' as const };
+    mockBackend.setResponseOverride('list_profiles', []);
+    mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: session, endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: '2026-09-02T00:00:00.000Z' } });
+    mockBackend.setResponseOverride('get_inventory', { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: null });
+    mockBackend.setResponseOverride('list_discovery_candidates', { candidates: [candidate], autoRegistrationEnabled: true });
+    const user = userEvent.setup();
+    renderProjects();
+    await user.click(await screen.findByRole('button', { name: 'Expand scheduled-app' }));
+    const publishProfiles = async () => { await act(async () => { client.setQueryData(projectKeys.list(), [profile]); }); };
+    const publishDiscovery = async () => { await act(async () => { client.setQueriesData({ queryKey: ['discovery', 'list'] }, { candidates: [{ ...candidate, classification: 'already_registered' }], autoRegistrationEnabled: true }); }); };
+    await (order === 'profiles-first' ? publishProfiles() : publishDiscovery());
+    await waitFor(() => expect(screen.getAllByRole('heading', { name: 'scheduled-app' })).toHaveLength(1));
+    expect(screen.getByRole('button', { name: 'Collapse scheduled-app' })).toBeVisible();
+    await (order === 'profiles-first' ? publishDiscovery() : publishProfiles());
+    await waitFor(() => expect(screen.getByText('registered')).toBeVisible());
+    expect(screen.getAllByRole('heading', { name: 'scheduled-app' })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Collapse scheduled-app' })).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('waits for a ready runtime before loading project definitions', async () => {
@@ -98,11 +168,11 @@ describe('ProjectsView', () => {
     const session = '00000000-0000-0000-0000-000000000099';
     const profile = { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp/demo', registrationOrigin: 'discovered' as const };
     const container = { id: 'demo-web', name: 'demo-web-1', image: 'nginx', state: 'running' as const, statusText: 'Up', serviceName: 'web', publishedPorts: [] };
-    const inventory = { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh' as const, lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [container], projects: [{ composeProjectName: 'demo', workingDirectory: '/tmp/demo', configFiles: ['/tmp/demo/compose.yml'], containers: [container] }], composeObservationGroups: [], standaloneContainers: [], error: null };
+    const inventory = { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh' as const, lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [container], projects: [{ composeProjectName: 'demo', workingDirectory: '/tmp/demo', configFiles: ['/tmp/demo/compose.yml'], containers: [container] }], composeObservationGroups: [{ composeProjectName: 'demo', workingDirectory: '/tmp/demo', configFiles: ['/tmp/demo/compose.yml'], containerIds: [container.id] }], standaloneContainers: [], error: null };
     mockBackend.setResponseOverride('list_profiles', [profile]);
     mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: session, endpoint: 'mock://runtime', daemonFingerprint: inventory.daemonFingerprint, connectedAt: inventory.observedAt } });
     mockBackend.setResponseOverride('get_inventory', inventory);
-    mockBackend.setResponseOverride('get_project_details', { profile: { profile, composeFiles: ['/tmp/demo/compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: null, loadedAt: null, state: 'unchecked', services: [], issues: [], error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: profileId }, message: 'Required variables are unavailable', details: null, retryable: false } }, runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: inventory.observedAt } });
+    mockBackend.setResponseOverride('get_project_details', { runtimeIssues: [], profileAssociationUnique: true, profile: { profile, composeFiles: ['/tmp/demo/compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: null, loadedAt: null, state: 'unchecked', services: [], issues: [], error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: profileId }, message: 'Required variables are unavailable', details: null, retryable: false } }, runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: inventory.observedAt } });
     mockBackend.setResponseOverride('run_container_action', { containerId: container.id, action: 'stop', observation: 'confirmed_in_session', inventory });
 
     renderProjects();
@@ -160,10 +230,13 @@ describe('ProjectsView', () => {
   });
 
   it('renders running as one label and expands independent details', async () => {
-    const draft = { displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', composeFiles: ['compose.yml'], environmentFiles: [] };
-    mockBackend.setResponseOverride('list_profiles', [{ id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
-    mockBackend.setResponseOverride('get_inventory', { generation: 1, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [{ id: 'one', name: 'demo-web-1', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'two', name: 'demo-web-2', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'three', name: 'demo-web-3', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }], projects: [{ composeProjectName: 'demo', workingDirectory: '/tmp', configFiles: ['compose.yml'], containers: [{ id: 'one', name: 'demo-web-1', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'two', name: 'demo-web-2', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }, { id: 'three', name: 'demo-web-3', image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }]}], composeObservationGroups: [], standaloneContainers: [], error: null });
-    void draft;
+    const session = '00000000-0000-0000-0000-000000000099';
+    const profile = { id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' as const };
+    const containers = ['one', 'two', 'three'].map((id, index) => ({ id, name: `demo-web-${index + 1}`, image: 'mock', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }));
+    mockBackend.setResponseOverride('list_profiles', [profile]);
+    mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: session, endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: '2026-09-02T00:00:00.000Z' } });
+    mockBackend.setResponseOverride('get_project_details', { runtimeIssues: [], profileAssociationUnique: true, profile: { profile, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId: profile.id, definitionRevision: 'valid', loadedAt: '2026-09-02T00:00:00.000Z', state: 'valid', services: [], issues: [], error: null }, runtime: { presence: 'present', activity: 'all-running', containerCount: 3, runningContainerCount: 3, observedAt: '2026-09-02T00:00:00.000Z' } });
+    mockBackend.setResponseOverride('get_inventory', { generation: 1, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers, projects: [{ composeProjectName: 'demo', workingDirectory: '/tmp', configFiles: ['/tmp/compose.yml'], containers }], composeObservationGroups: [{ composeProjectName: 'demo', workingDirectory: '/tmp', configFiles: ['/tmp/compose.yml'], containerIds: containers.map(container => container.id) }], standaloneContainers: [], error: null });
     const user = userEvent.setup();
     renderProjects();
     expect(await screen.findByText('Running')).toBeVisible();
@@ -192,13 +265,16 @@ describe('ProjectsView', () => {
       { id: invalidId, revision: 1, displayName: 'Invalid Project', composeProjectName: 'invalid', workingDirectory: '/tmp/invalid', registrationOrigin: 'manual' as const },
       { id: validId, revision: 1, displayName: 'Valid Project', composeProjectName: 'valid', workingDirectory: '/tmp/valid', registrationOrigin: 'manual' as const },
     ];
+    const containers = profiles.map(profile => ({ id: `${profile.composeProjectName}-web`, name: `${profile.composeProjectName}-web-1`, image: 'nginx', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }));
     mockBackend.setResponseOverride('list_profiles', profiles);
+    mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: '00000000-0000-0000-0000-000000000099', endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: '2026-09-02T00:00:00.000Z' } });
     mockBackend.setResponseOverride('get_inventory', {
-      generation: 1, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [], composeObservationGroups: [], standaloneContainers: [], error: null,
-      projects: profiles.map(profile => ({ composeProjectName: profile.composeProjectName, workingDirectory: profile.workingDirectory, configFiles: ['compose.yml'], containers: [{ id: `${profile.composeProjectName}-web`, name: `${profile.composeProjectName}-web-1`, image: 'nginx', state: 'running', statusText: 'Up', serviceName: 'web', publishedPorts: [] }] })),
+      generation: 1, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: '00000000-0000-0000-0000-000000000099', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers, composeObservationGroups: profiles.map((profile, index) => ({ composeProjectName: profile.composeProjectName, workingDirectory: profile.workingDirectory, configFiles: [`${profile.workingDirectory}/compose.yml`], containerIds: [containers[index].id] })), standaloneContainers: [], error: null,
+      projects: profiles.map((profile, index) => ({ composeProjectName: profile.composeProjectName, workingDirectory: profile.workingDirectory, configFiles: [`${profile.workingDirectory}/compose.yml`], containers: [containers[index]] })),
     });
     for (const [profile, state] of [[profiles[0], 'invalid'], [profiles[1], 'valid']] as const) {
       acceptanceClient.setQueryData(projectKeys.definition(profile.id), {
+        runtimeIssues: [], profileAssociationUnique: true,
         profile: { profile, composeFiles: ['compose.yml'], environmentFiles: [] },
         definition: { profileId: profile.id, definitionRevision: `${state}-revision`, loadedAt: '2026-09-02T00:00:00.000Z', state, services: state === 'valid' ? [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }] : [], issues: state === 'invalid' ? [{ field: 'services.web', message: 'invalid service' }] : [], error: null },
         runtime: { presence: 'present', activity: 'all-running', containerCount: 1, runningContainerCount: 1, observedAt: '2026-09-02T00:00:00.000Z' },
@@ -225,7 +301,7 @@ describe('ProjectsView', () => {
     const profileId = '00000000-0000-0000-0000-000000000001';
     mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: '00000000-0000-0000-0000-000000000099', endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: '2026-09-02T00:00:00.000Z' } });
     mockBackend.setResponseOverride('list_profiles', [{ id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
-    mockBackend.setResponseOverride('get_project_details', { profile: { profile: { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: 'retained', loadedAt: '2026-09-03T00:00:00Z', state: 'stale', services: [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }], issues: [], error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: profileId }, message: 'compose config failed', details: null, retryable: false } }, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null } });
+    mockBackend.setResponseOverride('get_project_details', { runtimeIssues: [], profileAssociationUnique: true, profile: { profile: { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: 'retained', loadedAt: '2026-09-03T00:00:00Z', state: 'stale', services: [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }], issues: [], error: { code: 'definition_failed', operation: 'definition', subject: { kind: 'profile', id: profileId }, message: 'compose config failed', details: null, retryable: false } }, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null } });
     renderProjects();
 
     expect(await screen.findByText('Demo')).toBeVisible();
@@ -234,7 +310,7 @@ describe('ProjectsView', () => {
     expect(screen.getByRole('button', { name: /edit demo/i })).toBeVisible();
     expect(client.getQueryData(['projects', 'definition', profileId])).toMatchObject({ definition: { services: [{ name: 'web' }], error: expect.objectContaining({ code: 'definition_failed' }) } });
 
-    mockBackend.setResponseOverride('get_project_details', { profile: { profile: { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: 'fresh', loadedAt: '2026-09-03T00:01:00Z', state: 'valid', services: [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }], issues: [], error: null }, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null } });
+    mockBackend.setResponseOverride('get_project_details', { runtimeIssues: [], profileAssociationUnique: true, profile: { profile: { id: profileId, revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }, composeFiles: ['compose.yml'], environmentFiles: [] }, definition: { profileId, definitionRevision: 'fresh', loadedAt: '2026-09-03T00:01:00Z', state: 'valid', services: [{ name: 'web', image: 'nginx', buildContext: null, declaredPorts: [] }], issues: [], error: null }, runtime: { presence: 'unavailable', activity: null, containerCount: 0, runningContainerCount: 0, observedAt: null } });
     await client.invalidateQueries({ queryKey: ['projects', 'definition', profileId] });
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
   });
@@ -287,12 +363,14 @@ describe('ProjectsView', () => {
     expect(screen.getByText('Display name is required')).toBeVisible();
   });
 
-  it('renders accessible status and profile loading skeletons', async () => {
+  it('keeps initial loading status in the row without adding a loading footer', async () => {
     mockBackend.setResponseOverride('list_profiles', [{ id: '00000000-0000-0000-0000-000000000001', revision: 1, displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp', registrationOrigin: 'manual' }]);
     mockBackend.setResponseOverride('get_runtime_state', { state: 'ready', context: { sessionId: '00000000-0000-0000-0000-000000000099', endpoint: 'mock://runtime', daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, connectedAt: '2026-09-02T00:00:00.000Z' } });
     mockBackend.setResponseOverride('get_project_details', new Promise(() => {}));
+    mockBackend.setResponseOverride('get_inventory', new Promise(() => {}));
     renderProjects();
-    await waitFor(() => expect(screen.getByRole('status', { name: /loading project status/i })).toBeVisible());
+    await waitFor(() => expect(screen.getByLabelText('Project status')).toHaveTextContent('Loading status'));
+    expect(screen.queryByRole('status', { name: /loading project status/i })).not.toBeInTheDocument();
   });
 
   it('keeps user edits while fresh profile details replace stale hydration', async () => {

@@ -1,0 +1,33 @@
+{
+  "definition": {
+    "definitionRevision": null,
+    "error": null,
+    "issues": [],
+    "loadedAt": null,
+    "profileId": "00000000-0000-0000-0000-000000000001",
+    "services": [],
+    "state": "unchecked"
+  },
+  "profile": {
+    "composeFiles": [
+      "compose.yml"
+    ],
+    "environmentFiles": [],
+    "profile": {
+      "composeProjectName": "demo",
+      "displayName": "Demo",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "registrationOrigin": "manual",
+      "revision": 1,
+      "workingDirectory": "/tmp/demo"
+    }
+  },
+  "profileAssociationUnique": false,
+  "runtime": {
+    "activity": null,
+    "containerCount": 0,
+    "observedAt": null,
+    "presence": "absent",
+    "runningContainerCount": 0
+  }
+}

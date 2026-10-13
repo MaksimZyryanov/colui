@@ -38,6 +38,8 @@ pub struct ProjectDetailsResponseDto {
     pub profile: ProfileDetailsDto,
     pub definition: ProjectDefinitionDto,
     pub runtime: RuntimeProjectionDto,
+    pub runtime_issues: Vec<IssueDto>,
+    pub profile_association_unique: bool,
 }
 
 impl From<ServiceDefinition> for ServiceDefinitionDto {

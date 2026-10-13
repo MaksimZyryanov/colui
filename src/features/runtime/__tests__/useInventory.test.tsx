@@ -48,6 +48,23 @@ describe('inventory structural sharing', () => {
     expect(inventoryStructuralSharing(oldData, publishedInventory(3))).toBe(oldData);
   });
 
+  it('publishes freshness and errors for a retained observation without replacing its containers', () => {
+    const oldData = publishedInventory(4);
+    const error = { code: 'runtime_unavailable' as const, operation: 'inventory', subject: null, message: 'Disconnected', details: null, retryable: true };
+    const stale = inventoryStructuralSharing(oldData, { ...oldData, freshness: 'stale', error });
+    expect(stale).toMatchObject({ generation: 4, freshness: 'stale', error });
+    expect(stale.containers).toBe(oldData.containers);
+    // Recovery must publish a new observation, not resurrect an older in-flight response.
+    expect(inventoryStructuralSharing(stale, { ...oldData })).toBe(stale);
+    expect(inventoryStructuralSharing(stale, publishedInventory(5))).toMatchObject({ freshness: 'fresh', error: null });
+    expect(inventoryStructuralSharing(stale, { ...publishedInventory(3), freshness: 'fresh' })).toBe(stale);
+  });
+
+  it('does not accept equal-generation metadata from another session', () => {
+    const oldData = publishedInventory(4);
+    expect(inventoryStructuralSharing(oldData, { ...oldData, runtimeSessionId: '00000000-0000-0000-0000-000000000098', freshness: 'stale' })).toBe(oldData);
+  });
+
   it('accepts first snapshot despite pre-observation generation zero', () => {
     expect(inventoryStructuralSharing(preObservation(), publishedInventory(1))).toEqual(publishedInventory(1));
   });

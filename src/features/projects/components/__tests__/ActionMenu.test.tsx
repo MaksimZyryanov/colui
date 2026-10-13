@@ -23,7 +23,7 @@ describe('ActionMenu', () => {
     const user = userEvent.setup();
     renderRunningCard();
     await user.click(screen.getByRole('button', { name: /stop/i }));
-    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'stop_project')?.args).toEqual({ profileId }));
+    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'stop_project')?.args).toEqual({ request: { profileId } }));
   });
 
   it('sends exact Apply payload', async () => {
@@ -31,7 +31,7 @@ describe('ActionMenu', () => {
     renderRunningCard();
     await user.click(screen.getByRole('button', { name: /more actions/i }));
     await user.click(screen.getByRole('menuitem', { name: 'Apply' }));
-    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'apply_project')?.args).toEqual({ profileId }));
+    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'apply_project')?.args).toEqual({ request: { profileId } }));
   });
 
   it('publishes lifecycle inventory without refresh, invalidation, or refetch', async () => {
@@ -58,7 +58,7 @@ describe('ActionMenu', () => {
     const user = userEvent.setup();
     renderRunningCard();
     await user.click(screen.getByRole('button', { name: /restart/i }));
-    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'restart_project')?.args).toEqual({ profileId }));
+    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'restart_project')?.args).toEqual({ request: { profileId } }));
   });
 
   it('sends exact Remove profile payload', async () => {
@@ -68,7 +68,7 @@ describe('ActionMenu', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Remove profile' }));
     expect(screen.getByRole('alertdialog', { name: 'Remove profile' })).toHaveTextContent('Remove this profile. Docker is untouched.');
     await user.click(screen.getByRole('button', { name: /^Remove profile$/ }));
-    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'remove_profile')?.args).toEqual({ profileId, expectedRevision: 2 }));
+    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'remove_profile')?.args).toEqual({ request: { profileId, expectedRevision: 2 } }));
   });
 
   it('keeps Remove available when status is unavailable and disables Compose actions', async () => {
@@ -95,7 +95,7 @@ describe('ActionMenu', () => {
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'Restart' })[0]).toBeDisabled());
     expect(screen.getAllByRole('button', { name: 'Restart' })[1]).toBeEnabled();
     await user.click(screen.getAllByRole('button', { name: 'Restart' })[1]);
-    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'restart_project')?.args).toEqual({ profileId: secondProfileId }));
+    await waitFor(() => expect(mockBackend.getInvocations().find(invocation => invocation.command === 'restart_project')?.args).toEqual({ request: { profileId: secondProfileId } }));
     resolveApply({ profileId, success: true });
   });
 
@@ -108,7 +108,7 @@ describe('ActionMenu', () => {
     expect(screen.getByRole('alertdialog')).toHaveTextContent(/containers and networks.*removed/i);
     await user.click(screen.getByRole('button', { name: /^tear down$/i }));
     await waitFor(() => expect(screen.getByText('Test Project')).toBeVisible());
-    expect(mockBackend.getInvocations().find(invocation => invocation.command === 'tear_down_project')?.args).toEqual({ profileId });
+    expect(mockBackend.getInvocations().find(invocation => invocation.command === 'tear_down_project')?.args).toEqual({ request: { profileId } });
   });
 
   it('cancels destructive confirmation without IPC', async () => {
@@ -141,5 +141,59 @@ describe('ActionMenu', () => {
     await user.click(screen.getByRole('button', { name: /^Remove profile$/ }));
     expect(await screen.findByRole('alert')).toHaveTextContent('registry locked');
     expect(screen.getByRole('alertdialog', { name: 'Remove profile' })).toBeVisible();
+  });
+
+  it('shows typed errors from ordinary lifecycle actions outside a dialog', async () => {
+    mockBackend.setErrorOverride('stop_project', { code: 'compose_failed', operation: 'stop_project', message: 'Compose stop failed', details: 'The daemon rejected the request', retryable: true });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><ActionMenu profileId={profileId} revision={2} status={status} runtimeReady /></QueryClientProvider>);
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Compose stop failed');
+    expect(alert).toHaveTextContent('The daemon rejected the request');
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('allows Apply to create containers for an absent project', async () => {
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><ActionMenu profileId={profileId} revision={2} status={{ ...status, runtime: { ...status.runtime, presence: 'absent', activity: null, containerCount: 0, runningContainerCount: 0 } }} runtimeReady /></QueryClientProvider>);
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    const apply = screen.getByRole('menuitem', { name: 'Apply' });
+    expect(apply).not.toHaveAttribute('data-disabled');
+    await user.click(apply);
+    await waitFor(() => expect(mockBackend.getInvocations().some(invocation => invocation.command === 'apply_project')).toBe(true));
+  });
+
+  it('shares pending lifecycle state between controls for the same profile', async () => {
+    let resolveStop!: (value: unknown) => void;
+    mockBackend.setResponseOverride('stop_project', new Promise(resolve => { resolveStop = resolve; }));
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><ActionMenu profileId={profileId} revision={2} status={status} runtimeReady /><ActionMenu profileId={profileId} revision={2} status={status} runtimeReady /></QueryClientProvider>);
+    await user.click(screen.getAllByRole('button', { name: 'Stop' })[0]);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Restart' })[1]).toBeDisabled());
+    resolveStop({ profileId, success: true, inventoryGeneration: 1, inventory: { generation: 1, hasSnapshot: true, observedAt: '2026-09-03T00:00:00.000Z', runtimeSessionId: null, daemonFingerprint: null, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-03T00:00:00.000Z', containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: null } });
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Restart' })[1]).toBeEnabled());
+  });
+
+  it('publishes retained stale observations from an unsuccessful lifecycle result', async () => {
+    const stale = { generation: 5, hasSnapshot: true, observedAt: '2026-09-03T00:00:00.000Z', runtimeSessionId: null, daemonFingerprint: null, freshness: 'stale' as const, lastSuccessfulObservedAt: '2026-09-03T00:00:00.000Z', containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: { code: 'runtime_unavailable', operation: 'refresh_inventory', message: 'Runtime disconnected', retryable: true } };
+    mockBackend.setResponseOverride('stop_project', { profileId, success: false, inventoryGeneration: 5, inventory: stale });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><ActionMenu profileId={profileId} revision={2} status={status} runtimeReady /></QueryClientProvider>);
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(client.getQueryData(inventoryKeys.snapshot())).toEqual(stale));
+  });
+
+  it('retains tear down confirmation when the lifecycle result reports failure', async () => {
+    const inventory = { generation: 5, hasSnapshot: true, observedAt: '2026-09-03T00:00:00.000Z', runtimeSessionId: null, daemonFingerprint: null, freshness: 'stale', lastSuccessfulObservedAt: '2026-09-03T00:00:00.000Z', containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [], error: { code: 'runtime_unavailable', operation: 'refresh_inventory', message: 'Runtime disconnected', retryable: true } };
+    mockBackend.setResponseOverride('tear_down_project', { profileId, success: false, inventoryGeneration: 5, inventory });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><ActionMenu profileId={profileId} revision={2} status={status} runtimeReady /></QueryClientProvider>);
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Tear down' }));
+    await user.click(screen.getByRole('button', { name: 'Tear down' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Runtime disconnected');
+    expect(screen.getByRole('alertdialog', { name: 'Tear down project' })).toBeVisible();
   });
 });

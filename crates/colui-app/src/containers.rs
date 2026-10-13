@@ -90,12 +90,12 @@ async fn check_read_session<R: RuntimeStateReader + ?Sized>(
     }
 }
 
-async fn read_standalone<R: RuntimeStateReader + ?Sized, I: InventoryReader + ?Sized>(
+async fn read_fresh_inventory<R: RuntimeStateReader + ?Sized, I: InventoryReader + ?Sized>(
     runtime: &R,
     inventory: &I,
     id: &ContainerId,
     expected: RuntimeSessionId,
-) -> Result<ContainerInstance, AppError> {
+) -> Result<RuntimeInventory, AppError> {
     check_read_session(runtime, id, expected).await?;
     let current = inventory
         .current_inventory()
@@ -107,9 +107,19 @@ async fn read_standalone<R: RuntimeStateReader + ?Sized, I: InventoryReader + ?S
     {
         return Err(container_operation_error(
             id,
-            "fresh standalone container required",
+            "fresh container observation required",
         ));
     }
+    Ok(current)
+}
+
+async fn read_standalone<R: RuntimeStateReader + ?Sized, I: InventoryReader + ?Sized>(
+    runtime: &R,
+    inventory: &I,
+    id: &ContainerId,
+    expected: RuntimeSessionId,
+) -> Result<ContainerInstance, AppError> {
+    let current = read_fresh_inventory(runtime, inventory, id, expected).await?;
     let container = current
         .standalone_containers
         .into_iter()
@@ -130,9 +140,25 @@ impl<'a, R: ContainerLogsRuntime + ?Sized, I: InventoryReader + ?Sized>
         Self { runtime, inventory }
     }
     pub async fn execute(&self, request: ContainerLogsRequest) -> Result<ContainerLogs, AppError> {
-        read_standalone(
+        let current = read_fresh_inventory(
             self.runtime,
             self.inventory,
+            &request.container_id,
+            request.runtime_session_id,
+        )
+        .await?;
+        if !current
+            .containers
+            .iter()
+            .any(|container| container.id == request.container_id)
+        {
+            return Err(container_operation_error(
+                &request.container_id,
+                "container unavailable",
+            ));
+        }
+        check_read_session(
+            self.runtime,
             &request.container_id,
             request.runtime_session_id,
         )

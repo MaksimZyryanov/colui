@@ -1,6 +1,8 @@
-import { useId, useState, type ReactNode } from 'react';
+import { createContext, useContext, useId, useState, type ReactNode } from 'react';
 import { Button } from '../../../ui/components/Button';
 import { Icon } from '../../../ui/components/Icon';
+
+export const ResourceExpansionContext = createContext<{ expanded: boolean; toggle: () => void } | null>(null);
 
 // One presentation for groups, standalone containers, and nested containers.
 // Action ownership and dialogs stay in the feature components.
@@ -15,11 +17,13 @@ export function ResourceRow({ name, kind, status, actions, primaryAction, notice
   footer?: ReactNode;
 }) {
   const id = useId();
-  const [expanded, setExpanded] = useState(false);
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expansion = useContext(ResourceExpansionContext);
+  const expanded = expansion?.expanded ?? localExpanded;
   const grouped = kind === 'registered' || kind === 'discovered';
   return <section className={`resource resource-${kind}`} aria-labelledby={`${id}-name`}>
     <div className="resource-row">
-      {grouped ? <Button className="resource-chevron" aria-label={`${expanded ? 'Collapse' : 'Expand'} ${name}`} aria-expanded={expanded} aria-controls={`${id}-children`} onClick={() => setExpanded(value => !value)}><Icon name={expanded ? 'chevron-down' : 'chevron-right'} /></Button> : <span className="resource-indent" />}
+      {grouped ? <Button className="resource-chevron" aria-label={`${expanded ? 'Collapse' : 'Expand'} ${name}`} aria-expanded={expanded} aria-controls={`${id}-children`} onClick={() => expansion ? expansion.toggle() : setLocalExpanded(value => !value)}><Icon name={expanded ? 'chevron-down' : 'chevron-right'} /></Button> : <span className="resource-indent" />}
       {status}
       <h3 id={`${id}-name`}>{name}</h3>
       <span className="resource-kind">{kind}</span>

@@ -164,19 +164,23 @@ impl InventoryReader for FakeInventory {
 
 impl InventoryRefresher for FakeInventory {
     fn observation_marker(&self) -> colui_app::ObservationOrder {
-        panic!("lifecycle uses ordinary refresh")
+        let mut events = self.events.lock().unwrap();
+        assert_eq!(events.last(), Some(&"compose"));
+        events.push("marker");
+        colui_app::ObservationOrder(42)
     }
     fn refresh_after(
         &self,
-        _: colui_app::ObservationOrder,
+        marker: colui_app::ObservationOrder,
     ) -> colui_app::InventoryFuture<'_, colui_domain::RuntimeInventory> {
-        panic!("lifecycle uses ordinary refresh")
-    }
-    fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
+        assert_eq!(marker, colui_app::ObservationOrder(42));
         *self.calls.lock().unwrap() += 1;
-        self.events.lock().unwrap().push("refresh");
+        self.events.lock().unwrap().push("refresh_after");
         let result = self.refresh_result.clone();
         Box::pin(async move { result })
+    }
+    fn refresh(&self) -> InventoryFuture<'_, RuntimeInventory> {
+        panic!("lifecycle must observe after Compose success")
     }
 }
 
@@ -319,7 +323,7 @@ async fn successful_lifecycle_refreshes_once_before_unlock() {
     assert_eq!(*calls.lock().unwrap(), 1);
     assert_eq!(
         *runtime.events.lock().unwrap(),
-        vec!["lock", "compose", "refresh", "unlock"]
+        vec!["lock", "compose", "marker", "refresh_after", "unlock"]
     );
 }
 

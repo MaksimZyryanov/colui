@@ -31,7 +31,7 @@ export const inventorySchema = z.object({ generation: revision, hasSnapshot: z.b
 });
 export const serviceDefinitionSchema = z.object({ name: z.string(), image: z.string().nullable().optional(), buildContext: z.string().nullable().optional(), declaredPorts: z.string().array() });
 export const projectDefinitionSchema = z.object({profileId:uuid,definitionRevision:z.string().nullable().optional(),loadedAt:timestamp.nullable().optional(),state:z.enum(['unchecked','valid','invalid','stale']),services:serviceDefinitionSchema.array(),issues:z.array(issueSchema),error:appErrorSchema.nullable().optional()});
-export const projectDetailsResponseSchema = z.object({profile:profileDetailsSchema,definition:projectDefinitionSchema,runtime:runtimeProjectionSchema});
+export const projectDetailsResponseSchema = z.object({profile:profileDetailsSchema,definition:projectDefinitionSchema,runtime:runtimeProjectionSchema,runtimeIssues:issueSchema.array(),profileAssociationUnique:z.boolean()});
 export const lifecycleResultWithInventorySchema = z.object({profileId:uuid,success:z.boolean(),inventoryGeneration:z.number().int().nonnegative(),inventory:inventorySchema}).superRefine((value, ctx) => { if (value.inventoryGeneration !== value.inventory.generation) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['inventoryGeneration'], message: 'must match inventory.generation' }); });
 export { lifecycleResultWithInventorySchema as lifecycleResultSchema };
 export const unitSchema = z.union([z.undefined(), z.null(), z.object({}).strict()]).transform(() => undefined);

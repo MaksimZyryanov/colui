@@ -1,13 +1,16 @@
 use bollard::models::ContainerSummary;
 use colui_adapters::runtime::{normalize_container_summary, DockerControl, RuntimeGateway};
-use colui_adapters::InventoryCoordinator;
+use colui_adapters::{InventoryCoordinator, OperationLockManager};
 use colui_app::{
     Clock, ComposeInvocation, ComposeProcessResult, ComposeRunner, ConfigureAutoRegistration,
-    DiscoverySession, DockerApi, ProfileReader, RegistrySnapshot, RuntimeConnector, RuntimeFuture,
-    StoreFuture,
+    DiscoverySession, DockerApi, LifecycleFuture, LifecycleOperation, LifecycleResult,
+    LifecycleRuntime, ProfileReader, RegistrySnapshot, RuntimeConnector, RuntimeFuture,
+    StopProject, StoreFuture,
 };
 use colui_domain::{
-    AppError, AppErrorCode, ContainerDetails, ContainerId, ContainerObservation, DaemonFingerprint,
+    AppError, AppErrorCode, ComposeProjectName, ContainerDetails, ContainerId,
+    ContainerObservation, ContainerState, DaemonFingerprint, DisplayName, ProfileDraft, ProfileId,
+    ProjectProfile, RegistrationOrigin, RuntimeInventory,
 };
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -72,7 +75,7 @@ async fn concurrent_refreshes_share_one_list_and_generation() {
 }
 
 #[tokio::test]
-async fn lifecycle_refresh_joins_background_refresh() {
+async fn ordinary_refresh_port_joins_background_refresh() {
     let source = Arc::new(BlockingSource::new(vec![observation(
         "checkout-web",
         Some("checkout"),
@@ -96,6 +99,134 @@ async fn lifecycle_refresh_joins_background_refresh() {
     assert_eq!(background.generation, lifecycle.generation);
     assert_eq!(source.calls.load(Ordering::Acquire), 1);
     assert!(joined.try_recv().is_ok());
+}
+
+#[tokio::test]
+async fn successful_lifecycle_does_not_return_observation_started_before_compose_completion() {
+    let source = Arc::new(LifecycleObservationSource {
+        observation: Mutex::new(observation("checkout-web", Some("checkout"))),
+        calls: AtomicUsize::new(0),
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let coordinator = Arc::new(InventoryCoordinator::new(source.clone(), test_clock()));
+    let background = tokio::spawn({
+        let coordinator = coordinator.clone();
+        async move { coordinator.refresh().await }
+    });
+    source.started.notified().await;
+
+    let reader = LifecycleProfiles;
+    let runtime = StopRuntime(source.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let locks = OperationLockManager::new(dir.path().join("registry.recovery.lock"));
+    let mut joins = coordinator.subscribe_refresh_joins();
+    let mut lifecycle = tokio::spawn({
+        let coordinator = coordinator.clone();
+        async move {
+            StopProject::new_with_dependencies(&reader, &runtime, &locks, coordinator.as_ref())
+                .execute(lifecycle_profile().id)
+                .await
+        }
+    });
+    joins.recv().await.unwrap();
+    assert_eq!(source.calls.load(Ordering::Acquire), 1);
+    source.release.add_permits(1);
+    let old = background.await.unwrap().unwrap();
+    assert_eq!(old.containers[0].state, ContainerState::Running);
+
+    tokio::select! {
+        result = &mut lifecycle => panic!("pre-Compose observation satisfied lifecycle: {result:?}"),
+        _ = source.started.notified() => {},
+        _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("post-Compose observation did not start"),
+    }
+    assert!(!lifecycle.is_finished());
+    source.release.add_permits(1);
+    let result = lifecycle.await.unwrap().unwrap();
+    assert!(result.success);
+    assert!(result.inventory.generation > old.generation);
+    assert_eq!(
+        result.inventory.containers[0].state,
+        ContainerState::Stopped
+    );
+    assert_eq!(source.calls.load(Ordering::Acquire), 2);
+}
+
+struct LifecycleObservationSource {
+    observation: Mutex<ContainerObservation>,
+    calls: AtomicUsize,
+    started: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+impl DockerApi for LifecycleObservationSource {
+    fn list_containers(&self) -> RuntimeFuture<'_, Vec<ContainerObservation>> {
+        Box::pin(async move {
+            let captured = self.observation.lock().unwrap().clone();
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            self.started.notify_one();
+            self.release.acquire().await.unwrap().forget();
+            Ok(vec![captured])
+        })
+    }
+
+    fn inspect_container(&self, _: &ContainerId) -> RuntimeFuture<'_, ContainerDetails> {
+        panic!("inventory refresh must not inspect")
+    }
+}
+
+impl colui_app::RuntimeStateReader for LifecycleObservationSource {
+    fn session_state(&self) -> RuntimeFuture<'_, colui_domain::RuntimeSessionState> {
+        Box::pin(async { Ok(colui_domain::RuntimeSessionState::Ready(session_context())) })
+    }
+}
+
+struct StopRuntime(Arc<LifecycleObservationSource>);
+
+impl LifecycleRuntime for StopRuntime {
+    fn run_profile(
+        &self,
+        profile: ProjectProfile,
+        operation: LifecycleOperation,
+    ) -> LifecycleFuture<'_, LifecycleResult> {
+        Box::pin(async move {
+            assert_eq!(operation, LifecycleOperation::Stop);
+            self.0.observation.lock().unwrap().instance.state = ContainerState::Stopped;
+            Ok(LifecycleResult {
+                profile_id: profile.id,
+                success: true,
+                inventory: RuntimeInventory::unavailable(),
+            })
+        })
+    }
+}
+
+struct LifecycleProfiles;
+
+impl ProfileReader for LifecycleProfiles {
+    fn load(&self) -> StoreFuture<'_, RegistrySnapshot> {
+        Box::pin(async {
+            Ok(RegistrySnapshot {
+                registry_revision: 1,
+                profiles: vec![lifecycle_profile()],
+            })
+        })
+    }
+}
+
+fn lifecycle_profile() -> ProjectProfile {
+    ProjectProfile::from_draft(
+        ProfileId::new(uuid::Uuid::from_u128(1)),
+        ProfileDraft {
+            display_name: DisplayName::try_from("Checkout").unwrap(),
+            compose_project_name: ComposeProjectName::try_from("checkout").unwrap(),
+            working_directory: "/workspace".into(),
+            compose_files: vec!["compose.yml".into()],
+            environment_files: vec![],
+            registration_origin: RegistrationOrigin::Manual,
+        },
+    )
+    .unwrap()
 }
 
 #[tokio::test]

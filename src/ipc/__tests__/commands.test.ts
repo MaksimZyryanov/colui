@@ -81,7 +81,12 @@ describe('typed commands', () => {
     await expect(getProjectStatus(id)).rejects.toMatchObject({ operation: 'get_project_status' });
     for (const operation of [applyProject, stopProject, tearDownProject, restartProject]) await expect(operation(id)).rejects.toMatchObject({ operation: expect.any(String) });
     expect(mockBackend.getInvocations().map(({ command }) => command)).toEqual(['list_profiles', 'inspect_profile_draft', 'create_profile', 'get_profile', 'update_profile', 'remove_profile', 'get_runtime_state', 'connect_runtime', 'get_project_status', 'apply_project', 'stop_project', 'tear_down_project', 'restart_project']);
-    expect(mockBackend.getInvocations().slice(8).map(({ args }) => args)).toEqual([{ profileId: id }, { profileId: id }, { profileId: id }, { profileId: id }, { profileId: id }]);
+    expect(mockBackend.getInvocations().slice(0, 6).map(({ args }) => args)).toEqual([
+      undefined, { draft: value }, { draft: value }, { request: { profileId: created.id } },
+      { request: { profileId: created.id, expectedRevision: 1, patch: value } },
+      { request: { profileId: created.id, expectedRevision: 2 } },
+    ]);
+    expect(mockBackend.getInvocations().slice(8).map(({ args }) => args)).toEqual(Array.from({ length: 5 }, () => ({ request: { profileId: id } })));
   });
 
   it('invokes inventory and definition commands with typed responses', async () => {
@@ -101,8 +106,35 @@ describe('typed commands', () => {
     expect(lifecycle.inventory.projects[0]).toMatchObject({ composeProjectName: 'demo', containers: [{ state: 'running', serviceName: 'web' }] });
     expect(mockBackend.getInvocations().slice(1).map(({ command, args }) => ({ command, args }))).toEqual([
       { command: 'get_inventory', args: undefined }, { command: 'refresh_inventory', args: undefined },
-      { command: 'get_project_details', args: { profileId: id } }, { command: 'refresh_project_definition', args: { profileId: id } }, { command: 'apply_project', args: { profileId: id } },
+      { command: 'get_project_details', args: { request: { profileId: id } } }, { command: 'refresh_project_definition', args: { request: { profileId: id } } }, { command: 'apply_project', args: { request: { profileId: id } } },
     ]);
+  });
+
+  it('reports duplicate normalized profile tuples through project details without assigning containers', async () => {
+    mockBackend.reset();
+    const draft = { displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp/demo', composeFiles: ['compose.yml'], environmentFiles: [] };
+    const first = await createProfile(draft);
+    const duplicate = await createProfile({ ...draft, displayName: 'Duplicate', workingDirectory: '/tmp/demo/./nested/..', composeFiles: ['/tmp/demo/./compose.yml'] });
+    await refreshInventory();
+    for (const profile of [first, duplicate]) {
+      expect(await getProjectDetails(profile.id)).toMatchObject({
+        profileAssociationUnique: false,
+        runtimeIssues: [{ field: 'ambiguous_runtime_association', message: 'runtime association is ambiguous' }],
+        runtime: { presence: 'absent', containerCount: 0, runningContainerCount: 0 },
+      });
+    }
+  });
+
+  it('keeps profile association unique for equal compose names with different directories or ordered files', async () => {
+    mockBackend.reset();
+    const draft = { displayName: 'Demo', composeProjectName: 'demo', workingDirectory: '/tmp/demo', composeFiles: ['compose.yml', 'override.yml'], environmentFiles: [] };
+    const first = await createProfile(draft);
+    const otherDirectory = await createProfile({ ...draft, workingDirectory: '/tmp/other' });
+    const otherFiles = await createProfile({ ...draft, composeFiles: ['other.yml'] });
+    const reorderedFiles = await createProfile({ ...draft, composeFiles: ['override.yml', 'compose.yml'] });
+    for (const profile of [first, otherDirectory, otherFiles, reorderedFiles]) {
+      expect(await getProjectDetails(profile.id)).toMatchObject({ profileAssociationUnique: true, runtimeIssues: [] });
+    }
   });
 
   it('decodes malformed inventory responses as protocol mismatch', async () => {

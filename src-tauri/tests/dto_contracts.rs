@@ -750,6 +750,44 @@ fn issue_dto_preserves_optional_field_mapping() {
 }
 
 #[test]
+fn project_details_requires_and_preserves_runtime_issues() {
+    use colui_tauri_lib::dto::ProjectDetailsResponseDto;
+    let mut value = serde_json::json!({
+        "profile": {
+            "profile": {"id":"00000000-0000-0000-0000-000000000001","revision":1,"displayName":"Demo","composeProjectName":"demo","workingDirectory":"/tmp/demo","registrationOrigin":"manual"},
+            "composeFiles": ["compose.yml"], "environmentFiles": []
+        },
+        "definition": {"profileId":"00000000-0000-0000-0000-000000000001","definitionRevision":null,"loadedAt":null,"state":"unchecked","services":[],"issues":[],"error":null},
+        "runtime": {"presence":"absent","activity":null,"containerCount":0,"runningContainerCount":0,"observedAt":null},
+        "profileAssociationUnique": false
+    });
+    assert!(serde_json::from_value::<ProjectDetailsResponseDto>(value.clone()).is_err());
+    value["runtimeIssues"] = serde_json::json!([{
+        "field": "ambiguous_runtime_association",
+        "message": "runtime association is ambiguous"
+    }]);
+    let details = serde_json::from_value::<ProjectDetailsResponseDto>(value.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(details).unwrap()["runtimeIssues"],
+        value["runtimeIssues"]
+    );
+    let mut missing_unique = value.clone();
+    missing_unique
+        .as_object_mut()
+        .unwrap()
+        .remove("profileAssociationUnique");
+    assert!(serde_json::from_value::<ProjectDetailsResponseDto>(missing_unique).is_err());
+    for invalid in [
+        serde_json::Value::Null,
+        serde_json::json!({}),
+        serde_json::json!([{"message": 1}]),
+    ] {
+        value["runtimeIssues"] = invalid;
+        assert!(serde_json::from_value::<ProjectDetailsResponseDto>(value.clone()).is_err());
+    }
+}
+
+#[test]
 fn generated_schema_files_are_deterministic() {
     let generated = generate_all_schemas();
     assert_eq!(
@@ -865,6 +903,8 @@ fn generated_fixture_manifest_has_expected_negative_cases() {
         .collect::<std::collections::BTreeSet<_>>();
     assert!(fixtures.contains("profile_summary_invalid_uuid.json"));
     assert!(fixtures.contains("project_status_invalid_runtime_combination.json"));
-    assert_eq!(fixtures.len(), 18);
+    assert!(fixtures.contains("project_details_ambiguous_runtime.json"));
+    assert!(fixtures.contains("project_details_invalid_missing_runtime_issues.json"));
+    assert_eq!(fixtures.len(), 20);
     fs::remove_dir_all(output).unwrap();
 }

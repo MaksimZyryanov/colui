@@ -71,6 +71,20 @@ describe('DiscoverySection', () => {
     finishRegister({}); finishIgnore(false);
   });
 
+  it('publishes the registration result without hiding a different tuple sharing its project name', async () => {
+    const a = { ...candidate('1', 'new_unambiguous'), composeProjectName: 'shared-app' };
+    const b = { ...candidate('2', 'name_conflict'), composeProjectName: 'shared-app', workingDirectory: '/other', configFiles: ['/other/compose.yml'] };
+    mockBackend.setResponseOverride('list_discovery_candidates', { candidates: [a, b], autoRegistrationEnabled: false });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><DiscoverySection runtimeSessionId={session} inventoryGeneration={4} registryHealth={null} /></QueryClientProvider>);
+    const register = await screen.findByRole('button', { name: 'Register shared-app' });
+    mockBackend.setResponseOverride('list_discovery_candidates', new Promise(() => {}));
+    await user.click(register);
+    await waitFor(() => expect(screen.getAllByRole('heading', { name: 'shared-app' })).toHaveLength(1));
+    expect(screen.getByText('Name conflict')).toBeVisible();
+    expect(client.getQueryData(['projects', 'list'])).toEqual([expect.objectContaining({ composeProjectName: 'shared-app', workingDirectory: '/work/app' })]);
+  });
+
   it('retains deterministic feedback for concurrent same-type candidate requests', async () => {
     let finishA!: (value: unknown) => void;
     let rejectB!: (error: unknown) => void;

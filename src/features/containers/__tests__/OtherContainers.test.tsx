@@ -9,6 +9,8 @@ import type { RuntimeInventory } from '../../../ipc/types';
 import { ContainerCard } from '../ContainerCard';
 import { ResourceList } from '../../projects/components/ResourceList';
 import { AppErrorException } from '../../../ipc/errors';
+import { inventoryKeys, runtimeKeys } from '../../runtime/query-keys';
+import { ContainerActions } from '../ContainerActions';
 
 const session = '00000000-0000-0000-0000-000000000099';
 function OtherContainers({ inventory }: { inventory: RuntimeInventory }) {
@@ -18,8 +20,13 @@ const container = (id: string, name: string) => ({ id, name, image: 'nginx:lates
 const inventory = { generation: 4, hasSnapshot: true, observedAt: '2026-09-02T00:00:00.000Z', runtimeSessionId: session, daemonFingerprint: { daemonId: 'mock', serverVersion: '1', osType: 'test', architecture: 'test' }, freshness: 'fresh', lastSuccessfulObservedAt: '2026-09-02T00:00:00.000Z', containers: [], projects: [], composeObservationGroups: [], standaloneContainers: [container('one', 'web-one'), container('two', 'web-two')], error: null } satisfies RuntimeInventory;
 
 describe('OtherContainers', () => {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  beforeEach(() => { client.clear(); mockBackend.reset(); Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => undefined } }); });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  beforeEach(() => {
+    client.clear(); mockBackend.reset();
+    client.setQueryData(inventoryKeys.snapshot(), inventory);
+    client.setQueryData(runtimeKeys.state(), { state: 'ready', context: { sessionId: session, endpoint: 'mock://runtime', daemonFingerprint: inventory.daemonFingerprint, connectedAt: '2026-09-02T00:00:00.000Z' } });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => undefined } });
+  });
   afterEach(cleanup);
 
   it('isolates pending action by immutable container id and recovers when it disappears', async () => {
@@ -104,5 +111,30 @@ describe('OtherContainers', () => {
     expect(alert).not.toHaveTextContent('Reconnect and retry');
     await user.click(screen.getByText('Technical details'));
     expect(alert).toHaveTextContent('API daemon api-id; CLI daemon cli-id');
+  });
+
+  it.each(['stale', 'disconnected', 'changed-session'] as const)('retains observed containers but disables actions when %s', async reason => {
+    if (reason === 'stale') client.setQueryData(inventoryKeys.snapshot(), { ...inventory, freshness: 'stale' });
+    if (reason === 'disconnected') client.setQueryData(runtimeKeys.state(), { state: 'disconnected' });
+    if (reason === 'changed-session') client.setQueryData(runtimeKeys.state(), { state: 'ready', context: { sessionId: '00000000-0000-0000-0000-000000000098', endpoint: 'mock://runtime', daemonFingerprint: inventory.daemonFingerprint, connectedAt: '2026-09-03T00:00:00.000Z' } });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><OtherContainers inventory={inventory} /></QueryClientProvider>);
+    expect(screen.getByText('web-one')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Stop web-one' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Restart web-one' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Stop web-one' }));
+    expect(mockBackend.getInvocations().some(call => call.command === 'run_container_action')).toBe(false);
+  });
+
+  it('blocks standalone controls for every container reserved by a group action', async () => {
+    let resolve!: (value: unknown) => void;
+    mockBackend.setResponseOverride('run_container_action', new Promise(done => { resolve = done; }));
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><ContainerActions containers={inventory.standaloneContainers} runtimeSessionId={session} resourceName="batch" /><OtherContainers inventory={inventory} /></QueryClientProvider>);
+    await user.click(screen.getByRole('button', { name: 'Stop batch' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop web-two' })).toBeDisabled());
+    mockBackend.setResponseOverride('run_container_action', { containerId: 'two', action: 'stop', observation: 'confirmed_in_session', inventory: { ...inventory, generation: 6 } });
+    resolve({ containerId: 'one', action: 'stop', observation: 'confirmed_in_session', inventory: { ...inventory, generation: 5 } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop web-two' })).toBeEnabled());
   });
 });

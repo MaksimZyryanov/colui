@@ -217,7 +217,10 @@ async fn logs_and_ports_reject_stale_missing_or_changed_inventory_without_side_e
             let mut i = f.inner.inventory.lock().unwrap();
             match case {
                 "old_session" => i.runtime_session_id = Some(session(2)),
-                "missing" => i.standalone_containers.clear(),
+                "missing" => {
+                    i.containers.clear();
+                    i.standalone_containers.clear();
+                }
                 "stale" => i.freshness = InventoryFreshness::Stale,
                 "no_snapshot" => i.has_snapshot = false,
                 _ => f.inner.change_on_read.store(true, Ordering::SeqCst),
@@ -244,6 +247,44 @@ async fn logs_and_ports_reject_stale_missing_or_changed_inventory_without_side_e
         assert!(f.opened.lock().unwrap().is_empty());
     }
 }
+
+#[tokio::test]
+async fn fresh_compose_container_logs_do_not_require_standalone_membership() {
+    let f = ReadFixture::new();
+    {
+        let mut inventory = f.inner.inventory.lock().unwrap();
+        let mut container = inventory.standalone_containers[0].clone();
+        container.name = "demo-web-1".into();
+        container.service_name = Some("web".into());
+        inventory.containers = vec![container];
+        inventory.standalone_containers.clear();
+        inventory.compose_observation_groups = vec![ComposeObservationGroup {
+            compose_project_name: "demo".into(),
+            working_directory: Some("/tmp/demo".into()),
+            config_files: vec!["/tmp/demo/compose.yml".into()],
+            container_ids: vec![ContainerId("abc".into())],
+        }];
+    }
+    let logs = ReadContainerLogs::new(&f, &f)
+        .execute(ContainerLogsRequest {
+            container_id: ContainerId("abc".into()),
+            runtime_session_id: session(1),
+        })
+        .await
+        .unwrap();
+    assert_eq!(logs.container_id, ContainerId("abc".into()));
+    assert_eq!(logs.text, "SECRET");
+    assert_eq!(f.inner.actions.load(Ordering::SeqCst), 1);
+    assert_eq!(f.inner.refreshes.load(Ordering::SeqCst), 0);
+    assert_eq!(f.inner.acquisitions.load(Ordering::SeqCst), 0);
+
+    assert!(OpenContainerPort::new(&f, &f, &f)
+        .execute(ContainerId("abc".into()), session(1), 0)
+        .await
+        .is_err());
+    assert!(f.opened.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn logs_session_guards_and_failures_never_return_or_retain_text() {
     let f = ReadFixture::new();

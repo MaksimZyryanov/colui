@@ -64,7 +64,8 @@ where
 {
     let result = runtime.run_profile(profile, operation).await?;
     let inventory = if result.success {
-        match inventory.refresh().await {
+        let marker = inventory.observation_marker();
+        match inventory.refresh_after(marker).await {
             Ok(inventory) => inventory,
             Err(error) => {
                 let mut inventory = inventory.current_inventory().await?;

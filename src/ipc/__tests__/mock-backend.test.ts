@@ -8,6 +8,21 @@ const draft = {
 };
 
 describe('browser mock backend', () => {
+  it('rejects flat arguments that the native Tauri command handler cannot deserialize', async () => {
+    const profileId = '00000000-0000-0000-0000-000000000001';
+    const flatCalls: Array<readonly [string, unknown]> = [
+      ['inspect_profile_draft', draft], ['create_profile', draft],
+      ['get_profile', { profileId }],
+      ['update_profile', { profileId, expectedRevision: 1, patch: draft }],
+      ['remove_profile', { profileId, expectedRevision: 1 }],
+      ...['get_project_status', 'get_project_details', 'refresh_project_definition', 'apply_project', 'stop_project', 'tear_down_project', 'restart_project'].map(command => [command, { profileId }] as const),
+    ];
+    for (const [command, args] of flatCalls) {
+      mockBackend.reset();
+      await expect(mockBackend.invoke(command, args), command).rejects.toMatchObject({ code: 'profile_invalid', operation: command });
+    }
+  });
+
   it('supports CRUD with monotonic revisions', async () => {
     mockBackend.reset();
     const created = await createProfile(draft);
@@ -55,11 +70,11 @@ describe('browser mock backend', () => {
     });
 
     mockBackend.reset();
-    const first = await mockBackend.invoke('create_profile', draft) as { id: string };
+    const first = await mockBackend.invoke('create_profile', { draft }) as { id: string };
 
     vi.resetModules();
     const { mockBackend: reloadedBackend } = await import('../mock-backend');
-    const second = await reloadedBackend.invoke('create_profile', draft) as { id: string };
+    const second = await reloadedBackend.invoke('create_profile', { draft }) as { id: string };
 
     expect(first.id).toBe('00000000-0000-0000-0000-000000000001');
     expect(second.id).toBe('00000000-0000-0000-0000-000000000002');

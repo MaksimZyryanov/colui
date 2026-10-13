@@ -340,14 +340,25 @@
     "profile": {
       "$ref": "#/definitions/ProfileDetailsDto"
     },
+    "profileAssociationUnique": {
+      "type": "boolean"
+    },
     "runtime": {
       "$ref": "#/definitions/RuntimeProjectionDto"
+    },
+    "runtimeIssues": {
+      "items": {
+        "$ref": "#/definitions/IssueDto"
+      },
+      "type": "array"
     }
   },
   "required": [
     "definition",
     "profile",
-    "runtime"
+    "profileAssociationUnique",
+    "runtime",
+    "runtimeIssues"
   ],
   "title": "ProjectDetailsResponseDto",
   "type": "object"

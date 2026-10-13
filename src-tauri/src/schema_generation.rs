@@ -234,7 +234,27 @@ fn remove_known_artifacts(directory: &Path) -> io::Result<()> {
 
 fn fixtures() -> Vec<(&'static str, Value)> {
     let fingerprint = json!({"daemonId":"daemon-1","serverVersion":"27.0","osType":"linux","architecture":"amd64"});
+    let project_details = json!({
+        "profile": {
+            "profile": {"id":"00000000-0000-0000-0000-000000000001","revision":1,"displayName":"Demo","composeProjectName":"demo","workingDirectory":"/tmp/demo","registrationOrigin":"manual"},
+            "composeFiles": ["compose.yml"], "environmentFiles": []
+        },
+        "definition": {"profileId":"00000000-0000-0000-0000-000000000001","definitionRevision":null,"loadedAt":null,"state":"unchecked","services":[],"issues":[],"error":null},
+        "runtime": {"presence":"absent","activity":null,"containerCount":0,"runningContainerCount":0,"observedAt":null},
+        "runtimeIssues": [{"field":"ambiguous_runtime_association","message":"runtime association is ambiguous"}],
+        "profileAssociationUnique": false
+    });
+    let mut project_details_missing_runtime_issues = project_details.clone();
+    project_details_missing_runtime_issues
+        .as_object_mut()
+        .unwrap()
+        .remove("runtimeIssues");
     vec![
+        ("project_details_ambiguous_runtime.json", project_details),
+        (
+            "project_details_invalid_missing_runtime_issues.json",
+            project_details_missing_runtime_issues,
+        ),
         (
             "app_error_invalid_code.json",
             json!({"code":"not_an_error","operation":"connect_runtime","message":"bad","retryable":false}),

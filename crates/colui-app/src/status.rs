@@ -97,6 +97,24 @@ pub fn project_status_from_registry_inventory_and_definition(
 
 type AssociationTuple = (String, String, Vec<String>);
 
+/// Registry-only guard; runtime observation ambiguity is evaluated independently.
+pub fn profile_association_is_unique(
+    profile: &ProjectProfile,
+    registry: &crate::RegistrySnapshot,
+) -> bool {
+    let Some(tuple) = profile_tuple(profile) else {
+        return false;
+    };
+    registry
+        .profiles
+        .iter()
+        .filter_map(profile_tuple)
+        .filter(|candidate| candidate == &tuple)
+        .take(2)
+        .count()
+        == 1
+}
+
 struct RuntimeAssociationContext {
     profile_counts: BTreeMap<AssociationTuple, usize>,
     profile_tuples: HashMap<ProfileId, Option<AssociationTuple>>,
